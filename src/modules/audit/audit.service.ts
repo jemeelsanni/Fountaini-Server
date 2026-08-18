@@ -3,7 +3,7 @@ import { prisma } from "../../db/client.js";
 
 interface WriteAuditLogInput {
   actorUserId: string;
-  actorRole: Role;
+  actorRoles: Role[];
   action: string;
   entityType: string;
   entityId: string;
@@ -17,7 +17,7 @@ export function writeAuditLog(input: WriteAuditLogInput) {
   return prisma.auditLog.create({
     data: {
       actorUserId: input.actorUserId,
-      actorRole: input.actorRole,
+      actorRoles: input.actorRoles,
       action: input.action,
       entityType: input.entityType,
       entityId: input.entityId,

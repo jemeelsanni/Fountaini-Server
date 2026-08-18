@@ -8,7 +8,9 @@ import { resetDb } from "../../test/resetDb.js";
 const app = createApp();
 
 async function createTeacherUserRecord(email: string) {
-  return prisma.user.create({ data: { email, passwordHash: "unused", role: "TEACHER" } });
+  return prisma.user.create({
+    data: { email, passwordHash: "unused", roles: { create: [{ role: "TEACHER" }] } },
+  });
 }
 
 beforeEach(async () => {

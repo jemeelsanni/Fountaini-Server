@@ -4,7 +4,7 @@ import { env } from "../../config/env.js";
 
 export interface AccessTokenPayload {
   sub: string;
-  role: Role;
+  roles: Role[];
   staffId: string | null;
   parentId: string | null;
   studentId: string | null;

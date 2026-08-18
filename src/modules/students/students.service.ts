@@ -9,11 +9,14 @@ function isUniqueConstraintError(err: unknown): boolean {
 
 export async function createStudent(input: CreateStudentBody) {
   if (input.userId) {
-    const user = await prisma.user.findUnique({ where: { id: input.userId } });
+    const user = await prisma.user.findUnique({
+      where: { id: input.userId },
+      include: { roles: true },
+    });
     if (!user) {
       throw AppError.notFound("User not found");
     }
-    if (user.role !== "STUDENT") {
+    if (!user.roles.some((ur) => ur.role === "STUDENT")) {
       throw AppError.badRequest("The linked user must have the STUDENT role");
     }
     const existingStudent = await prisma.student.findUnique({ where: { userId: input.userId } });

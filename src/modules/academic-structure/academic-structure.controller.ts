@@ -72,7 +72,7 @@ export async function listClassSubjectAssignments(req: Request, res: Response): 
   // ignored for them rather than honored, so there's no "pass someone else's
   // staffId" path to guard against.
   const teacherId =
-    req.principal?.role === "TEACHER" ? (req.principal.staffId ?? undefined) : queryTeacherId;
+    req.principal?.roles.has("TEACHER") ? (req.principal.staffId ?? undefined) : queryTeacherId;
 
   res.status(200).json(await service.listClassSubjectAssignments({ teacherId, classId }));
 }

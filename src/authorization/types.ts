@@ -1,8 +1,13 @@
 import type { Role } from "../../generated/prisma/index.js";
 
+/// A user can hold more than one role at once (a teacher who's also a
+/// parent at the same school, say) — `roles` is the full set they're
+/// currently authenticated with, not "the" role. Every authorization check
+/// asks "does this principal have role X among their roles", never "is
+/// their role X".
 export interface Principal {
   userId: string;
-  role: Role;
+  roles: ReadonlySet<Role>;
   staffId: string | null;
   parentId: string | null;
   studentId: string | null;

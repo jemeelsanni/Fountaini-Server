@@ -42,7 +42,7 @@ function requireAuthHandler(req: Request, _res: Response, next: NextFunction): v
     const payload = verifyAccessToken(token);
     const principal: Principal = {
       userId: payload.sub,
-      role: payload.role,
+      roles: new Set(payload.roles),
       staffId: payload.staffId,
       parentId: payload.parentId,
       studentId: payload.studentId,
@@ -59,11 +59,12 @@ export const requireAuth: GuardedHandler = tagGuard(requireAuthHandler, "auth");
 export function requireRole(...roles: Role[]): GuardedHandler {
   return tagGuard(
     (req: Request, _res: Response, next: NextFunction): void => {
-      if (!req.principal) {
+      const { principal } = req;
+      if (!principal) {
         next(AppError.unauthorized());
         return;
       }
-      if (!roles.includes(req.principal.role)) {
+      if (!roles.some((r) => principal.roles.has(r))) {
         next(AppError.forbidden("You do not have permission to perform this action"));
         return;
       }

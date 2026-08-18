@@ -30,7 +30,10 @@ export function me(req: Request, res: Response): void {
   if (!req.principal) {
     throw AppError.unauthorized();
   }
-  res.status(200).json({ principal: req.principal });
+  // req.principal.roles is a Set — JSON.stringify silently serializes a Set
+  // as `{}`, so it must be spread into an array before this is the response
+  // body (the only place a Principal is serialized directly).
+  res.status(200).json({ principal: { ...req.principal, roles: [...req.principal.roles] } });
 }
 
 export async function changePassword(req: Request, res: Response): Promise<void> {

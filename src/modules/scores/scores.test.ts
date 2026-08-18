@@ -2,6 +2,7 @@ import request from "supertest";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
+import { bulkUpsertScores, submitScores } from "./scores.service.js";
 import {
   createAssessmentComponent,
   createAssignment,
@@ -13,6 +14,7 @@ import {
   createTermForSession,
   enrollStudent,
 } from "../../test/factories.js";
+import { awaitLockWaiter } from "../../test/awaitLockWaiter.js";
 import { resetDb } from "../../test/resetDb.js";
 
 const app = createApp();
@@ -101,6 +103,73 @@ describe("PUT .../scores (bulk upsert)", () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toHaveLength(1);
+  });
+});
+
+describe("PUT .../scores concurrency", () => {
+  it("never lets a bulk-upsert silently corrupt a Score after submitScores has already computed the SubjectResult from it", async () => {
+    const session = await createCurrentAcademicSession("2026/2027");
+    const term = await createTermForSession(session.id, "First Term", 1);
+    const klass = await createClass("JSS1", "A");
+    const subject = await createSubject("Mathematics", "MTH");
+    // A single component keeps submitScores' "every enrolled student has
+    // every component" requirement trivially satisfiable.
+    const component = await createAssessmentComponent(session.id, "CA1", "CA", 20, 1);
+    const { staff: teacher, user: teacherUser } = await createTeacher("teacher@test.local");
+    const assignment = await createAssignment(klass.id, subject.id, teacher.id, session.id);
+    const student = await createBareStudent("ADM-001");
+    await enrollStudent(student.id, klass.id, session.id);
+
+    // Sequential first entry — DRAFT, rawScore 10.
+    await bulkUpsertScores(assignment.id, teacherUser.id, {
+      termId: term.id,
+      entries: [{ studentId: student.id, assessmentComponentId: component.id, rawScore: 10 }],
+    });
+    const score = await prisma.score.findFirstOrThrow({
+      where: { studentId: student.id, classSubjectAssignmentId: assignment.id, termId: term.id },
+    });
+
+    // Deterministically force the exact interleaving this bug is about —
+    // submitScores' write (locking the score to SUBMITTED and computing
+    // SubjectResult.totalScore from rawScore 10) landing fully before the
+    // racing bulk-upsert's write (attempting to change rawScore to 15) for
+    // the same Score row.
+    const [, bulkUpsertOutcome] = await awaitLockWaiter(
+      "Score",
+      score.id,
+      () => submitScores(assignment.id, teacherUser.id, term.id),
+      () =>
+        bulkUpsertScores(assignment.id, teacherUser.id, {
+          termId: term.id,
+          entries: [{ studentId: student.id, assessmentComponentId: component.id, rawScore: 15 }],
+        }).then(
+          (value) => ({ ok: true as const, value }),
+          (err: unknown) => ({ ok: false as const, err }),
+        ),
+    );
+
+    const finalScore = await prisma.score.findUniqueOrThrow({ where: { id: score.id } });
+    const subjectResult = await prisma.subjectResult.findUniqueOrThrow({
+      where: {
+        studentId_classSubjectAssignmentId_termId: {
+          studentId: student.id,
+          classSubjectAssignmentId: assignment.id,
+          termId: term.id,
+        },
+      },
+    });
+
+    expect(finalScore.status).toBe("SUBMITTED");
+
+    if (bulkUpsertOutcome.ok) {
+      // The write wasn't rejected — the score sheet and the subject result
+      // it was computed from must still agree.
+      expect(Number(finalScore.rawScore)).toBe(Number(subjectResult.totalScore));
+    } else {
+      // Rejected — the correct outcome once the race is lost, and what the
+      // fix actually does: rawScore must be untouched (still 10, not 15).
+      expect(Number(finalScore.rawScore)).toBe(10);
+    }
   });
 });
 

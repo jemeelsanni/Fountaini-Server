@@ -30,7 +30,7 @@ describe("admin mutation auditing", () => {
     expect(entry).not.toBeNull();
     expect(entry?.action).toBe("CLASS_CREATED");
     expect(entry?.actorUserId).toBe(user.id);
-    expect(entry?.actorRole).toBe("ADMIN");
+    expect(entry?.actorRoles).toEqual(["ADMIN"]);
     expect((entry?.afterData as { gradeName?: string } | null)?.gradeName).toBe("JSS1");
   });
 

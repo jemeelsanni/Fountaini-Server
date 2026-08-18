@@ -63,48 +63,103 @@ export async function bulkUpsertScores(assignmentId: string, actorUserId: string
   }
 
   // Editing an already-submitted score through this endpoint is rejected
-  // outright rather than silently overwritten — there's no "reopen" flow yet.
-  const alreadySubmitted = await prisma.score.findFirst({
-    where: {
-      classSubjectAssignmentId: assignmentId,
-      termId: input.termId,
-      assessmentComponentId: { in: componentIds },
-      studentId: { in: studentIds },
-      status: "SUBMITTED",
-    },
-  });
-  if (alreadySubmitted) {
-    throw AppError.conflict(
-      "One or more of these scores have already been submitted and can no longer be edited this way",
-    );
-  }
+  // outright rather than silently overwritten — there's no "reopen" flow
+  // yet. This read and the writes below now happen inside one transaction,
+  // and — more importantly — each entry's write re-checks status at write
+  // time too, not just at this read's time: a submitScores() committing in
+  // between would otherwise go unnoticed, and the plain upsert() this
+  // replaced had no way to express "skip this cell if it's since become
+  // SUBMITTED" — it would silently overwrite a just-submitted Score row
+  // while the SubjectResult already computed FROM that score stays stale,
+  // so the score sheet and the subject result disagree (and any later
+  // computeResultsForClass builds the Result from that stale
+  // SubjectResult). The DB refuses the write now instead of app logic
+  // merely trying to remember to check.
+  return prisma.$transaction(async (tx) => {
+    const alreadySubmitted = await tx.score.findFirst({
+      where: {
+        classSubjectAssignmentId: assignmentId,
+        termId: input.termId,
+        assessmentComponentId: { in: componentIds },
+        studentId: { in: studentIds },
+        status: "SUBMITTED",
+      },
+    });
+    if (alreadySubmitted) {
+      throw AppError.conflict(
+        "One or more of these scores have already been submitted and can no longer be edited this way",
+      );
+    }
 
-  return prisma.$transaction(
-    input.entries.map((entry) =>
-      prisma.score.upsert({
-        where: {
-          studentId_classSubjectAssignmentId_termId_assessmentComponentId: {
-            studentId: entry.studentId,
-            classSubjectAssignmentId: assignmentId,
-            termId: input.termId,
-            assessmentComponentId: entry.assessmentComponentId,
-          },
-        },
-        create: {
+    const cellKey = (studentId: string, assessmentComponentId: string) => `${studentId}:${assessmentComponentId}`;
+    const existing = await tx.score.findMany({
+      where: {
+        classSubjectAssignmentId: assignmentId,
+        termId: input.termId,
+        OR: input.entries.map((e) => ({
+          studentId: e.studentId,
+          assessmentComponentId: e.assessmentComponentId,
+        })),
+      },
+      select: { studentId: true, assessmentComponentId: true },
+    });
+    const existingCells = new Set(existing.map((s) => cellKey(s.studentId, s.assessmentComponentId)));
+
+    const toCreate = input.entries.filter(
+      (e) => !existingCells.has(cellKey(e.studentId, e.assessmentComponentId)),
+    );
+    const toUpdate = input.entries.filter((e) =>
+      existingCells.has(cellKey(e.studentId, e.assessmentComponentId)),
+    );
+
+    if (toCreate.length > 0) {
+      await tx.score.createMany({
+        data: toCreate.map((entry) => ({
           studentId: entry.studentId,
           classSubjectAssignmentId: assignmentId,
           termId: input.termId,
           assessmentComponentId: entry.assessmentComponentId,
           rawScore: entry.rawScore,
           enteredByUserId: actorUserId,
+        })),
+        // Two concurrent bulk-upserts racing to create the same
+        // never-before-entered (student, component) cell — the loser's row
+        // is dropped rather than erroring; the winner's value stands.
+        skipDuplicates: true,
+      });
+    }
+
+    for (const entry of toUpdate) {
+      const { count } = await tx.score.updateMany({
+        where: {
+          studentId: entry.studentId,
+          classSubjectAssignmentId: assignmentId,
+          termId: input.termId,
+          assessmentComponentId: entry.assessmentComponentId,
+          status: { not: "SUBMITTED" },
         },
-        update: {
-          rawScore: entry.rawScore,
-          updatedByUserId: actorUserId,
-        },
-      }),
-    ),
-  );
+        data: { rawScore: entry.rawScore, updatedByUserId: actorUserId },
+      });
+      if (count === 0) {
+        // Raced: this cell became SUBMITTED after the check above but
+        // before this specific write reached it. Refuse the whole batch —
+        // matching the pre-existing "rejected outright" guarantee — rather
+        // than silently apply every other entry while this one goes stale.
+        throw AppError.conflict(
+          "One or more of these scores have already been submitted and can no longer be edited this way",
+        );
+      }
+    }
+
+    return tx.score.findMany({
+      where: {
+        classSubjectAssignmentId: assignmentId,
+        termId: input.termId,
+        studentId: { in: studentIds },
+        assessmentComponentId: { in: componentIds },
+      },
+    });
+  });
 }
 
 export async function submitScores(assignmentId: string, actorUserId: string, termId: string) {

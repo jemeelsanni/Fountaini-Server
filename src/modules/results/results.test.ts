@@ -18,36 +18,9 @@ import {
   createTermForSession,
   enrollStudent,
 } from "../../test/factories.js";
+import { awaitLockWaiter } from "../../test/awaitLockWaiter.js";
 import { resetDb } from "../../test/resetDb.js";
 import { waitForAuditLog } from "../../test/waitForAuditLog.js";
-
-/// Polls pg_locks (via a separate connection from whatever transaction is
-/// holding the lock being waited on) until at least `targetCount` backends
-/// are blocked waiting on some lock. Used to deterministically confirm two
-/// requests are actually queued behind a held row lock before releasing it,
-/// rather than guessing at a wall-clock delay that happens to be long
-/// enough — request-dispatch overhead (Express middleware, JWT
-/// verification, however many reads a service does before its write) varies
-/// enough that a fixed delay doesn't reliably preserve firing order by the
-/// time each request's write actually reaches Postgres's lock queue. Not
-/// filtered by relation: a session blocked on a row lock waits on the
-/// blocking transaction's XID (locktype 'transactionid'), which carries no
-/// relation at all — only 'relation'/'tuple' locktypes do. Safe to check
-/// "any ungranted lock" unfiltered here because the test DB is exclusively
-/// used by this single-process suite; nothing else is ever mid-transaction.
-async function waitForLockWaiters(targetCount: number, timeoutMs = 2000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const rows = await prisma.$queryRaw<Array<{ count: bigint }>>`
-      SELECT count(*) AS count FROM pg_locks WHERE NOT granted
-    `;
-    if (Number(rows[0]?.count ?? 0) >= targetCount) {
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  throw new Error(`Timed out waiting for ${targetCount} lock waiter(s) on "Result"`);
-}
 
 const app = createApp();
 
@@ -73,6 +46,32 @@ beforeEach(async () => {
 
 afterAll(async () => {
   await resetDb();
+});
+
+describe("computeResultsForClass — first-ever compute", () => {
+  it("creates a Result row when none exists yet (the createMany insert path, not just the updateMany path)", async () => {
+    const session = await createCurrentAcademicSession("2026/2027");
+    const term = await createTermForSession(session.id, "First Term", 1);
+    const klass = await createClass("JSS1", "A");
+    const student = await createBareStudent("ADM-001");
+    await enrollStudent(student.id, klass.id, session.id);
+
+    const before = await prisma.result.count();
+    expect(before, "fixture must start with a genuinely empty Result table").toBe(0);
+
+    const results = await computeResultsForClass({ classId: klass.id, termId: term.id });
+
+    expect(results).toHaveLength(1);
+    const created = await prisma.result.findUnique({
+      where: { studentId_termId: { studentId: student.id, termId: term.id } },
+    });
+    expect(created).not.toBeNull();
+    expect(created?.status).toBe("DRAFT");
+    // No submitted subject results for this student — totalScore/averageScore
+    // should reflect that, not throw or silently skip the row.
+    expect(Number(created?.totalScore)).toBe(0);
+    expect(created?.averageScore).toBeNull();
+  });
 });
 
 describe("full report card lifecycle", () => {
@@ -258,31 +257,20 @@ describe("compute/finalize concurrency", () => {
       // compute even reaches its own write phase regardless of which fired
       // first, and request-dispatch overhead through the full HTTP stack
       // (Express middleware, JWT verification) makes that timing even less
-      // predictable. So instead: call the service functions directly
-      // (skipping HTTP entirely — there's nothing HTTP-specific about this
-      // race), hold a real row lock on the target Result row, fire both
-      // calls without awaiting them, and use waitForLockWaiters to get
-      // definitive confirmation (via pg_locks, not a guessed delay) that
-      // each one has actually reached its own UPDATE and is blocked, queued
-      // behind this lock, before moving on. Only then release the lock by
-      // returning. Postgres grants it to whichever queued first — finalize,
-      // confirmed queued before compute was even invoked — lets that UPDATE
-      // apply and commit, then grants it to compute's queued write, which
-      // (on the fix) re-checks status fresh at that moment and finds it's
-      // since become FINALIZED.
-      const [, computeResults2] = await prisma
-        .$transaction(async (tx) => {
-          await tx.$queryRaw`SELECT 1 FROM "Result" WHERE "id" = ${resultId} FOR UPDATE`;
-
-          const finalizePromise = finalizeResult(resultId, adminUser.id);
-          await waitForLockWaiters(1);
-
-          const computePromise = computeResultsForClass({ classId: klass.id, termId: term.id });
-          await waitForLockWaiters(2);
-
-          return [finalizePromise, computePromise] as const;
-        })
-        .then((promises) => Promise.all(promises));
+      // predictable. Calling the service functions directly (skipping HTTP
+      // entirely — there's nothing HTTP-specific about this race) plus
+      // awaitLockWaiter gives definitive, pg_locks-confirmed ordering
+      // instead: finalize is confirmed queued on the Result row's lock
+      // before compute is even invoked, so it always applies and commits
+      // first, then compute's queued write runs — which (on the fix)
+      // re-checks status fresh at that moment and finds it's since become
+      // FINALIZED.
+      const [, computeResults2] = await awaitLockWaiter(
+        "Result",
+        resultId,
+        () => finalizeResult(resultId, adminUser.id),
+        () => computeResultsForClass({ classId: klass.id, termId: term.id }),
+      );
 
       expect(computeResults2.find((r) => r.studentId === student.id)?.id, `iteration ${i}`).toBe(resultId);
 

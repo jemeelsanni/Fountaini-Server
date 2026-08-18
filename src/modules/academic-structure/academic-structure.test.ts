@@ -2,6 +2,7 @@ import request from "supertest";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
+import { setCurrentAcademicSession, setCurrentTerm } from "./academic-structure.service.js";
 import { createAdmin, createBursar, createClass, createSubject, createTeacher } from "../../test/factories.js";
 import { resetDb } from "../../test/resetDb.js";
 
@@ -68,6 +69,36 @@ describe("academic sessions", () => {
     const refreshedB = await prisma.academicSession.findUniqueOrThrow({ where: { id: b.id } });
     expect(refreshedA.isCurrent).toBe(false);
     expect(refreshedB.isCurrent).toBe(true);
+  });
+
+  it("switching current session to several different targets concurrently leaves exactly one current row", async () => {
+    // A plain updateMany(clear others)-then-update(set self) has a real gap
+    // under 3-or-more-way concurrency (see the fix's comment in
+    // academic-structure.service.ts) that isn't reliably exposed by only 2
+    // concurrent switches — this uses 4 to reproduce it consistently.
+    await prisma.academicSession.create({
+      data: { name: "A", startDate: new Date("2025-09-01"), endDate: new Date("2026-07-31"), isCurrent: true },
+    });
+    const targets = await Promise.all(
+      ["B", "C", "D", "E"].map((name, i) =>
+        prisma.academicSession.create({
+          data: {
+            name,
+            startDate: new Date(2026 + i, 8, 1),
+            endDate: new Date(2027 + i, 6, 31),
+          },
+        }),
+      ),
+    );
+
+    await Promise.all(targets.map((t) => setCurrentAcademicSession(t.id)));
+
+    const current = await prisma.academicSession.findMany({ where: { isCurrent: true } });
+    expect(current).toHaveLength(1);
+    // Whichever target committed last legitimately wins — not asserting
+    // which, only that there's exactly one, and it's one of the four that
+    // was actually raced for (never the untouched A).
+    expect(targets.map((t) => t.id)).toContain(current[0]?.id);
   });
 });
 
@@ -136,6 +167,41 @@ describe("terms", () => {
     expect(refreshedTermA.isCurrent).toBe(false);
     expect(refreshedTermA2.isCurrent).toBe(true);
     expect(refreshedTermB.isCurrent).toBe(true); // untouched — different session
+  });
+
+  it("switching current term to several different targets concurrently leaves exactly one current row per session", async () => {
+    const session = await prisma.academicSession.create({
+      data: { name: "2026/2027", startDate: new Date("2026-09-01"), endDate: new Date("2027-07-31") },
+    });
+    await prisma.term.create({
+      data: {
+        academicSessionId: session.id,
+        name: "Term 0",
+        order: 0,
+        startDate: new Date("2026-08-01"),
+        endDate: new Date("2026-08-31"),
+        isCurrent: true,
+      },
+    });
+    const targets = await Promise.all(
+      [1, 2, 3, 4].map((order) =>
+        prisma.term.create({
+          data: {
+            academicSessionId: session.id,
+            name: `Term ${order}`,
+            order,
+            startDate: new Date(2026, order, 1),
+            endDate: new Date(2026, order + 1, 0),
+          },
+        }),
+      ),
+    );
+
+    await Promise.all(targets.map((t) => setCurrentTerm(t.id)));
+
+    const current = await prisma.term.findMany({ where: { academicSessionId: session.id, isCurrent: true } });
+    expect(current).toHaveLength(1);
+    expect(targets.map((t) => t.id)).toContain(current[0]?.id);
   });
 });
 

@@ -31,7 +31,12 @@ afterAll(async () => {
 
 describe("auth matrix bookkeeping", () => {
   it("built exactly the bespoke rows BESPOKE_ROUTE_KEYS promises the route-guard inventory test", () => {
-    expect(bespokeRows.map((r) => r.name).sort()).toEqual([...BESPOKE_ROUTE_KEYS].sort());
+    // Set, not array, comparison: a route can now be exercised by more than
+    // one bespoke row (e.g. a second row fixturing a dual-role actor against
+    // their own independent assignment) without that being bookkeeping
+    // drift — what must match is which ROUTES have coverage, not how many
+    // row objects exist per route.
+    expect(new Set(bespokeRows.map((r) => r.name))).toEqual(new Set(BESPOKE_ROUTE_KEYS));
   });
 
   it("built a plausible number of auto-generated rows (sanity check on the filter itself)", () => {

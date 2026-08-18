@@ -2,6 +2,7 @@ import request from "supertest";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
+import { convertEnquiry } from "./admissions.service.js";
 import { createAdmin, createBareStudent, createClass } from "../../test/factories.js";
 import { resetDb } from "../../test/resetDb.js";
 
@@ -154,5 +155,44 @@ describe("POST /api/admission-enquiries/:id/convert", () => {
       .send({ admissionNumber: "ADM-DUPLICATE" });
 
     expect(res.status).toBe(409);
+  });
+
+  it("resolves two concurrent converts of the same enquiry as exactly one Student and one 409", async () => {
+    const { user } = await createAdmin("admin@test.local");
+    await request(app).post("/api/admission-enquiries").send({
+      prospectiveFirstName: "Amina",
+      prospectiveLastName: "Bello",
+      parentFullName: "Musa Bello",
+      parentPhone: "+2348012345678",
+    });
+    const enquiry = await prisma.admissionEnquiry.findFirstOrThrow();
+
+    const settle = <T>(p: Promise<T>) =>
+      p.then(
+        (value) => ({ ok: true as const, value }),
+        (err: unknown) => ({ ok: false as const, err }),
+      );
+
+    const [resultA, resultB] = await Promise.all([
+      settle(convertEnquiry(enquiry.id, user.id, "ADM-2027-001")),
+      settle(convertEnquiry(enquiry.id, user.id, "ADM-2027-002")),
+    ]);
+
+    const outcomes = [resultA, resultB];
+    const succeeded = outcomes.filter((o) => o.ok);
+    const failed = outcomes.filter((o) => !o.ok);
+
+    expect(succeeded).toHaveLength(1);
+    expect(failed).toHaveLength(1);
+    expect((failed[0] as { ok: false; err: unknown }).err).toMatchObject({ statusCode: 409 });
+
+    const students = await prisma.student.findMany({
+      where: { firstName: "Amina", lastName: "Bello" },
+    });
+    expect(students).toHaveLength(1);
+
+    const refreshedEnquiry = await prisma.admissionEnquiry.findUniqueOrThrow({ where: { id: enquiry.id } });
+    expect(refreshedEnquiry.status).toBe("CONVERTED");
+    expect(refreshedEnquiry.convertedStudentId).toBe(students[0]?.id);
   });
 });

@@ -1,4 +1,3 @@
-import type { Role } from "../../../generated/prisma/index.js";
 import { env } from "../../config/env.js";
 import { prisma } from "../../db/client.js";
 import { AppError } from "../../errors/AppError.js";
@@ -19,29 +18,25 @@ interface LoginInput {
   userAgent?: string;
 }
 
-async function buildAccessTokenPayload(userId: string, role: Role): Promise<AccessTokenPayload> {
-  const [staff, parent, student] = await Promise.all([
+async function buildAccessTokenPayload(userId: string): Promise<AccessTokenPayload> {
+  const [staff, parent, student, userRoles] = await Promise.all([
     prisma.staff.findUnique({ where: { userId }, select: { id: true } }),
     prisma.parent.findUnique({ where: { userId }, select: { id: true } }),
     prisma.student.findUnique({ where: { userId }, select: { id: true } }),
+    prisma.userRole.findMany({ where: { userId }, select: { role: true } }),
   ]);
 
   return {
     sub: userId,
-    role,
+    roles: userRoles.map((ur) => ur.role),
     staffId: staff?.id ?? null,
     parentId: parent?.id ?? null,
     studentId: student?.id ?? null,
   };
 }
 
-async function issueTokenPair(
-  userId: string,
-  role: Role,
-  ip?: string,
-  userAgent?: string,
-): Promise<IssuedTokens> {
-  const payload = await buildAccessTokenPayload(userId, role);
+async function issueTokenPair(userId: string, ip?: string, userAgent?: string): Promise<IssuedTokens> {
+  const payload = await buildAccessTokenPayload(userId);
   const accessToken = signAccessToken(payload);
 
   const refreshToken = generateRefreshToken();
@@ -74,7 +69,7 @@ export async function login(input: LoginInput): Promise<IssuedTokens> {
 
   await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
 
-  return issueTokenPair(user.id, user.role, input.ip, input.userAgent);
+  return issueTokenPair(user.id, input.ip, input.userAgent);
 }
 
 export async function refresh(rawToken: string, ip?: string, userAgent?: string): Promise<IssuedTokens> {
@@ -113,7 +108,7 @@ export async function refresh(rawToken: string, ip?: string, userAgent?: string)
     throw AppError.unauthorized("Refresh token has already been used");
   }
 
-  const newTokens = await issueTokenPair(existing.userId, existing.user.role, ip, userAgent);
+  const newTokens = await issueTokenPair(existing.userId, ip, userAgent);
 
   await prisma.refreshToken.update({
     where: { id: existing.id },

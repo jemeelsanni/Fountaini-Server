@@ -34,7 +34,7 @@ export function auditMutation(entityType: string, action: string) {
 
       writeAuditLog({
         actorUserId: req.principal.userId,
-        actorRole: req.principal.role,
+        actorRoles: [...req.principal.roles],
         action,
         entityType,
         entityId: idFromParams ?? idFromBody ?? "unknown",

@@ -6,19 +6,27 @@ import { signAccessToken } from "../modules/auth/jwt.js";
 /// Test-only helpers: sign tokens directly rather than round-tripping through
 /// /api/auth/login for every fixture — login itself is already covered by
 /// Phase 1's auth tests, so these just need a valid, correctly-shaped token.
-async function createUser(email: string, role: Role, password = "password-123456") {
+async function createUser(email: string, roles: Role[], password = "password-123456") {
   const passwordHash = await argon2.hash(password, { type: argon2.argon2id });
-  return prisma.user.create({ data: { email, passwordHash, role } });
+  return prisma.user.create({
+    data: { email, passwordHash, roles: { create: roles.map((role) => ({ role })) } },
+  });
 }
 
 export async function createAdmin(email: string) {
-  const user = await createUser(email, "ADMIN");
-  const token = signAccessToken({ sub: user.id, role: "ADMIN", staffId: null, parentId: null, studentId: null });
+  const user = await createUser(email, ["ADMIN"]);
+  const token = signAccessToken({
+    sub: user.id,
+    roles: ["ADMIN"],
+    staffId: null,
+    parentId: null,
+    studentId: null,
+  });
   return { user, token };
 }
 
 export async function createTeacher(email: string) {
-  const user = await createUser(email, "TEACHER");
+  const user = await createUser(email, ["TEACHER"]);
   const staff = await prisma.staff.create({
     data: {
       userId: user.id,
@@ -29,7 +37,7 @@ export async function createTeacher(email: string) {
   });
   const token = signAccessToken({
     sub: user.id,
-    role: "TEACHER",
+    roles: ["TEACHER"],
     staffId: staff.id,
     parentId: null,
     studentId: null,
@@ -38,7 +46,7 @@ export async function createTeacher(email: string) {
 }
 
 export async function createBursar(email: string) {
-  const user = await createUser(email, "BURSAR");
+  const user = await createUser(email, ["BURSAR"]);
   const staff = await prisma.staff.create({
     data: {
       userId: user.id,
@@ -49,7 +57,7 @@ export async function createBursar(email: string) {
   });
   const token = signAccessToken({
     sub: user.id,
-    role: "BURSAR",
+    roles: ["BURSAR"],
     staffId: staff.id,
     parentId: null,
     studentId: null,
@@ -58,13 +66,13 @@ export async function createBursar(email: string) {
 }
 
 export async function createParent(email: string) {
-  const user = await createUser(email, "PARENT");
+  const user = await createUser(email, ["PARENT"]);
   const parent = await prisma.parent.create({
     data: { userId: user.id, firstName: "Test", lastName: "Parent" },
   });
   const token = signAccessToken({
     sub: user.id,
-    role: "PARENT",
+    roles: ["PARENT"],
     staffId: null,
     parentId: parent.id,
     studentId: null,
@@ -73,18 +81,44 @@ export async function createParent(email: string) {
 }
 
 export async function createStudentWithLogin(email: string, admissionNumber: string) {
-  const user = await createUser(email, "STUDENT");
+  const user = await createUser(email, ["STUDENT"]);
   const student = await prisma.student.create({
     data: { admissionNumber, firstName: "Test", lastName: "Student", userId: user.id },
   });
   const token = signAccessToken({
     sub: user.id,
-    role: "STUDENT",
+    roles: ["STUDENT"],
     staffId: null,
     parentId: null,
     studentId: student.id,
   });
   return { user, student, token };
+}
+
+/// A user who genuinely holds two roles at once — the case this schema
+/// couldn't represent before UserRole existed. Used to prove scope resolvers
+/// grant access via EITHER role independently, not just the "first" one.
+export async function createStaffParent(email: string) {
+  const user = await createUser(email, ["TEACHER", "PARENT"]);
+  const staff = await prisma.staff.create({
+    data: {
+      userId: user.id,
+      staffNumber: `STAFF-${user.id.slice(0, 10)}`,
+      firstName: "Test",
+      lastName: "StaffParent",
+    },
+  });
+  const parent = await prisma.parent.create({
+    data: { userId: user.id, firstName: "Test", lastName: "StaffParent" },
+  });
+  const token = signAccessToken({
+    sub: user.id,
+    roles: ["TEACHER", "PARENT"],
+    staffId: staff.id,
+    parentId: parent.id,
+    studentId: null,
+  });
+  return { user, staff, parent, token };
 }
 
 export function createBareStudent(admissionNumber: string, overrides: { firstName?: string } = {}) {

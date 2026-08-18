@@ -60,11 +60,22 @@ export async function convertEnquiry(id: string, actorUserId: string, admissionN
         },
       });
 
-      const updatedEnquiry = await tx.admissionEnquiry.update({
-        where: { id },
+      // Conditional-update claim, same pattern as auth.service.ts refresh():
+      // the WHERE clause re-checks status !== CONVERTED at write time, not
+      // just at this function's initial read time, so only one of two
+      // concurrent converts can actually flip it. The loser throws here,
+      // which rolls back this whole transaction — including the student
+      // row just created above — instead of leaving an orphaned duplicate
+      // Student with no enquiry pointing at it.
+      const claimed = await tx.admissionEnquiry.updateMany({
+        where: { id, status: { not: "CONVERTED" } },
         data: { status: "CONVERTED", convertedStudentId: student.id, handledByUserId: actorUserId },
       });
+      if (claimed.count === 0) {
+        throw AppError.conflict("This enquiry has already been converted");
+      }
 
+      const updatedEnquiry = await tx.admissionEnquiry.findUniqueOrThrow({ where: { id } });
       return { student, enquiry: updatedEnquiry };
     });
   } catch (err) {

@@ -10,18 +10,18 @@
 // - Soft deactivation over hard deletes: `isActive` / status enums are used instead of
 //   destructive deletes for anything referenced by historical academic or financial data.
 //
-// KNOWN LIMITATION — partial unique indexes: Prisma's schema DSL cannot express a
-// `WHERE` clause on a unique index. Two places in this schema still need "at most one X
-// is currently active/current" semantics that Prisma can't enforce at the column level:
-//   1. AcademicSession.isCurrent  (only one session should be current at a time)
-//   2. Term.isCurrent             (only one term per session should be current at a time)
-// These are enforced at the application layer only (wrap the "set current" mutation in a
-// transaction that first clears the flag on siblings) and SHOULD additionally get a
-// raw-SQL partial unique index in a follow-up migration, e.g.:
-//   CREATE UNIQUE INDEX one_current_session ON "AcademicSession" ((true)) WHERE "isCurrent";
-// StudentQrCode.isActive (the third case this used to list) got its partial unique index
-// in migration add_qr_code_one_active_partial_index — see the comment on that field.
-// This is flagged, not silently handled — see the "least-certain decisions" writeup.
+// NOTE — partial unique indexes: Prisma's schema DSL cannot express a `WHERE`
+// clause on a unique index, so the three "at most one X is currently
+// active/current" invariants in this schema are declared here only as plain
+// columns; the actual enforcement lives in raw-SQL migrations instead:
+//   1. AcademicSession.isCurrent  — migration add_current_session_term_partial_indexes
+//   2. Term.isCurrent             — migration add_current_session_term_partial_indexes
+//   3. StudentQrCode.isActive     — migration add_qr_code_one_active_partial_index
+// All three are backed by the app-layer transaction that clears the flag on siblings
+// before setting it on the new row AND a DB-level partial unique index — see each
+// field's own comment. The app-layer step alone was found to have a real gap under
+// 3-or-more-way concurrent switches (see docs/concurrency.md), which is exactly the
+// kind of bypass the index exists to catch.
 
 // Pinned to Prisma 6.x (not the current 7.x major): this environment's Node
 // (v23.11.0, a non-LTS release) fails to run the Prisma 7 CLI at all — see
@@ -67,7 +67,6 @@ model User {
   email          String?   @unique
   phone          String?   @unique
   passwordHash   String
-  role           Role
   isActive       Boolean   @default(true)
   lastLoginAt    DateTime?
   createdAt      DateTime  @default(now())
@@ -76,12 +75,25 @@ model User {
   staff          Staff?
   parent         Parent?
   student        Student?
+  roles          UserRole[]
 
   refreshTokens       RefreshToken[]
   passwordResetTokens PasswordResetToken[]
   notificationEvents  NotificationEvent[]
   auditLogEntries     AuditLog[]
+}
 
+/// One row per role a user holds — a user with both TEACHER and PARENT rows
+/// is a real, supported case (e.g. a staff member who also has a child
+/// enrolled), not an edge case. Composite PK rather than a separate id: the
+/// pair is the whole identity of the row, and it also enforces "a user can't
+/// hold the same role twice" for free.
+model UserRole {
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role
+
+  @@id([userId, role])
   @@index([role])
 }
 
@@ -229,7 +241,14 @@ model AcademicSession {
   name      String   @unique // e.g. "2025/2026"
   startDate DateTime
   endDate   DateTime
-  /// See partial-unique-index caveat at top of file.
+  /// "Only one current session" is enforced by a partial unique index
+  /// (migration add_current_session_term_partial_indexes — not expressible
+  /// in this schema DSL, see the caveat at top of file) on ("isCurrent")
+  /// WHERE "isCurrent". setCurrentAcademicSession() takes a transaction-scoped
+  /// advisory lock before its clear-then-set to fully serialize concurrent
+  /// switches — needed because the clear-then-set alone had a real gap under
+  /// 3-or-more-way concurrency; the index is what actually guarantees this
+  /// even against a future caller that bypasses that function entirely.
   isCurrent Boolean  @default(false)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -258,7 +277,13 @@ model Term {
   order             Int // 1, 2, 3 — ordering within the session
   startDate         DateTime
   endDate           DateTime
-  /// See partial-unique-index caveat at top of file.
+  /// "Only one current term per session" is enforced by a partial unique
+  /// index (migration add_current_session_term_partial_indexes — not
+  /// expressible in this schema DSL, see the caveat at top of file) on
+  /// ("academicSessionId") WHERE "isCurrent". setCurrentTerm() takes a
+  /// transaction-scoped advisory lock (keyed by academicSessionId) before
+  /// its clear-then-set for the same reason as
+  /// AcademicSession.isCurrent — see that field's comment.
   isCurrent         Boolean         @default(false)
   createdAt         DateTime        @default(now())
 
@@ -983,7 +1008,9 @@ model AuditLog {
   id           String   @id @default(cuid())
   actorUserId  String?
   actor        User?    @relation(fields: [actorUserId], references: [id])
-  actorRole    Role?
+  /// The full set of roles the actor held at the moment of the mutation —
+  /// was a single Role? before users could hold more than one.
+  actorRoles   Role[]
   action       String // e.g. "FEE_OBLIGATION_UPDATED"
   entityType   String
   entityId     String

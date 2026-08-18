@@ -85,6 +85,13 @@ export async function generateObligations(feeStructureId: string, actorUserId: s
         amountDueKobo: feeStructure.amountKobo,
         createdByUserId: actorUserId,
       })),
+      // The existing-obligations read above is a stale read the instant a
+      // concurrent (or double-clicked) generate for the same fee structure
+      // lands in between — without this, createMany aborts the WHOLE batch
+      // (unhandled -> 500) on the first row that collides with the unique
+      // constraint on (studentId, feeStructureId, termId), instead of
+      // quietly keeping whichever obligations already exist.
+      skipDuplicates: true,
     });
   }
 
@@ -229,16 +236,26 @@ export async function rejectPayment(id: string, actorUserId: string) {
   if (!payment) {
     throw AppError.notFound("Payment not found");
   }
-  if (payment.status !== "PENDING") {
-    throw AppError.conflict(`This payment has already been ${payment.status.toLowerCase()}`);
-  }
 
-  const updated = await prisma.payment.update({
-    where: { id },
-    data: { status: "REJECTED", confirmedByUserId: actorUserId, confirmedAt: new Date() },
+  return prisma.$transaction(async (tx) => {
+    // Mirrors confirmPayment()'s conditional-update claim exactly: the
+    // WHERE clause re-checks status !== PENDING at write time, so only one
+    // of two concurrent confirm/reject calls on the same payment can
+    // actually flip it. The loser gets a clean 409 instead of silently
+    // rejecting a payment that's already been confirmed (or vice versa).
+    const claimed = await tx.payment.updateMany({
+      where: { id, status: "PENDING" },
+      data: { status: "REJECTED", confirmedByUserId: actorUserId, confirmedAt: new Date() },
+    });
+    if (claimed.count === 0) {
+      const current = await tx.payment.findUniqueOrThrow({ where: { id } });
+      throw AppError.conflict(`This payment has already been ${current.status.toLowerCase()}`);
+    }
+
+    await recomputeObligationStatus(tx, payment.feeObligationId);
+
+    return tx.payment.findUniqueOrThrow({ where: { id } });
   });
-  await recomputeObligationStatus(prisma, payment.feeObligationId);
-  return updated;
 }
 
 export function listPaymentsForStudent(studentId: string) {

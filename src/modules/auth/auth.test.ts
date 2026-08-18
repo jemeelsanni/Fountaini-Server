@@ -16,7 +16,9 @@ async function createTestUser(
   const password = overrides.password ?? "correct-horse-battery-staple";
   const role = overrides.role ?? "ADMIN";
   const passwordHash = await argon2.hash(password, { type: argon2.argon2id });
-  const user = await prisma.user.create({ data: { email, passwordHash, role } });
+  const user = await prisma.user.create({
+    data: { email, passwordHash, roles: { create: [{ role }] } },
+  });
   return { user, email, password };
 }
 
@@ -159,7 +161,7 @@ describe("GET /api/auth/me", () => {
 
     expect(meRes.status).toBe(200);
     expect(meRes.body.principal.userId).toBe(user.id);
-    expect(meRes.body.principal.role).toBe("ADMIN");
+    expect(meRes.body.principal.roles).toEqual(["ADMIN"]);
   });
 
   it("rejects a missing Authorization header", async () => {

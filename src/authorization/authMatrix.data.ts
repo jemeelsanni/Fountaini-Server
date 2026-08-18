@@ -8,6 +8,7 @@ import {
   createClass,
   createCurrentAcademicSession,
   createParent,
+  createStaffParent,
   createStudentWithLogin,
   createSubject,
   createTeacher,
@@ -18,12 +19,19 @@ import { PUBLIC_ROUTES } from "./publicRoutes.js";
 import { ALL_ROLES } from "./types.js";
 import type { DiscoveredRoute } from "./routeInventory.js";
 
-/// The eight actor types named in the task, plus "unauthenticated" — every
-/// bespoke/auto row expresses its cases in terms of this fixed vocabulary.
-/// Not every row exercises every column (e.g. a route with no notion of
-/// "assignment" has no meaningful assignedTeacher/unassignedTeacher split) —
-/// an omitted case just means that column is inapplicable to that row, not a
-/// gap.
+/// The eight actor types named in the task, plus "unauthenticated" and
+/// "staffParent" — every bespoke/auto row expresses its cases in terms of
+/// this fixed vocabulary. Not every row exercises every column (e.g. a route
+/// with no notion of "assignment" has no meaningful
+/// assignedTeacher/unassignedTeacher split) — an omitted case just means
+/// that column is inapplicable to that row, not a gap.
+///
+/// staffParent holds TEACHER and PARENT at once — the one actor type this
+/// vocabulary didn't have room for before UserRole existed. It only appears
+/// in bespoke rows (buildSharedWorld), not in createGenericActors/auto rows:
+/// the auto-generated rows are pure role-gate checks, one generic actor per
+/// Role, and multi-role composition is a scope-resolver concern, not a
+/// role-gate one.
 export type ActorKey =
   | "unauthenticated"
   | "admin"
@@ -33,7 +41,8 @@ export type ActorKey =
   | "linkedParent"
   | "unlinkedParent"
   | "ownStudent"
-  | "otherStudent";
+  | "otherStudent"
+  | "staffParent";
 
 /// A concrete rejection status, or "allowed" — meaning the request must reach
 /// past the authorization layer (i.e. NOT be blocked with 401/403). Business
@@ -224,6 +233,27 @@ async function buildSharedWorld(generics: GenericActors) {
     data: { studentId: targetStudent.id, parentId: linkedParentRow.id, relationship: "GUARDIAN" },
   });
 
+  // A user who holds TEACHER and PARENT at once — proves a dual-role caller
+  // gets the union of what each role grants, not just whichever branch a
+  // scope resolver happens to check first. Linked to targetStudent as a
+  // SECOND parent (a student having two guardians is a real, already-
+  // supported case) so the PARENT half is provable via canReadStudent/
+  // canReadStudentFinancials; given its own, independent
+  // class+subject+assignment (not assignedTeacherStaff's) so the TEACHER
+  // half is provable via canActOnAssignment without reusing — and thereby
+  // conflating with — assignedTeacher's fixture.
+  const staffParent = await createStaffParent(`${unique("matrix-staff-parent")}@test.local`);
+  await prisma.studentParent.create({
+    data: { studentId: targetStudent.id, parentId: staffParent.parent.id, relationship: "GUARDIAN" },
+  });
+  const staffParentSubject = await createSubject(unique("Matrix StaffParent Subject"), unique("MSP"));
+  const staffParentAssignment = await createAssignment(
+    klass.id,
+    staffParentSubject.id,
+    staffParent.staff.id,
+    session.id,
+  );
+
   const feeStructure = await prisma.feeStructure.create({
     data: {
       name: "Matrix Tuition",
@@ -266,6 +296,7 @@ async function buildSharedWorld(generics: GenericActors) {
     unlinkedParent: generics.parent.token,
     ownStudent: ownStudentToken,
     otherStudent: generics.student.token,
+    staffParent: staffParent.token,
   };
 
   return {
@@ -280,6 +311,8 @@ async function buildSharedWorld(generics: GenericActors) {
     assignedTeacherToken,
     payment,
     studentScopeTokens,
+    staffParentToken: staffParent.token,
+    staffParentAssignment,
   };
 }
 
@@ -293,6 +326,11 @@ const STUDENT_SCOPE_CASES: MatrixCase[] = [
   { actor: "unlinkedParent", expectedStatus: 403 },
   { actor: "ownStudent", expectedStatus: "allowed" },
   { actor: "otherStudent", expectedStatus: 403 },
+  // A user who is also TEACHER elsewhere must still get through here on the
+  // strength of their PARENT link alone — proves canReadStudent's PARENT
+  // branch isn't suppressed by an earlier branch matching a role they also
+  // happen to hold but that isn't what's granting access on this row.
+  { actor: "staffParent", expectedStatus: "allowed" },
 ];
 
 /// canReadStudentFinancials is deliberately narrower than canReadStudent:
@@ -308,6 +346,10 @@ const STUDENT_FINANCIALS_SCOPE_CASES: MatrixCase[] = [
   { actor: "unlinkedParent", expectedStatus: 403 },
   { actor: "ownStudent", expectedStatus: "allowed" },
   { actor: "otherStudent", expectedStatus: 403 },
+  // Same point as STUDENT_SCOPE_CASES above, on the narrower BURSAR-instead-
+  // of-TEACHER resolver: staffParent holds TEACHER (which grants nothing
+  // here) and PARENT (which does) — PARENT alone must be enough.
+  { actor: "staffParent", expectedStatus: "allowed" },
 ];
 
 /// canActOnAssignment sits behind requireRole("ADMIN", "TEACHER") — so
@@ -426,6 +468,24 @@ export async function buildBespokeRows(generics: GenericActors): Promise<MatrixR
         Promise.resolve({
           url: `/api/class-subject-assignments/${world.assignment.id}/students`,
           tokens: assignmentScopeTokens,
+        }),
+    },
+    // Second row for the same route key, against staffParent's own
+    // independent assignment: canActOnAssignment never even looks at
+    // PARENT, so a staffParent "allowed" here can only be coming through
+    // the TEACHER branch — proving the dual-role user's teacher-side access
+    // works, isolated from the parent-side proof above. Deliberately not a
+    // fresh entry in BESPOKE_ROUTE_KEYS (that list tracks which ROUTES have
+    // matrix coverage, not how many fixtures exercise each one) — see the
+    // Set-based comparison in authMatrix.test.ts's bookkeeping check.
+    {
+      name: "GET /api/class-subject-assignments/:id/students",
+      method: "get",
+      cases: [{ actor: "staffParent", expectedStatus: "allowed" }],
+      setup: () =>
+        Promise.resolve({
+          url: `/api/class-subject-assignments/${world.staffParentAssignment.id}/students`,
+          tokens: { staffParent: world.staffParentToken },
         }),
     },
     {

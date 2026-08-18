@@ -9,7 +9,7 @@ const app = createApp();
 
 async function createParentUserRecord(email: string) {
   const passwordHash = "unused";
-  return prisma.user.create({ data: { email, passwordHash, role: "PARENT" } });
+  return prisma.user.create({ data: { email, passwordHash, roles: { create: [{ role: "PARENT" }] } } });
 }
 
 beforeEach(async () => {
