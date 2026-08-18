@@ -1,0 +1,994 @@
+// School Management Portal — Domain Model
+//
+// Conventions used throughout this schema:
+// - All primary keys are `String @id @default(cuid())`.
+// - All money fields are `Int` and store KOBO (never floats, never Decimal-as-currency).
+// - All academic score fields are `Decimal` (never Float) to avoid binary rounding error.
+// - `createdAt` / `updatedAt` timestamps are present on every mutable entity.
+// - Single-school deployment (see decision log in docs/BACKEND_PLAN.md): no tenantId
+//   anywhere. `School` is a literal singleton row, seeded once, never duplicated.
+// - Soft deactivation over hard deletes: `isActive` / status enums are used instead of
+//   destructive deletes for anything referenced by historical academic or financial data.
+//
+// KNOWN LIMITATION — partial unique indexes: Prisma's schema DSL cannot express a
+// `WHERE` clause on a unique index. Three places in this schema need "at most one X is
+// currently active/current" semantics that Prisma can't enforce at the column level:
+//   1. AcademicSession.isCurrent  (only one session should be current at a time)
+//   2. Term.isCurrent             (only one term per session should be current at a time)
+//   3. StudentQrCode.isActive     (only one active QR code per student at a time)
+// These are enforced at the application layer (wrap the "set current/active" mutation in
+// a transaction that first clears the flag on siblings) and SHOULD additionally get a
+// raw-SQL partial unique index in a follow-up migration, e.g.:
+//   CREATE UNIQUE INDEX one_current_session ON "AcademicSession" ((true)) WHERE "isCurrent";
+// This is flagged, not silently handled — see the "least-certain decisions" writeup.
+
+// Pinned to Prisma 6.x (not the current 7.x major): this environment's Node
+// (v23.11.0, a non-LTS release) fails to run the Prisma 7 CLI at all — see
+// decision log. Prisma 6's classic datasource-url-in-schema pattern is used
+// here rather than the v7 prisma.config.ts + driver-adapter split.
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =========================================================================
+// SCHOOL / AUTH / USERS
+// =========================================================================
+
+/// Singleton row. Never create a second School record.
+model School {
+  id                       String   @id @default(cuid())
+  name                     String
+  address                  String?
+  contactEmail             String?
+  contactPhone             String?
+  currentAcademicSessionId String?  @unique
+  currentAcademicSession   AcademicSession? @relation("SchoolCurrentSession", fields: [currentAcademicSessionId], references: [id])
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+}
+
+enum Role {
+  ADMIN
+  TEACHER
+  PARENT
+  STUDENT
+  BURSAR
+}
+
+model User {
+  id             String    @id @default(cuid())
+  email          String?   @unique
+  phone          String?   @unique
+  passwordHash   String
+  role           Role
+  isActive       Boolean   @default(true)
+  lastLoginAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  staff          Staff?
+  parent         Parent?
+  student        Student?
+
+  refreshTokens       RefreshToken[]
+  passwordResetTokens PasswordResetToken[]
+  notificationEvents  NotificationEvent[]
+  auditLogEntries     AuditLog[]
+
+  @@index([role])
+}
+
+/// Rotating refresh tokens: each refresh issues a new row and revokes the old one
+/// (replacedByTokenId chain), so reuse of a revoked token is detectable.
+model RefreshToken {
+  id               String    @id @default(cuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash        String    @unique
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  replacedByTokenId String?  @unique
+  createdByIp      String?
+  userAgent        String?
+  createdAt        DateTime  @default(now())
+
+  @@index([userId])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+/// Employment profile for ADMIN, TEACHER, and BURSAR users.
+/// App-level invariant: Staff.user.role must be one of ADMIN | TEACHER | BURSAR.
+model Staff {
+  id             String   @id @default(cuid())
+  userId         String   @unique
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  staffNumber    String   @unique
+  firstName      String
+  lastName       String
+  otherNames     String?
+  department     String?
+  employmentDate DateTime?
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  classSubjectAssignments ClassSubjectAssignment[]
+  timetableEntries        TimetableEntry[]
+  madrassahProgressEntries MadrassahProgress[]
+
+  @@index([lastName, firstName])
+}
+
+model Parent {
+  id             String   @id @default(cuid())
+  userId         String   @unique
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  firstName      String
+  lastName       String
+  phone          String?
+  alternatePhone String?
+  address        String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  students StudentParent[]
+
+  @@index([lastName, firstName])
+}
+
+enum StudentStatus {
+  ACTIVE
+  GRADUATED
+  WITHDRAWN
+  INACTIVE
+}
+
+enum Gender {
+  MALE
+  FEMALE
+}
+
+model Student {
+  id              String        @id @default(cuid())
+  admissionNumber String        @unique
+  /// Nullable: portal login is not guaranteed for every student (e.g. very young
+  /// students may never be issued an account). See "least-certain decisions".
+  userId          String?       @unique
+  user            User?         @relation(fields: [userId], references: [id])
+  firstName       String
+  lastName        String
+  otherNames      String?
+  dateOfBirth     DateTime?
+  gender          Gender?
+  admissionDate   DateTime      @default(now())
+  status          StudentStatus @default(ACTIVE)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  parents             StudentParent[]
+  enrollments          Enrollment[]
+  scores                Score[]
+  subjectResults        SubjectResult[]
+  results                Result[]
+  sessionResults         SessionResult[]
+  madrassahProgress      MadrassahProgress[]
+  feeObligations         FeeObligation[]
+  attendanceRecords      AttendanceRecord[]
+  qrCodes                StudentQrCode[]
+  convertedFromEnquiries AdmissionEnquiry[]
+
+  @@index([lastName, firstName])
+  @@index([status])
+}
+
+enum FamilyRelationship {
+  FATHER
+  MOTHER
+  GUARDIAN
+  OTHER
+}
+
+model StudentParent {
+  id               String              @id @default(cuid())
+  studentId        String
+  student          Student             @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  parentId         String
+  parent           Parent              @relation(fields: [parentId], references: [id], onDelete: Cascade)
+  relationship     FamilyRelationship
+  isPrimaryContact Boolean             @default(false)
+  createdAt        DateTime            @default(now())
+
+  @@unique([studentId, parentId])
+  @@index([parentId])
+}
+
+// =========================================================================
+// ACADEMIC STRUCTURE: sessions, terms, classes, subjects, assignments
+// =========================================================================
+
+model AcademicSession {
+  id        String   @id @default(cuid())
+  name      String   @unique // e.g. "2025/2026"
+  startDate DateTime
+  endDate   DateTime
+  /// See partial-unique-index caveat at top of file.
+  isCurrent Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  schoolCurrentFor School? @relation("SchoolCurrentSession")
+  terms                Term[]
+  enrollments          Enrollment[]
+  classSubjectAssignments ClassSubjectAssignment[]
+  gradingScale          GradingScale?
+  assessmentComponents  AssessmentComponent[]
+  timetableEntries      TimetableEntry[]
+  feeStructures         FeeStructure[]
+  feeObligations        FeeObligation[]
+  attendanceSessions     AttendanceSession[]
+  madrassahProgress      MadrassahProgress[]
+  sessionResults         SessionResult[]
+
+  @@index([isCurrent])
+}
+
+model Term {
+  id                String          @id @default(cuid())
+  academicSessionId String
+  academicSession   AcademicSession @relation(fields: [academicSessionId], references: [id], onDelete: Cascade)
+  name              String // e.g. "First Term"
+  order             Int // 1, 2, 3 — ordering within the session
+  startDate         DateTime
+  endDate           DateTime
+  /// See partial-unique-index caveat at top of file.
+  isCurrent         Boolean         @default(false)
+  createdAt         DateTime        @default(now())
+
+  scores             Score[]
+  subjectResults     SubjectResult[]
+  results            Result[]
+  feeObligations     FeeObligation[]
+  attendanceSessions AttendanceSession[]
+  madrassahProgress  MadrassahProgress[]
+
+  @@unique([academicSessionId, order])
+  @@index([isCurrent])
+}
+
+model Class {
+  id        String   @id @default(cuid())
+  gradeName String // e.g. "JSS1", "Primary 4"
+  /// Nullable: schools/classes without streams simply leave this blank.
+  arm       String? // e.g. "A", "B"
+  order     Int // display / promotion order across grade levels
+  createdAt DateTime @default(now())
+
+  enrollments             Enrollment[]
+  classSubjectAssignments ClassSubjectAssignment[]
+  feeStructures           FeeStructure[]
+  attendanceSessions      AttendanceSession[]
+  desiredByEnquiries      AdmissionEnquiry[]
+  timetableEntries        TimetableEntry[]
+
+  @@unique([gradeName, arm])
+  @@index([order])
+}
+
+enum SubjectType {
+  ACADEMIC
+  MADRASSAH
+}
+
+model Subject {
+  id        String      @id @default(cuid())
+  name      String
+  code      String      @unique
+  type      SubjectType @default(ACADEMIC)
+  createdAt DateTime    @default(now())
+
+  classSubjectAssignments ClassSubjectAssignment[]
+}
+
+/// The central authorization anchor: "a teacher may only write scores for
+/// class-subject pairs assigned to them" resolves to a lookup against this table.
+model ClassSubjectAssignment {
+  id                String          @id @default(cuid())
+  classId           String
+  class             Class           @relation(fields: [classId], references: [id])
+  subjectId         String
+  subject           Subject         @relation(fields: [subjectId], references: [id])
+  teacherId         String
+  teacher           Staff           @relation(fields: [teacherId], references: [id])
+  academicSessionId String
+  academicSession   AcademicSession @relation(fields: [academicSessionId], references: [id])
+  createdAt         DateTime        @default(now())
+
+  scores          Score[]
+  subjectResults  SubjectResult[]
+  timetableEntries TimetableEntry[]
+
+  @@unique([classId, subjectId, academicSessionId])
+  @@index([teacherId])
+}
+
+enum EnrollmentStatus {
+  ACTIVE
+  TRANSFERRED_OUT
+  WITHDRAWN
+  GRADUATED
+}
+
+/// A student's class membership is tracked per academic session (not a single
+/// mutable FK on Student), so promotions/repeats never rewrite history that past
+/// Results and AttendanceRecords depend on.
+model Enrollment {
+  id                String           @id @default(cuid())
+  studentId         String
+  student           Student          @relation(fields: [studentId], references: [id])
+  classId           String
+  class             Class            @relation(fields: [classId], references: [id])
+  academicSessionId String
+  academicSession   AcademicSession  @relation(fields: [academicSessionId], references: [id])
+  status            EnrollmentStatus @default(ACTIVE)
+  enrolledAt        DateTime         @default(now())
+  createdAt         DateTime         @default(now())
+
+  results        Result[]
+  sessionResults SessionResult[]
+
+  @@unique([studentId, academicSessionId])
+  @@index([classId, academicSessionId])
+}
+
+// =========================================================================
+// GRADING CONFIGURATION, SCORES, RESULTS
+// =========================================================================
+
+enum AssessmentType {
+  CA
+  EXAM
+}
+
+/// Configurable per session (per your instruction: grading rules are configurable
+/// per school/session, not hardcoded). Exactly one component set per session.
+model AssessmentComponent {
+  id                String          @id @default(cuid())
+  academicSessionId String
+  academicSession   AcademicSession @relation(fields: [academicSessionId], references: [id])
+  code              String // e.g. "CA1", "CA2", "EXAM"
+  name              String
+  type              AssessmentType
+  maxScore          Decimal         @db.Decimal(5, 2)
+  order             Int
+  createdAt         DateTime        @default(now())
+
+  scores Score[]
+
+  @@unique([academicSessionId, code])
+}
+
+enum ScoreStatus {
+  DRAFT
+  SUBMITTED
+}
+
+model Score {
+  id                        String                  @id @default(cuid())
+  studentId                 String
+  student                   Student                 @relation(fields: [studentId], references: [id])
+  classSubjectAssignmentId  String
+  classSubjectAssignment    ClassSubjectAssignment  @relation(fields: [classSubjectAssignmentId], references: [id])
+  termId                    String
+  term                      Term                    @relation(fields: [termId], references: [id])
+  assessmentComponentId     String
+  assessmentComponent       AssessmentComponent     @relation(fields: [assessmentComponentId], references: [id])
+  /// App-layer validated against assessmentComponent.maxScore — Postgres CHECK
+  /// constraints cannot reference another table's column, so this bound is
+  /// enforced in the service layer (Zod schema built dynamically from the
+  /// component's configured maxScore), not the database.
+  rawScore                  Decimal                 @db.Decimal(5, 2)
+  status                    ScoreStatus             @default(DRAFT)
+  enteredByUserId            String
+  enteredAt                  DateTime                @default(now())
+  updatedByUserId             String?
+  updatedAt                   DateTime                @updatedAt
+
+  @@unique([studentId, classSubjectAssignmentId, termId, assessmentComponentId])
+  @@index([classSubjectAssignmentId, termId])
+}
+
+model GradingScale {
+  id                String          @id @default(cuid())
+  academicSessionId String          @unique
+  academicSession   AcademicSession @relation(fields: [academicSessionId], references: [id])
+  createdAt         DateTime        @default(now())
+
+  bands GradeBand[]
+}
+
+model GradeBand {
+  id             String       @id @default(cuid())
+  gradingScaleId String
+  gradingScale   GradingScale @relation(fields: [gradingScaleId], references: [id], onDelete: Cascade)
+  grade          String // e.g. "A1", "B2", "F9"
+  minScore       Decimal      @db.Decimal(5, 2)
+  maxScore       Decimal      @db.Decimal(5, 2)
+  remark         String? // e.g. "Excellent"
+  gradePoint     Decimal?     @db.Decimal(4, 2)
+
+  @@unique([gradingScaleId, grade])
+}
+
+enum ResultStatus {
+  DRAFT
+  SUBMITTED
+  FINALIZED
+}
+
+/// Per-subject computed result for a student/term. Produced when a teacher
+/// submits scores for their class-subject; independent of whether the overall
+/// Result (report card) has been finalized.
+model SubjectResult {
+  id                       String                 @id @default(cuid())
+  studentId                String
+  student                  Student                @relation(fields: [studentId], references: [id])
+  classSubjectAssignmentId String
+  classSubjectAssignment   ClassSubjectAssignment @relation(fields: [classSubjectAssignmentId], references: [id])
+  termId                   String
+  term                     Term                   @relation(fields: [termId], references: [id])
+  totalScore               Decimal                @db.Decimal(5, 2)
+  grade                    String?
+  gradePoint                Decimal?               @db.Decimal(4, 2)
+  remark                    String?
+  status                    ScoreStatus            @default(DRAFT)
+  submittedByUserId          String?
+  submittedAt                DateTime?
+  computedAt                 DateTime               @default(now())
+
+  @@unique([studentId, classSubjectAssignmentId, termId])
+}
+
+/// The report card row: one per student per term, aggregating all of that
+/// student's SubjectResults. Finalization is a distinct admin action from
+/// subject-level submission (admin may finalize with partial subjects — see
+/// decision log) and, once FINALIZED, is immutable except via ResultOverride.
+model Result {
+  id                  String        @id @default(cuid())
+  studentId           String
+  student             Student       @relation(fields: [studentId], references: [id])
+  enrollmentId        String
+  enrollment          Enrollment    @relation(fields: [enrollmentId], references: [id])
+  termId              String
+  term                Term          @relation(fields: [termId], references: [id])
+  status              ResultStatus  @default(DRAFT)
+  totalScore           Decimal?      @db.Decimal(7, 2)
+  averageScore          Decimal?      @db.Decimal(5, 2)
+  position              Int?
+  outOf                 Int?
+  classTeacherComment   String?
+  principalComment      String?
+  submittedByUserId      String?
+  submittedAt             DateTime?
+  finalizedByUserId       String?
+  finalizedAt              DateTime?
+  createdAt                DateTime      @default(now())
+  updatedAt                DateTime      @updatedAt
+
+  overrides ResultOverride[]
+
+  @@unique([studentId, termId])
+  @@index([enrollmentId])
+}
+
+/// Session-level rollup, computed once all of a session's terms are finalized
+/// for a student. averageScore = mean of the three Term.averageScore values
+/// (simple average of term averages, not a carry-forward of the final term).
+model SessionResult {
+  id                String          @id @default(cuid())
+  studentId         String
+  student           Student         @relation(fields: [studentId], references: [id])
+  enrollmentId      String
+  enrollment        Enrollment      @relation(fields: [enrollmentId], references: [id])
+  academicSessionId String
+  academicSession   AcademicSession @relation(fields: [academicSessionId], references: [id])
+  status            ResultStatus    @default(DRAFT)
+  averageScore       Decimal?        @db.Decimal(5, 2)
+  position            Int?
+  outOf                Int?
+  finalizedByUserId     String?
+  finalizedAt            DateTime?
+  createdAt              DateTime        @default(now())
+
+  @@unique([studentId, academicSessionId])
+}
+
+enum OverrideTargetType {
+  RESULT
+  SUBJECT_RESULT
+}
+
+/// The audited-override mechanism required for changing a FINALIZED result.
+/// App-level invariant (not expressible as a Prisma constraint): exactly one of
+/// (targetType = RESULT -> resultId) or (targetType = SUBJECT_RESULT ->
+/// subjectResultId) must be set, matching targetType. Also written to the
+/// generic AuditLog for a single cross-entity audit trail.
+model ResultOverride {
+  id               String             @id @default(cuid())
+  targetType       OverrideTargetType
+  resultId         String?
+  result           Result?            @relation(fields: [resultId], references: [id])
+  subjectResultId  String?
+  fieldName        String
+  oldValue         Json
+  newValue         Json
+  reason           String
+  performedByUserId String
+  performedAt       DateTime           @default(now())
+
+  @@index([resultId])
+  @@index([subjectResultId])
+}
+
+// =========================================================================
+// MADRASSAH / QUR'AN PROGRESS
+// =========================================================================
+
+/// Static reference data (114 rows), seeded once.
+model Surah {
+  id          String @id @default(cuid())
+  number      Int    @unique // 1-114
+  name        String
+  englishName String?
+  totalAyahs  Int
+
+  progressEntries MadrassahProgress[]
+}
+
+enum MadrassahProgressType {
+  MEMORIZATION
+  REVISION
+  TAJWEED_ASSESSMENT
+}
+
+enum MadrassahProgressStatus {
+  IN_PROGRESS
+  COMPLETED
+  NEEDS_REVISION
+}
+
+model MadrassahProgress {
+  id                String                   @id @default(cuid())
+  studentId         String
+  student           Student                  @relation(fields: [studentId], references: [id])
+  staffId           String
+  staff             Staff                    @relation(fields: [staffId], references: [id])
+  academicSessionId String
+  academicSession   AcademicSession          @relation(fields: [academicSessionId], references: [id])
+  termId            String
+  term              Term                     @relation(fields: [termId], references: [id])
+  surahId           String?
+  surah             Surah?                   @relation(fields: [surahId], references: [id])
+  ayahFrom          Int?
+  ayahTo            Int?
+  juzNumber         Int? // 1-30, no separate reference table needed
+  progressType      MadrassahProgressType
+  status            MadrassahProgressStatus  @default(IN_PROGRESS)
+  tajweedNotes      String?
+  generalNotes      String?
+  recordedAt        DateTime                 @default(now())
+
+  @@index([studentId, recordedAt])
+}
+
+// =========================================================================
+// TIMETABLE
+// =========================================================================
+
+enum DayOfWeek {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+}
+
+model TimeSlot {
+  id        String   @id @default(cuid())
+  name      String // e.g. "Period 1"
+  startTime String // "08:00" — stored as HH:mm; no calendar date attached
+  endTime   String
+  order     Int
+
+  timetableEntries TimetableEntry[]
+
+  @@index([order])
+}
+
+/// classId and teacherId are denormalized from classSubjectAssignment
+/// specifically so both "double-booking" invariants below can be enforced as
+/// real DB unique constraints instead of application-level checks.
+model TimetableEntry {
+  id                        String                 @id @default(cuid())
+  classSubjectAssignmentId  String
+  classSubjectAssignment    ClassSubjectAssignment @relation(fields: [classSubjectAssignmentId], references: [id])
+  classId                   String
+  class                     Class                  @relation(fields: [classId], references: [id])
+  teacherId                 String
+  teacher                   Staff                  @relation(fields: [teacherId], references: [id])
+  academicSessionId         String
+  academicSession           AcademicSession        @relation(fields: [academicSessionId], references: [id])
+  timeSlotId                String
+  timeSlot                  TimeSlot               @relation(fields: [timeSlotId], references: [id])
+  dayOfWeek                 DayOfWeek
+  createdAt                 DateTime               @default(now())
+
+  @@unique([classId, academicSessionId, dayOfWeek, timeSlotId], name: "no_double_booked_class")
+  @@unique([teacherId, academicSessionId, dayOfWeek, timeSlotId], name: "no_double_booked_teacher")
+}
+
+// =========================================================================
+// FEES & PAYMENTS  (all money fields are Int, kobo)
+// =========================================================================
+
+enum FeeCategory {
+  TUITION
+  REGISTRATION
+  EXAM
+  UNIFORM
+  OTHER
+}
+
+model FeeStructure {
+  id                String          @id @default(cuid())
+  name              String
+  category          FeeCategory
+  /// Null = applies to all classes.
+  classId           String?
+  class             Class?          @relation(fields: [classId], references: [id])
+  academicSessionId String
+  academicSession   AcademicSession @relation(fields: [academicSessionId], references: [id])
+  /// Null = session-wide (e.g. registration fee), not tied to one term.
+  termId            String?
+  amountKobo        Int
+  isActive          Boolean         @default(true)
+  createdAt         DateTime        @default(now())
+
+  feeObligations FeeObligation[]
+
+  @@index([academicSessionId, classId])
+}
+
+enum FeeObligationStatus {
+  PENDING
+  PARTIALLY_PAID
+  PAID
+  WAIVED
+}
+
+/// KNOWN GOTCHA: Postgres unique indexes treat NULL as distinct from NULL, so
+/// @@unique below does NOT prevent duplicate rows when termId is null (i.e.
+/// session-wide obligations). The common case (per-term obligations) is
+/// DB-enforced; the session-wide case needs either an app-level check-before-
+/// insert (used for MVP) or a follow-up raw-SQL expression unique index using
+/// COALESCE(term_id, 'session'). Flagged, not silently ignored.
+model FeeObligation {
+  id                String              @id @default(cuid())
+  studentId         String
+  student           Student             @relation(fields: [studentId], references: [id])
+  feeStructureId    String
+  feeStructure      FeeStructure        @relation(fields: [feeStructureId], references: [id])
+  academicSessionId String
+  academicSession   AcademicSession     @relation(fields: [academicSessionId], references: [id])
+  termId            String?
+  term              Term?               @relation(fields: [termId], references: [id])
+  amountDueKobo     Int
+  dueDate           DateTime?
+  status            FeeObligationStatus @default(PENDING)
+  createdByUserId   String
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  payments Payment[]
+
+  @@unique([studentId, feeStructureId, termId])
+  @@index([studentId, status])
+}
+
+enum PaymentMethod {
+  BANK_TRANSFER
+}
+
+enum PaymentStatus {
+  PENDING
+  CONFIRMED
+  REJECTED
+}
+
+model Payment {
+  id               String        @id @default(cuid())
+  feeObligationId  String
+  feeObligation    FeeObligation @relation(fields: [feeObligationId], references: [id])
+  amountKobo       Int
+  method           PaymentMethod @default(BANK_TRANSFER)
+  bankReference    String?
+  paymentDate      DateTime
+  status           PaymentStatus @default(PENDING)
+  recordedByUserId String
+  confirmedByUserId String?
+  confirmedAt       DateTime?
+  notes             String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  receipt Receipt?
+
+  @@index([feeObligationId, status])
+}
+
+model Receipt {
+  id             String   @id @default(cuid())
+  paymentId      String   @unique
+  payment        Payment  @relation(fields: [paymentId], references: [id])
+  receiptNumber  String   @unique
+  issuedByUserId String
+  issuedAt       DateTime @default(now())
+}
+
+// =========================================================================
+// ATTENDANCE (QR-based; race-safe by DB constraint)
+// =========================================================================
+
+enum AttendanceSessionStatus {
+  OPEN
+  CLOSED
+}
+
+/// One row per class per day (homeroom/register model — see decision log).
+model AttendanceSession {
+  id                String                   @id @default(cuid())
+  classId           String
+  class             Class                    @relation(fields: [classId], references: [id])
+  academicSessionId String
+  academicSession   AcademicSession          @relation(fields: [academicSessionId], references: [id])
+  termId            String
+  term              Term                     @relation(fields: [termId], references: [id])
+  date              DateTime                 @db.Date
+  status            AttendanceSessionStatus  @default(OPEN)
+  openedByUserId    String
+  openedAt          DateTime                 @default(now())
+  closedAt          DateTime?
+
+  records AttendanceRecord[]
+
+  @@unique([classId, date])
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LATE
+}
+
+enum AttendanceMethod {
+  QR_SCAN
+  MANUAL
+}
+
+/// THE race-safety constraint: @@unique([attendanceSessionId, studentId]) below
+/// guarantees exactly one record per student per session at the database level.
+/// The scan endpoint performs an upsert (INSERT ... ON CONFLICT DO NOTHING, or
+/// DO UPDATE only when transitioning ABSENT -> PRESENT/LATE) relying on this
+/// constraint — concurrent scans of the same student in the same session
+/// collapse to one row regardless of request ordering or app-server concurrency.
+model AttendanceRecord {
+  id                   String             @id @default(cuid())
+  attendanceSessionId  String
+  attendanceSession    AttendanceSession  @relation(fields: [attendanceSessionId], references: [id], onDelete: Cascade)
+  studentId            String
+  student              Student            @relation(fields: [studentId], references: [id])
+  status               AttendanceStatus
+  method               AttendanceMethod   @default(QR_SCAN)
+  scannedAt             DateTime?
+  /// Which StudentQrCode.version was presented — lets future rotation/misuse
+  /// analysis distinguish an old screenshotted code from the current one
+  /// without any schema change.
+  qrCodeVersionUsed      Int?
+  recordedByUserId        String
+  correctedByUserId        String?
+  correctedAt               DateTime?
+  correctionReason          String?
+  createdAt                 DateTime           @default(now())
+
+  @@unique([attendanceSessionId, studentId])
+  @@index([studentId])
+}
+
+/// QR PAYLOAD DESIGN NOTE:
+/// `code` is an opaque, random, unguessable token (e.g. 32-byte base62) — it is
+/// NOT the student's admission number or database id encoded/obfuscated. The
+/// physical QR image encodes this string and nothing else. The scanner looks
+/// the code up in this table; it never decodes a student id out of the QR
+/// itself. This is what makes the three "later, not now" requirements
+/// non-breaking:
+///   - Rotating codes: insert a new StudentQrCode row (version+1), deactivate
+///     the old one. Old physical codes/printouts simply stop resolving; no
+///     migration, no change to the payload format.
+///   - Device/location verification: add nullable columns to AttendanceRecord
+///     (or a future ScanEvent table) for deviceId/lat/lng — purely additive,
+///     doesn't touch the QR payload or this table at all.
+///   - Rotating/short-lived codes and NFC/RFID: same pattern — new code types
+///     or new StudentQrCode rows, existing scan-lookup logic is unaffected.
+///
+/// THE SCREENSHOT PROBLEM (explicitly out of MVP scope, per your brief, but
+/// documented since it was asked for): because MVP scanning is staff-
+/// authenticated (a teacher/admin scans the student's presented code — see
+/// decision log), the operational exposure is already lower than a self-serve
+/// kiosk: the scanning teacher can visually verify the student's identity
+/// against the person standing in front of them at scan time, even though the
+/// database cannot cryptographically distinguish a screenshot from the
+/// original. A screenshotted code IS scannable by anyone holding the image —
+/// nothing in this schema prevents that today. The documented mitigation path,
+/// NOT built now: (a) rotate codes frequently enough that a shared screenshot
+/// goes stale fast, (b) bind a scan to a specific registered device
+/// (deviceId column above), (c) add location verification so a scan must
+/// originate from school premises. All three are additive to this table and
+/// require no breaking migration when they're prioritized.
+model StudentQrCode {
+  id         String    @id @default(cuid())
+  studentId  String
+  student    Student   @relation(fields: [studentId], references: [id])
+  code       String    @unique
+  version    Int       @default(1)
+  /// See partial-unique-index caveat at top of file: DB does not itself
+  /// enforce "only one active row per student" — app-level transaction does.
+  isActive   Boolean   @default(true)
+  issuedAt   DateTime  @default(now())
+  revokedAt  DateTime?
+
+  @@index([studentId])
+}
+
+// =========================================================================
+// ADMISSIONS / ENQUIRIES
+// =========================================================================
+
+enum EnquiryStatus {
+  NEW
+  CONTACTED
+  CONVERTED
+  CLOSED
+}
+
+model AdmissionEnquiry {
+  id                    String        @id @default(cuid())
+  prospectiveFirstName  String
+  prospectiveLastName   String
+  dateOfBirth           DateTime?
+  desiredClassId        String?
+  desiredClass          Class?        @relation(fields: [desiredClassId], references: [id])
+  parentFullName        String
+  parentPhone           String
+  parentEmail           String?
+  message                String?
+  status                 EnquiryStatus @default(NEW)
+  enquiryDate             DateTime      @default(now())
+  source                   String?
+  handledByUserId          String?
+  convertedStudentId        String?
+  convertedStudent          Student?      @relation(fields: [convertedStudentId], references: [id])
+  notes                     String?
+  createdAt                 DateTime      @default(now())
+  updatedAt                 DateTime      @updatedAt
+
+  @@index([status])
+  @@index([enquiryDate])
+}
+
+// =========================================================================
+// NOTIFICATIONS (provider-agnostic)
+// =========================================================================
+
+enum NotificationType {
+  FEE_REMINDER
+  PAYMENT_CONFIRMATION
+  ACADEMIC
+  ADMIN_GENERAL
+}
+
+/// The logical, in-app notification. Channel-agnostic by design — this table
+/// has zero knowledge of SMS/email/WhatsApp. A NotificationProvider interface
+/// (application layer, not modeled here) consumes NotificationDelivery rows
+/// and is the only place any vendor SDK is referenced.
+model NotificationEvent {
+  id               String            @id @default(cuid())
+  type             NotificationType
+  recipientUserId  String
+  recipient        User              @relation(fields: [recipientUserId], references: [id])
+  subject          String
+  body             String
+  relatedEntityType String?
+  relatedEntityId   String?
+  createdAt          DateTime          @default(now())
+
+  deliveries NotificationDelivery[]
+
+  @@index([recipientUserId, createdAt])
+}
+
+enum NotificationChannel {
+  SMS
+  EMAIL
+  WHATSAPP
+  IN_APP
+}
+
+enum NotificationDeliveryStatus {
+  PENDING
+  SENT
+  FAILED
+  DELIVERED
+}
+
+model NotificationDelivery {
+  id                  String                      @id @default(cuid())
+  notificationEventId String
+  notificationEvent   NotificationEvent           @relation(fields: [notificationEventId], references: [id], onDelete: Cascade)
+  channel             NotificationChannel
+  status              NotificationDeliveryStatus  @default(PENDING)
+  providerName        String?
+  providerMessageId   String?
+  error                String?
+  attemptedAt           DateTime?
+  deliveredAt            DateTime?
+  createdAt               DateTime                    @default(now())
+
+  @@index([notificationEventId])
+  @@index([status])
+}
+
+// =========================================================================
+// AUDIT LOG
+// =========================================================================
+
+/// General-purpose audit trail for every admin/bursar mutation (per your
+/// non-negotiable constraint). ResultOverride rows additionally get a
+/// corresponding AuditLog entry written at the application layer, so this
+/// table remains the single cross-entity source of truth for "who changed
+/// what, when" even though ResultOverride carries its own richer, reason-
+/// mandatory record for the specific finalized-result-override case.
+model AuditLog {
+  id           String   @id @default(cuid())
+  actorUserId  String?
+  actor        User?    @relation(fields: [actorUserId], references: [id])
+  actorRole    Role?
+  action       String // e.g. "FEE_OBLIGATION_UPDATED"
+  entityType   String
+  entityId     String
+  beforeData   Json?
+  afterData    Json?
+  ipAddress    String?
+  userAgent    String?
+  createdAt    DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([actorUserId, createdAt])
+  @@index([createdAt])
+}

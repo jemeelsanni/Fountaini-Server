@@ -1,0 +1,490 @@
+import type { Role } from "../../generated/prisma/index.js";
+import { prisma } from "../db/client.js";
+import {
+  createAdmin,
+  createAssessmentComponent,
+  createAssignment,
+  createBursar,
+  createClass,
+  createCurrentAcademicSession,
+  createParent,
+  createStudentWithLogin,
+  createSubject,
+  createTeacher,
+  createTermForSession,
+  enrollStudent,
+} from "../test/factories.js";
+import { PUBLIC_ROUTES } from "./publicRoutes.js";
+import { ALL_ROLES } from "./types.js";
+import type { DiscoveredRoute } from "./routeInventory.js";
+
+/// The eight actor types named in the task, plus "unauthenticated" — every
+/// bespoke/auto row expresses its cases in terms of this fixed vocabulary.
+/// Not every row exercises every column (e.g. a route with no notion of
+/// "assignment" has no meaningful assignedTeacher/unassignedTeacher split) —
+/// an omitted case just means that column is inapplicable to that row, not a
+/// gap.
+export type ActorKey =
+  | "unauthenticated"
+  | "admin"
+  | "bursar"
+  | "assignedTeacher"
+  | "unassignedTeacher"
+  | "linkedParent"
+  | "unlinkedParent"
+  | "ownStudent"
+  | "otherStudent";
+
+/// A concrete rejection status, or "allowed" — meaning the request must reach
+/// past the authorization layer (i.e. NOT be blocked with 401/403). Business
+/// -logic status codes beyond that boundary (200 vs 400 vs 404 for a
+/// placeholder/incomplete payload) are a correctness concern for each
+/// module's own tests, not this matrix — this matrix's job is proving WHO is
+/// let through, not WHAT happens next.
+export type ExpectedStatus = 401 | 403 | "allowed";
+
+export interface MatrixCase {
+  actor: ActorKey;
+  expectedStatus: ExpectedStatus;
+}
+
+export type HttpMethod = "get" | "post" | "put" | "patch" | "delete";
+
+export interface MatrixRow {
+  /// "METHOD /path" — must match a DiscoveredRoute key from routeInventory.
+  name: string;
+  method: HttpMethod;
+  cases: MatrixCase[];
+  /// Resolves this row's concrete URL/body and each case's bearer token.
+  /// Auto-generated rows just echo the shared generic actors; bespoke rows
+  /// build their own real fixtures (a specific assigned teacher, a linked
+  /// parent, etc.) so the "allowed" cases exercise the actual scope resolver
+  /// logic, not just the role gate in front of it.
+  setup: () => Promise<{ url: string; body?: unknown; tokens: Partial<Record<ActorKey, string>> }>;
+}
+
+export interface GenericActors {
+  admin: Awaited<ReturnType<typeof createAdmin>>;
+  bursar: Awaited<ReturnType<typeof createBursar>>;
+  /// Deliberately given no assignment — stands in for "unassignedTeacher" in
+  /// every auto-generated row and most bespoke rows.
+  teacher: Awaited<ReturnType<typeof createTeacher>>;
+  /// Deliberately given no StudentParent link — stands in for
+  /// "unlinkedParent".
+  parent: Awaited<ReturnType<typeof createParent>>;
+  /// Deliberately unrelated to any bespoke row's target student — stands in
+  /// for "otherStudent".
+  student: Awaited<ReturnType<typeof createStudentWithLogin>>;
+}
+
+export async function createGenericActors(): Promise<GenericActors> {
+  // Sequential, not Promise.all: createTeacher/createBursar derive
+  // Staff.staffNumber from a slice of the new User's cuid, and cuids
+  // generated in the same tick can share that slice — a real collision seen
+  // when these were created concurrently.
+  const admin = await createAdmin("matrix-generic-admin@test.local");
+  const bursar = await createBursar("matrix-generic-bursar@test.local");
+  const teacher = await createTeacher("matrix-generic-teacher@test.local");
+  const parent = await createParent("matrix-generic-parent@test.local");
+  const student = await createStudentWithLogin("matrix-generic-student@test.local", "MATRIX-GENERIC-STU");
+  return { admin, bursar, teacher, parent, student };
+}
+
+function routeKey(route: DiscoveredRoute): string {
+  return `${route.method} ${route.path}`;
+}
+
+function fillPathParams(path: string): string {
+  return path.replace(/:[a-zA-Z]+/g, "route-guard-matrix-placeholder");
+}
+
+const ROLE_TO_GENERIC_ACTOR: Record<Role, ActorKey> = {
+  ADMIN: "admin",
+  BURSAR: "bursar",
+  TEACHER: "unassignedTeacher",
+  PARENT: "unlinkedParent",
+  STUDENT: "otherStudent",
+};
+
+/// Routes eligible for auto-generation: guarded by requireRole and NOTHING
+/// else (no requireScope in the chain). Routes that mix role + scope (the
+/// three scores routes) need bespoke fixtures because the role gate alone
+/// doesn't determine who's actually allowed through.
+function isAutoEligible(route: DiscoveredRoute): boolean {
+  return (
+    route.guardTypes.has("role") &&
+    !route.guardTypes.has("scope") &&
+    route.allowedRoles !== undefined &&
+    !PUBLIC_ROUTES.has(routeKey(route))
+  );
+}
+
+/// The route keys the auto-generator will cover, computed synchronously from
+/// the (already-built, DB-free) route inventory. Used by the route-guard
+/// inventory test's cross-check — it doesn't touch the DB, so it can't call
+/// buildBespokeRows(), only this.
+export function autoGeneratedRouteKeys(inventory: DiscoveredRoute[]): string[] {
+  return inventory.filter(isAutoEligible).map(routeKey);
+}
+
+const METHODS_WITH_BODY: ReadonlySet<HttpMethod> = new Set(["post", "put", "patch"]);
+
+export function buildAutoRows(inventory: DiscoveredRoute[], generics: GenericActors): MatrixRow[] {
+  return inventory.filter(isAutoEligible).map((route) => {
+    const allowedRoles = route.allowedRoles ?? new Set<Role>();
+    const cases: MatrixCase[] = [{ actor: "unauthenticated", expectedStatus: 401 }];
+    for (const role of ALL_ROLES) {
+      cases.push({
+        actor: ROLE_TO_GENERIC_ACTOR[role],
+        expectedStatus: allowedRoles.has(role) ? "allowed" : 403,
+      });
+    }
+    const method = route.method.toLowerCase() as HttpMethod;
+    return {
+      name: routeKey(route),
+      method,
+      cases,
+      setup: () =>
+        Promise.resolve({
+          url: fillPathParams(route.path),
+          body: METHODS_WITH_BODY.has(method) ? {} : undefined,
+          tokens: {
+            admin: generics.admin.token,
+            bursar: generics.bursar.token,
+            unassignedTeacher: generics.teacher.token,
+            unlinkedParent: generics.parent.token,
+            otherStudent: generics.student.token,
+          },
+        }),
+    };
+  });
+}
+
+/// Static mirror of every route name buildBespokeRows() produces. Kept as a
+/// literal list (rather than derived) so the route-guard inventory test can
+/// assert coverage without hitting the DB; authMatrix.test.ts separately
+/// self-checks that the built rows' names match this list exactly, so the
+/// two can't silently drift apart.
+export const BESPOKE_ROUTE_KEYS: readonly string[] = [
+  "GET /api/students/:id",
+  "GET /api/students/:id/enrollments",
+  "GET /api/students/:id/attendance",
+  "GET /api/students/:id/scores",
+  "GET /api/students/:id/madrassah-progress",
+  "GET /api/results/:studentId/:termId",
+  "GET /api/students/:id/fee-obligations",
+  "GET /api/students/:id/payments",
+  "GET /api/payments/:id/receipt",
+  "GET /api/class-subject-assignments/:id/students",
+  "PUT /api/class-subject-assignments/:id/scores",
+  "POST /api/class-subject-assignments/:id/scores/submit",
+  "GET /api/staff/:id",
+  "GET /api/staff/:id/timetable",
+  "GET /api/classes/:id/timetable",
+];
+
+let uniqueCounter = 0;
+function unique(label: string): string {
+  uniqueCounter += 1;
+  return `${label}-${Date.now()}-${uniqueCounter}`;
+}
+
+function generateReceiptNumber(): string {
+  return `RCPT-${unique("matrix")}`;
+}
+
+/// One connected set of real fixtures shared across every bespoke row: a
+/// target student enrolled in a class, a teacher actually assigned to that
+/// class+subject ("assignedTeacher"), a parent actually linked to the target
+/// student ("linkedParent"), plus a confirmed payment/receipt for the fee
+/// side. Built once per test run; every bespoke row's "allowed" cases
+/// exercise this same real data through the real scope resolvers.
+async function buildSharedWorld(generics: GenericActors) {
+  const session = await createCurrentAcademicSession(unique("matrix-session"));
+  const term = await createTermForSession(session.id, "Matrix Term", 1);
+  const klass = await createClass(unique("Matrix Class"));
+  const subject = await createSubject(unique("Matrix Subject"), unique("MSJ"));
+
+  const { student: targetStudent, token: ownStudentToken } = await createStudentWithLogin(
+    `${unique("matrix-target")}@test.local`,
+    unique("MATRIX-TGT"),
+  );
+  await enrollStudent(targetStudent.id, klass.id, session.id);
+
+  const { staff: assignedTeacherStaff, token: assignedTeacherToken } = await createTeacher(
+    `${unique("matrix-assigned-teacher")}@test.local`,
+  );
+  const assignment = await createAssignment(klass.id, subject.id, assignedTeacherStaff.id, session.id);
+  const component = await createAssessmentComponent(session.id, unique("CA"), "CA", 40, 1);
+
+  const { parent: linkedParentRow, token: linkedParentToken } = await createParent(
+    `${unique("matrix-linked-parent")}@test.local`,
+  );
+  await prisma.studentParent.create({
+    data: { studentId: targetStudent.id, parentId: linkedParentRow.id, relationship: "GUARDIAN" },
+  });
+
+  const feeStructure = await prisma.feeStructure.create({
+    data: {
+      name: "Matrix Tuition",
+      category: "TUITION",
+      classId: klass.id,
+      academicSessionId: session.id,
+      amountKobo: 5_000_00,
+    },
+  });
+  const feeObligation = await prisma.feeObligation.create({
+    data: {
+      studentId: targetStudent.id,
+      feeStructureId: feeStructure.id,
+      academicSessionId: session.id,
+      amountDueKobo: 5_000_00,
+      createdByUserId: generics.admin.user.id,
+    },
+  });
+  const payment = await prisma.payment.create({
+    data: {
+      feeObligationId: feeObligation.id,
+      amountKobo: 5_000_00,
+      paymentDate: new Date(),
+      status: "CONFIRMED",
+      recordedByUserId: generics.admin.user.id,
+      confirmedByUserId: generics.admin.user.id,
+      confirmedAt: new Date(),
+    },
+  });
+  await prisma.receipt.create({
+    data: { paymentId: payment.id, receiptNumber: generateReceiptNumber(), issuedByUserId: generics.admin.user.id },
+  });
+
+  const studentScopeTokens: Partial<Record<ActorKey, string>> = {
+    admin: generics.admin.token,
+    bursar: generics.bursar.token,
+    assignedTeacher: assignedTeacherToken,
+    unassignedTeacher: generics.teacher.token,
+    linkedParent: linkedParentToken,
+    unlinkedParent: generics.parent.token,
+    ownStudent: ownStudentToken,
+    otherStudent: generics.student.token,
+  };
+
+  return {
+    session,
+    term,
+    class: klass,
+    subject,
+    targetStudent,
+    assignment,
+    component,
+    assignedTeacherStaff,
+    assignedTeacherToken,
+    payment,
+    studentScopeTokens,
+  };
+}
+
+const STUDENT_SCOPE_CASES: MatrixCase[] = [
+  { actor: "unauthenticated", expectedStatus: 401 },
+  { actor: "admin", expectedStatus: "allowed" },
+  { actor: "bursar", expectedStatus: 403 },
+  { actor: "assignedTeacher", expectedStatus: "allowed" },
+  { actor: "unassignedTeacher", expectedStatus: 403 },
+  { actor: "linkedParent", expectedStatus: "allowed" },
+  { actor: "unlinkedParent", expectedStatus: 403 },
+  { actor: "ownStudent", expectedStatus: "allowed" },
+  { actor: "otherStudent", expectedStatus: 403 },
+];
+
+/// canReadStudentFinancials is deliberately narrower than canReadStudent:
+/// BURSAR instead of TEACHER. Even the assigned teacher is denied here —
+/// that's the point of the row, not a bug in it.
+const STUDENT_FINANCIALS_SCOPE_CASES: MatrixCase[] = [
+  { actor: "unauthenticated", expectedStatus: 401 },
+  { actor: "admin", expectedStatus: "allowed" },
+  { actor: "bursar", expectedStatus: "allowed" },
+  { actor: "assignedTeacher", expectedStatus: 403 },
+  { actor: "unassignedTeacher", expectedStatus: 403 },
+  { actor: "linkedParent", expectedStatus: "allowed" },
+  { actor: "unlinkedParent", expectedStatus: 403 },
+  { actor: "ownStudent", expectedStatus: "allowed" },
+  { actor: "otherStudent", expectedStatus: 403 },
+];
+
+/// canActOnAssignment sits behind requireRole("ADMIN", "TEACHER") — so
+/// BURSAR/PARENT/STUDENT are rejected by the role gate itself, before the
+/// scope resolver ever runs. unassignedTeacher passes the role gate but
+/// fails the scope check: this is the exact "teacher writing scores for an
+/// unassigned class-subject" case named in the coverage audit.
+const ASSIGNMENT_SCOPE_CASES: MatrixCase[] = [
+  { actor: "unauthenticated", expectedStatus: 401 },
+  { actor: "admin", expectedStatus: "allowed" },
+  { actor: "assignedTeacher", expectedStatus: "allowed" },
+  { actor: "unassignedTeacher", expectedStatus: 403 },
+  { actor: "bursar", expectedStatus: 403 },
+  { actor: "unlinkedParent", expectedStatus: 403 },
+  { actor: "otherStudent", expectedStatus: 403 },
+];
+
+/// canReadStaff: ADMIN or self (staffId match) only. Neither role nor link
+/// status distinguishes parent/student cases here, so only one representative
+/// case of each is included.
+const STAFF_SCOPE_CASES: MatrixCase[] = [
+  { actor: "unauthenticated", expectedStatus: 401 },
+  { actor: "admin", expectedStatus: "allowed" },
+  { actor: "assignedTeacher", expectedStatus: "allowed" }, // self
+  { actor: "unassignedTeacher", expectedStatus: 403 }, // a different staff member
+  { actor: "bursar", expectedStatus: 403 },
+  { actor: "unlinkedParent", expectedStatus: 403 },
+  { actor: "otherStudent", expectedStatus: 403 },
+];
+
+/// canReadClassTimetable: ADMIN and ANY teacher (assigned or not — timetable
+/// data isn't treated as sensitive), students/parents scoped to actual
+/// enrollment/linkage, BURSAR denied. unassignedTeacher is "allowed" here —
+/// unlike the assignment-scoped rows, that's the correct, deliberate
+/// business rule for this route, not an oversight.
+const TIMETABLE_SCOPE_CASES: MatrixCase[] = [
+  { actor: "unauthenticated", expectedStatus: 401 },
+  { actor: "admin", expectedStatus: "allowed" },
+  { actor: "assignedTeacher", expectedStatus: "allowed" },
+  { actor: "unassignedTeacher", expectedStatus: "allowed" },
+  { actor: "bursar", expectedStatus: 403 },
+  { actor: "linkedParent", expectedStatus: "allowed" },
+  { actor: "unlinkedParent", expectedStatus: 403 },
+  { actor: "ownStudent", expectedStatus: "allowed" },
+  { actor: "otherStudent", expectedStatus: 403 },
+];
+
+export async function buildBespokeRows(generics: GenericActors): Promise<MatrixRow[]> {
+  const world = await buildSharedWorld(generics);
+
+  const studentScopeRow = (name: string, path: string): MatrixRow => ({
+    name,
+    method: "get",
+    cases: STUDENT_SCOPE_CASES,
+    setup: () => Promise.resolve({ url: path, tokens: world.studentScopeTokens }),
+  });
+
+  const financialsScopeRow = (name: string, path: string): MatrixRow => ({
+    name,
+    method: "get",
+    cases: STUDENT_FINANCIALS_SCOPE_CASES,
+    setup: () => Promise.resolve({ url: path, tokens: world.studentScopeTokens }),
+  });
+
+  const staffScopeTokens: Partial<Record<ActorKey, string>> = {
+    admin: generics.admin.token,
+    assignedTeacher: world.assignedTeacherToken, // "self" for the staff/:id target below
+    unassignedTeacher: generics.teacher.token, // a genuinely different staff member
+    bursar: generics.bursar.token,
+    unlinkedParent: generics.parent.token,
+    otherStudent: generics.student.token,
+  };
+
+  const assignmentScopeTokens: Partial<Record<ActorKey, string>> = {
+    admin: generics.admin.token,
+    assignedTeacher: world.assignedTeacherToken,
+    unassignedTeacher: generics.teacher.token,
+    bursar: generics.bursar.token,
+    unlinkedParent: generics.parent.token,
+    otherStudent: generics.student.token,
+  };
+
+  return [
+    studentScopeRow("GET /api/students/:id", `/api/students/${world.targetStudent.id}`),
+    studentScopeRow(
+      "GET /api/students/:id/enrollments",
+      `/api/students/${world.targetStudent.id}/enrollments`,
+    ),
+    studentScopeRow(
+      "GET /api/students/:id/attendance",
+      `/api/students/${world.targetStudent.id}/attendance`,
+    ),
+    studentScopeRow("GET /api/students/:id/scores", `/api/students/${world.targetStudent.id}/scores`),
+    studentScopeRow(
+      "GET /api/students/:id/madrassah-progress",
+      `/api/students/${world.targetStudent.id}/madrassah-progress`,
+    ),
+    studentScopeRow(
+      "GET /api/results/:studentId/:termId",
+      `/api/results/${world.targetStudent.id}/${world.term.id}`,
+    ),
+    financialsScopeRow(
+      "GET /api/students/:id/fee-obligations",
+      `/api/students/${world.targetStudent.id}/fee-obligations`,
+    ),
+    financialsScopeRow(
+      "GET /api/students/:id/payments",
+      `/api/students/${world.targetStudent.id}/payments`,
+    ),
+    financialsScopeRow("GET /api/payments/:id/receipt", `/api/payments/${world.payment.id}/receipt`),
+    {
+      name: "GET /api/class-subject-assignments/:id/students",
+      method: "get",
+      cases: ASSIGNMENT_SCOPE_CASES,
+      setup: () =>
+        Promise.resolve({
+          url: `/api/class-subject-assignments/${world.assignment.id}/students`,
+          tokens: assignmentScopeTokens,
+        }),
+    },
+    {
+      name: "PUT /api/class-subject-assignments/:id/scores",
+      method: "put",
+      cases: ASSIGNMENT_SCOPE_CASES,
+      setup: () =>
+        Promise.resolve({
+          url: `/api/class-subject-assignments/${world.assignment.id}/scores`,
+          body: {
+            termId: world.term.id,
+            entries: [
+              {
+                studentId: world.targetStudent.id,
+                assessmentComponentId: world.component.id,
+                rawScore: 33,
+              },
+            ],
+          },
+          tokens: assignmentScopeTokens,
+        }),
+    },
+    {
+      name: "POST /api/class-subject-assignments/:id/scores/submit",
+      method: "post",
+      cases: ASSIGNMENT_SCOPE_CASES,
+      setup: () =>
+        Promise.resolve({
+          url: `/api/class-subject-assignments/${world.assignment.id}/scores/submit`,
+          body: { termId: world.term.id },
+          tokens: assignmentScopeTokens,
+        }),
+    },
+    {
+      name: "GET /api/staff/:id",
+      method: "get",
+      cases: STAFF_SCOPE_CASES,
+      setup: () =>
+        Promise.resolve({ url: `/api/staff/${world.assignedTeacherStaff.id}`, tokens: staffScopeTokens }),
+    },
+    {
+      name: "GET /api/staff/:id/timetable",
+      method: "get",
+      cases: STAFF_SCOPE_CASES,
+      setup: () =>
+        Promise.resolve({
+          url: `/api/staff/${world.assignedTeacherStaff.id}/timetable`,
+          tokens: staffScopeTokens,
+        }),
+    },
+    {
+      name: "GET /api/classes/:id/timetable",
+      method: "get",
+      cases: TIMETABLE_SCOPE_CASES,
+      setup: () =>
+        Promise.resolve({
+          url: `/api/classes/${world.class.id}/timetable`,
+          tokens: world.studentScopeTokens,
+        }),
+    },
+  ];
+}
