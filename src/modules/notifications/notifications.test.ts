@@ -11,6 +11,7 @@ import {
   enrollStudent,
 } from "../../test/factories.js";
 import { resetDb } from "../../test/resetDb.js";
+import { waitForNotification } from "../../test/waitForNotification.js";
 
 const app = createApp();
 
@@ -116,6 +117,12 @@ describe("payment confirmation notification", () => {
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ amountKobo: 5_000_000, paymentDate: "2026-09-10" });
     await request(app).post(`/api/payments/${payment.body.id}/confirm`).set("Authorization", `Bearer ${adminToken}`);
+
+    // confirmPayment() fires the notification without awaiting it (a slow or
+    // failing notification must not delay or fail the confirm response) —
+    // poll rather than assume it's already landed by the time the request
+    // above returns.
+    await waitForNotification(parent.userId, "Payment", payment.body.id as string);
 
     const myNotifications = await request(app)
       .get("/api/notifications")

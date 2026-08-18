@@ -177,6 +177,28 @@ describe("payment recording, confirmation, and balance math", () => {
       .set("Authorization", `Bearer ${adminToken}`);
     expect(rejectAfterConfirm.status).toBe(409);
   });
+
+  it("resolves two concurrent confirms of the same payment as one 200 and one 409, with exactly one receipt", async () => {
+    const { adminToken, bursarToken, obligation } = await setupObligation();
+    const payment = await request(app)
+      .post(`/api/fee-obligations/${obligation.id}/payments`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ amountKobo: 1_000_000, paymentDate: "2026-09-10" });
+
+    const [resA, resB] = await Promise.all([
+      request(app)
+        .post(`/api/payments/${payment.body.id}/confirm`)
+        .set("Authorization", `Bearer ${adminToken}`),
+      request(app)
+        .post(`/api/payments/${payment.body.id}/confirm`)
+        .set("Authorization", `Bearer ${bursarToken}`),
+    ]);
+    const statuses = [resA.status, resB.status].sort();
+    expect(statuses).toEqual([200, 409]);
+
+    const receipts = await prisma.receipt.findMany({ where: { paymentId: payment.body.id } });
+    expect(receipts).toHaveLength(1);
+  });
 });
 
 // Who can read /students/:id/fee-obligations (admin/bursar/linked parent/own

@@ -63,6 +63,28 @@ describe("QR code issuance and rotation", () => {
     expect(oldCodeRow?.isActive).toBe(false);
     expect(oldCodeRow?.revokedAt).not.toBeNull();
   });
+
+  it("never leaves more than one active code after concurrent rotations", async () => {
+    const { token } = await createAdmin("admin@test.local");
+    const student = await createBareStudent("ADM-001");
+
+    const concurrency = 10;
+    // Some of these may legitimately fail (the DB-level partial unique index
+    // rejects whichever loses the race to create the active row) — this test
+    // only asserts the final invariant, not that every request succeeds.
+    await Promise.all(
+      Array.from({ length: concurrency }, () =>
+        request(app)
+          .post(`/api/students/${student.id}/qr-code/rotate`)
+          .set("Authorization", `Bearer ${token}`),
+      ),
+    );
+
+    const activeCodes = await prisma.studentQrCode.findMany({
+      where: { studentId: student.id, isActive: true },
+    });
+    expect(activeCodes).toHaveLength(1);
+  });
 });
 
 describe("opening attendance sessions", () => {

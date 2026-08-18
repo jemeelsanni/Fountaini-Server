@@ -62,38 +62,57 @@ export async function computeResultsForClass(input: ComputeResultsBody) {
   const outOf = ranked.length;
   const positionByStudentId = new Map(ranked.map((c, index) => [c.enrollment.studentId, index + 1]));
 
-  const existingResults = await prisma.result.findMany({
-    where: { studentId: { in: studentIds }, termId: input.termId },
-  });
-  const finalizedStudentIds = new Set(
-    existingResults.filter((r) => r.status === "FINALIZED").map((r) => r.studentId),
-  );
+  // The existing-results read and the writes it decides now happen inside
+  // one transaction, and — more importantly — each write's own WHERE clause
+  // re-checks status at write time, not at this read's time. Without that,
+  // a finalizeResult() committing between this read and the write below
+  // would go unnoticed: the plain upsert() this replaced had no way to
+  // express "skip this row if it's since become FINALIZED," so it would
+  // silently overwrite a finalized result's scores while leaving status
+  // FINALIZED untouched — the DB refuses that now instead of app logic
+  // merely trying to remember to check.
+  await prisma.$transaction(async (tx) => {
+    const existingResults = await tx.result.findMany({
+      where: { studentId: { in: studentIds }, termId: input.termId },
+      select: { studentId: true },
+    });
+    const existingStudentIds = new Set(existingResults.map((r) => r.studentId));
 
-  const toUpsert = computed.filter((c) => !finalizedStudentIds.has(c.enrollment.studentId));
+    const toCreate = computed.filter((c) => !existingStudentIds.has(c.enrollment.studentId));
+    const toUpdate = computed.filter((c) => existingStudentIds.has(c.enrollment.studentId));
 
-  await prisma.$transaction(
-    toUpsert.map((c) =>
-      prisma.result.upsert({
-        where: { studentId_termId: { studentId: c.enrollment.studentId, termId: input.termId } },
-        create: {
+    if (toCreate.length > 0) {
+      await tx.result.createMany({
+        data: toCreate.map((c) => ({
           studentId: c.enrollment.studentId,
           enrollmentId: c.enrollment.id,
           termId: input.termId,
-          status: "DRAFT",
+          status: "DRAFT" as const,
+          totalScore: c.totalScore,
+          averageScore: c.averageScore,
+          position: positionByStudentId.get(c.enrollment.studentId) ?? null,
+          outOf: c.averageScore !== null ? outOf : null,
+        })),
+        // Two concurrent computes racing to create the same never-before-
+        // computed student's first result row — the loser's row is simply
+        // dropped rather than erroring; the winner's values stand until the
+        // next recompute.
+        skipDuplicates: true,
+      });
+    }
+
+    for (const c of toUpdate) {
+      await tx.result.updateMany({
+        where: { studentId: c.enrollment.studentId, termId: input.termId, status: { not: "FINALIZED" } },
+        data: {
           totalScore: c.totalScore,
           averageScore: c.averageScore,
           position: positionByStudentId.get(c.enrollment.studentId) ?? null,
           outOf: c.averageScore !== null ? outOf : null,
         },
-        update: {
-          totalScore: c.totalScore,
-          averageScore: c.averageScore,
-          position: positionByStudentId.get(c.enrollment.studentId) ?? null,
-          outOf: c.averageScore !== null ? outOf : null,
-        },
-      }),
-    ),
-  );
+      });
+    }
+  });
 
   return prisma.result.findMany({ where: { studentId: { in: studentIds }, termId: input.termId } });
 }

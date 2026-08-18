@@ -242,18 +242,24 @@ function generateQrCode(): string {
 }
 
 /// Handles both first issuance (no active code yet) and rotation (deactivate
-/// the current one, issue the next version) in one atomic transaction — see
-/// the schema's partial-unique-index caveat: the DB doesn't itself enforce
-/// "only one active code per student," so this transaction is what does.
+/// the current one, issue the next version) in one atomic transaction. The
+/// "current" read now happens inside that transaction rather than before it,
+/// so deactivate-then-create is computed from a read taken as part of the
+/// same unit of work as the writes. That alone doesn't stop two concurrent
+/// rotations from both reading "no active code" and both creating one under
+/// READ COMMITTED, though — the partial unique index on ("studentId") WHERE
+/// "isActive" (migration add_qr_code_one_active_partial_index) is what
+/// actually guarantees at most one active row: the loser's create() is
+/// rejected by the DB instead of silently leaving two active codes.
 export async function rotateQrCode(studentId: string) {
   const student = await prisma.student.findUnique({ where: { id: studentId } });
   if (!student) {
     throw AppError.notFound("Student not found");
   }
 
-  const current = await prisma.studentQrCode.findFirst({ where: { studentId, isActive: true } });
-
   return prisma.$transaction(async (tx) => {
+    const current = await tx.studentQrCode.findFirst({ where: { studentId, isActive: true } });
+
     if (current) {
       await tx.studentQrCode.update({
         where: { id: current.id },

@@ -1,4 +1,6 @@
 import { randomBytes } from "node:crypto";
+import type { Prisma } from "../../../generated/prisma/index.js";
+import { logger } from "../../config/logger.js";
 import { prisma } from "../../db/client.js";
 import { AppError } from "../../errors/AppError.js";
 import { createNotification } from "../notifications/notifications.service.js";
@@ -112,20 +114,24 @@ export async function updateObligation(id: string, input: UpdateFeeObligationBod
   return prisma.feeObligation.update({ where: { id }, data: input });
 }
 
-async function recomputeObligationStatus(feeObligationId: string) {
-  const obligation = await prisma.feeObligation.findUniqueOrThrow({ where: { id: feeObligationId } });
+/// Takes a Prisma client rather than always using the module-level `prisma`
+/// so confirmPayment() can run it as part of its own transaction; rejectPayment()
+/// still calls it standalone by passing `prisma` itself (which structurally
+/// satisfies the same client interface).
+async function recomputeObligationStatus(client: Prisma.TransactionClient, feeObligationId: string) {
+  const obligation = await client.feeObligation.findUniqueOrThrow({ where: { id: feeObligationId } });
   if (obligation.status === "WAIVED") {
     return;
   }
 
-  const confirmedPayments = await prisma.payment.findMany({
+  const confirmedPayments = await client.payment.findMany({
     where: { feeObligationId, status: "CONFIRMED" },
   });
   const totalPaidKobo = confirmedPayments.reduce((sum, p) => sum + p.amountKobo, 0);
 
   const status = totalPaidKobo <= 0 ? "PENDING" : totalPaidKobo >= obligation.amountDueKobo ? "PAID" : "PARTIALLY_PAID";
 
-  await prisma.feeObligation.update({ where: { id: feeObligationId }, data: { status } });
+  await client.feeObligation.update({ where: { id: feeObligationId }, data: { status } });
 }
 
 // ---------------------------------------------------------------------------
@@ -159,22 +165,36 @@ export async function confirmPayment(id: string, actorUserId: string) {
   if (!payment) {
     throw AppError.notFound("Payment not found");
   }
-  if (payment.status !== "PENDING") {
-    throw AppError.conflict(`This payment has already been ${payment.status.toLowerCase()}`);
-  }
 
-  const [updated] = await prisma.$transaction([
-    prisma.payment.update({
-      where: { id },
+  const updated = await prisma.$transaction(async (tx) => {
+    // Conditional-update claim, same pattern as auth.service.ts refresh():
+    // the WHERE clause re-checks status !== PENDING at write time, so only
+    // one of two concurrent confirms can actually flip it. The loser gets a
+    // clean 409 here instead of a 500 from Receipt's unique constraint on
+    // paymentId once both tried to create one.
+    const claimed = await tx.payment.updateMany({
+      where: { id, status: "PENDING" },
       data: { status: "CONFIRMED", confirmedByUserId: actorUserId, confirmedAt: new Date() },
-    }),
-    prisma.receipt.create({
-      data: { paymentId: id, receiptNumber: generateReceiptNumber(), issuedByUserId: actorUserId },
-    }),
-  ]);
+    });
+    if (claimed.count === 0) {
+      const current = await tx.payment.findUniqueOrThrow({ where: { id } });
+      throw AppError.conflict(`This payment has already been ${current.status.toLowerCase()}`);
+    }
 
-  await recomputeObligationStatus(payment.feeObligationId);
-  await notifyPaymentConfirmed(id);
+    await tx.receipt.create({
+      data: { paymentId: id, receiptNumber: generateReceiptNumber(), issuedByUserId: actorUserId },
+    });
+    await recomputeObligationStatus(tx, payment.feeObligationId);
+
+    return tx.payment.findUniqueOrThrow({ where: { id } });
+  });
+
+  // Fire-and-forget: a slow or failing notification must not hold up the
+  // response or fail an otherwise-successful confirmation.
+  notifyPaymentConfirmed(id).catch((err: unknown) => {
+    logger.error({ err }, "Failed to send payment confirmation notification");
+  });
+
   return updated;
 }
 
@@ -217,7 +237,7 @@ export async function rejectPayment(id: string, actorUserId: string) {
     where: { id },
     data: { status: "REJECTED", confirmedByUserId: actorUserId, confirmedAt: new Date() },
   });
-  await recomputeObligationStatus(payment.feeObligationId);
+  await recomputeObligationStatus(prisma, payment.feeObligationId);
   return updated;
 }
 

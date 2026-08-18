@@ -2,6 +2,7 @@ import request from "supertest";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
+import { computeResultsForClass, finalizeResult } from "./results.service.js";
 import {
   createAdmin,
   createAssessmentComponent,
@@ -19,6 +20,34 @@ import {
 } from "../../test/factories.js";
 import { resetDb } from "../../test/resetDb.js";
 import { waitForAuditLog } from "../../test/waitForAuditLog.js";
+
+/// Polls pg_locks (via a separate connection from whatever transaction is
+/// holding the lock being waited on) until at least `targetCount` backends
+/// are blocked waiting on some lock. Used to deterministically confirm two
+/// requests are actually queued behind a held row lock before releasing it,
+/// rather than guessing at a wall-clock delay that happens to be long
+/// enough — request-dispatch overhead (Express middleware, JWT
+/// verification, however many reads a service does before its write) varies
+/// enough that a fixed delay doesn't reliably preserve firing order by the
+/// time each request's write actually reaches Postgres's lock queue. Not
+/// filtered by relation: a session blocked on a row lock waits on the
+/// blocking transaction's XID (locktype 'transactionid'), which carries no
+/// relation at all — only 'relation'/'tuple' locktypes do. Safe to check
+/// "any ungranted lock" unfiltered here because the test DB is exclusively
+/// used by this single-process suite; nothing else is ever mid-transaction.
+async function waitForLockWaiters(targetCount: number, timeoutMs = 2000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const rows = await prisma.$queryRaw<Array<{ count: bigint }>>`
+      SELECT count(*) AS count FROM pg_locks WHERE NOT granted
+    `;
+    if (Number(rows[0]?.count ?? 0) >= targetCount) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`Timed out waiting for ${targetCount} lock waiter(s) on "Result"`);
+}
 
 const app = createApp();
 
@@ -184,4 +213,91 @@ describe("full report card lifecycle", () => {
       .set("Authorization", `Bearer ${parentToken}`);
     expect(asParent.status).toBe(200);
   });
+});
+
+describe("compute/finalize concurrency", () => {
+  it("never lets a concurrent recompute silently change a result after it's finalized", async () => {
+    const iterations = 50;
+
+    for (let i = 0; i < iterations; i++) {
+      await resetDb();
+
+      const { user: adminUser } = await createAdmin(`admin-${i}@test.local`);
+      const session = await createCurrentAcademicSession(`2026/2027-${i}`);
+      const term = await createTermForSession(session.id, "First Term", 1);
+      const klass = await createClass("JSS1", "A");
+      const subject = await createSubject(`Subject ${i}`, `SUBJ${i}`);
+      const { staff: teacher } = await createTeacher(`teacher-${i}@test.local`);
+      const assignment = await createAssignment(klass.id, subject.id, teacher.id, session.id);
+      const student = await createBareStudent(`ADM-001-${i}`);
+      await enrollStudent(student.id, klass.id, session.id);
+
+      const subjectResult = await prisma.subjectResult.create({
+        data: {
+          studentId: student.id,
+          classSubjectAssignmentId: assignment.id,
+          termId: term.id,
+          totalScore: 50,
+          status: "SUBMITTED",
+        },
+      });
+
+      // Sequential first compute creates the DRAFT result and locks in 50.
+      const computeResults1 = await computeResultsForClass({ classId: klass.id, termId: term.id });
+      const resultId = computeResults1.find((r) => r.studentId === student.id)?.id as string;
+
+      // Give the racing recompute below a genuinely different value to
+      // write, rather than redundantly recomputing the same 50 — so a
+      // corrupting write would actually be observable in the final value.
+      await prisma.subjectResult.update({ where: { id: subjectResult.id }, data: { totalScore: 90 } });
+
+      // Deterministically force the exact interleaving this bug is about —
+      // finalize's write landing fully before the racing recompute's write
+      // for the same row. Wall-clock delays don't reliably produce this:
+      // finalize is a single read+write and routinely finishes before
+      // compute even reaches its own write phase regardless of which fired
+      // first, and request-dispatch overhead through the full HTTP stack
+      // (Express middleware, JWT verification) makes that timing even less
+      // predictable. So instead: call the service functions directly
+      // (skipping HTTP entirely — there's nothing HTTP-specific about this
+      // race), hold a real row lock on the target Result row, fire both
+      // calls without awaiting them, and use waitForLockWaiters to get
+      // definitive confirmation (via pg_locks, not a guessed delay) that
+      // each one has actually reached its own UPDATE and is blocked, queued
+      // behind this lock, before moving on. Only then release the lock by
+      // returning. Postgres grants it to whichever queued first — finalize,
+      // confirmed queued before compute was even invoked — lets that UPDATE
+      // apply and commit, then grants it to compute's queued write, which
+      // (on the fix) re-checks status fresh at that moment and finds it's
+      // since become FINALIZED.
+      const [, computeResults2] = await prisma
+        .$transaction(async (tx) => {
+          await tx.$queryRaw`SELECT 1 FROM "Result" WHERE "id" = ${resultId} FOR UPDATE`;
+
+          const finalizePromise = finalizeResult(resultId, adminUser.id);
+          await waitForLockWaiters(1);
+
+          const computePromise = computeResultsForClass({ classId: klass.id, termId: term.id });
+          await waitForLockWaiters(2);
+
+          return [finalizePromise, computePromise] as const;
+        })
+        .then((promises) => Promise.all(promises));
+
+      expect(computeResults2.find((r) => r.studentId === student.id)?.id, `iteration ${i}`).toBe(resultId);
+
+      const finalResult = await prisma.result.findUniqueOrThrow({ where: { id: resultId } });
+      const overrides = await prisma.resultOverride.findMany({ where: { resultId } });
+
+      expect(finalResult.status, `iteration ${i}`).toBe("FINALIZED");
+      expect(overrides, `iteration ${i}`).toHaveLength(0);
+      expect(
+        Number(finalResult.totalScore),
+        `iteration ${i}: totalScore changed after finalize with no ResultOverride row — finalize's write ` +
+          `is confirmed (via pg_locks) to have committed before this recompute's write was even queued, ` +
+          `so this write should have been a no-op`,
+      ).toBe(50);
+      expect(Number(finalResult.averageScore), `iteration ${i}`).toBe(50);
+    }
+  }, 120_000);
 });
