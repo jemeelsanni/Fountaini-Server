@@ -22,6 +22,14 @@ async function createTestUser(
   return { user, email, password };
 }
 
+/// No UserRole rows at all — the degenerate case buildAccessTokenPayload()
+/// rejects at token-issuance time rather than letting it authenticate and
+/// then 403 on every subsequent request.
+async function createRolelessUser(email: string, password: string) {
+  const passwordHash = await argon2.hash(password, { type: argon2.argon2id });
+  return prisma.user.create({ data: { email, passwordHash } });
+}
+
 beforeEach(async () => {
   await resetDb();
 });
@@ -70,6 +78,17 @@ describe("POST /api/auth/login", () => {
   it("rejects a malformed request body", async () => {
     const res = await request(app).post("/api/auth/login").send({ email: "not-an-email" });
     expect(res.status).toBe(400);
+  });
+
+  it("rejects login for a user with no roles assigned, with a distinct error code", async () => {
+    const email = "noroles@test.local";
+    const password = "correct-horse-battery-staple";
+    await createRolelessUser(email, password);
+
+    const res = await request(app).post("/api/auth/login").send({ email, password });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe("NO_ROLES_ASSIGNED");
   });
 });
 
@@ -133,6 +152,27 @@ describe("POST /api/auth/refresh", () => {
       .post("/api/auth/refresh")
       .send({ refreshToken: "not-a-real-token" });
     expect(res.status).toBe(401);
+  });
+
+  it("rejects refresh once a user's last role is gone, and still consumes the old token", async () => {
+    const { email, password, user } = await createTestUser();
+    const loginRes = await request(app).post("/api/auth/login").send({ email, password });
+    expect(loginRes.status).toBe(200);
+
+    await prisma.userRole.deleteMany({ where: { userId: user.id } });
+
+    const res = await request(app)
+      .post("/api/auth/refresh")
+      .send({ refreshToken: loginRes.body.refreshToken });
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe("NO_ROLES_ASSIGNED");
+
+    // The atomic claim on the refresh token happens before roles are
+    // checked, so rejecting here must not leave the old token usable.
+    const retry = await request(app)
+      .post("/api/auth/refresh")
+      .send({ refreshToken: loginRes.body.refreshToken });
+    expect(retry.status).toBe(401);
   });
 });
 

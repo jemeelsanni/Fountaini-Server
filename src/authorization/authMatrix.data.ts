@@ -238,20 +238,39 @@ async function buildSharedWorld(generics: GenericActors) {
   // scope resolver happens to check first. Linked to targetStudent as a
   // SECOND parent (a student having two guardians is a real, already-
   // supported case) so the PARENT half is provable via canReadStudent/
-  // canReadStudentFinancials; given its own, independent
-  // class+subject+assignment (not assignedTeacherStaff's) so the TEACHER
-  // half is provable via canActOnAssignment without reusing — and thereby
-  // conflating with — assignedTeacher's fixture.
+  // canReadStudentFinancials; given their own, independent class (NOT
+  // `klass`, targetStudent's own enrolled class) + subject + assignment so
+  // the TEACHER half is provable via canActOnAssignment without reusing —
+  // and thereby conflating with — assignedTeacher's fixture. Keeping the
+  // teaching class genuinely separate from targetStudent's class also
+  // matters for isolating what "allowed" below is actually proving: if
+  // staffParent taught a different subject inside `klass` itself,
+  // targetStudent's canReadStudent "allowed" case would be reachable via
+  // EITHER the PARENT link OR the TEACHER-in-the-same-class branch, and the
+  // row would no longer cleanly prove "PARENT alone is enough."
   const staffParent = await createStaffParent(`${unique("matrix-staff-parent")}@test.local`);
   await prisma.studentParent.create({
     data: { studentId: targetStudent.id, parentId: staffParent.parent.id, relationship: "GUARDIAN" },
   });
+  const staffParentClass = await createClass(unique("Matrix StaffParent Class"));
   const staffParentSubject = await createSubject(unique("Matrix StaffParent Subject"), unique("MSP"));
   const staffParentAssignment = await createAssignment(
-    klass.id,
+    staffParentClass.id,
     staffParentSubject.id,
     staffParent.staff.id,
     session.id,
+  );
+
+  // A student staffParent has NO connection to on either role: not their
+  // child (no StudentParent link) and not enrolled in any class they teach
+  // (enrolled nowhere at all, so canActOnAssignment's TEACHER-assignment
+  // check never even gets a class to match against). This is the mirror
+  // image of the "allowed" targetStudent case above — proves that merely
+  // HOLDING TEACHER and PARENT doesn't itself grant anything; each grant
+  // still depends on the real relationship the role is supposed to check.
+  const { student: disjointStudent } = await createStudentWithLogin(
+    `${unique("matrix-disjoint-target")}@test.local`,
+    unique("MATRIX-DISJOINT"),
   );
 
   const feeStructure = await prisma.feeStructure.create({
@@ -287,6 +306,41 @@ async function buildSharedWorld(generics: GenericActors) {
     data: { paymentId: payment.id, receiptNumber: generateReceiptNumber(), issuedByUserId: generics.admin.user.id },
   });
 
+  // Real (not 404-shaped) fee/payment/receipt fixtures for disjointStudent
+  // too — the receipt route resolves canReadPayment -> canReadStudentFinancials
+  // by first looking up a real payment row. Without a real payment here, a
+  // "denied" assertion on that route would trivially pass via "payment not
+  // found" (also a 403 today per canReadPayment's `if (!payment) return
+  // false`) instead of actually exercising the role-membership denial this
+  // is meant to prove.
+  const disjointFeeObligation = await prisma.feeObligation.create({
+    data: {
+      studentId: disjointStudent.id,
+      feeStructureId: feeStructure.id,
+      academicSessionId: session.id,
+      amountDueKobo: 5_000_00,
+      createdByUserId: generics.admin.user.id,
+    },
+  });
+  const disjointPayment = await prisma.payment.create({
+    data: {
+      feeObligationId: disjointFeeObligation.id,
+      amountKobo: 5_000_00,
+      paymentDate: new Date(),
+      status: "CONFIRMED",
+      recordedByUserId: generics.admin.user.id,
+      confirmedByUserId: generics.admin.user.id,
+      confirmedAt: new Date(),
+    },
+  });
+  await prisma.receipt.create({
+    data: {
+      paymentId: disjointPayment.id,
+      receiptNumber: generateReceiptNumber(),
+      issuedByUserId: generics.admin.user.id,
+    },
+  });
+
   const studentScopeTokens: Partial<Record<ActorKey, string>> = {
     admin: generics.admin.token,
     bursar: generics.bursar.token,
@@ -313,6 +367,8 @@ async function buildSharedWorld(generics: GenericActors) {
     studentScopeTokens,
     staffParentToken: staffParent.token,
     staffParentAssignment,
+    disjointStudent,
+    disjointPayment,
   };
 }
 
@@ -395,6 +451,18 @@ const TIMETABLE_SCOPE_CASES: MatrixCase[] = [
   { actor: "unlinkedParent", expectedStatus: 403 },
   { actor: "ownStudent", expectedStatus: "allowed" },
   { actor: "otherStudent", expectedStatus: 403 },
+];
+
+/// The risk in the fall-through restructuring is over-permission (an OR that
+/// accidentally grants), not under-permission — so "allowed" cases alone
+/// don't prove it's safe. This is the denied-direction proof: staffParent
+/// against disjointStudent, who they have neither a PARENT link to nor a
+/// TEACHER assignment reaching. Both branches that COULD grant access are
+/// actually evaluated (this student has real enrollments/fee data, not a
+/// 404) and both correctly fail — confirming the OR of two denials is still
+/// a denial, not "any held role passes."
+const STAFF_PARENT_DENIED_DISJOINT_STUDENT: MatrixCase[] = [
+  { actor: "staffParent", expectedStatus: 403 },
 ];
 
 export async function buildBespokeRows(generics: GenericActors): Promise<MatrixRow[]> {
@@ -544,6 +612,115 @@ export async function buildBespokeRows(generics: GenericActors): Promise<MatrixR
         Promise.resolve({
           url: `/api/classes/${world.class.id}/timetable`,
           tokens: world.studentScopeTokens,
+        }),
+    },
+
+    // --- staffParent denied on a genuinely disjoint student -------------
+    // Mirror-image of every "staffParent: allowed" case above, now against
+    // disjointStudent: not staffParent's child, not enrolled in any class
+    // they teach. "GET /api/students/:id" is the one that most directly
+    // demonstrates BOTH of canReadStudent's grantable branches (PARENT-link
+    // and TEACHER-assignment) being evaluated and BOTH failing — the other
+    // canReadStudent rows exercise the identical resolver call and are
+    // included for parity with the "allowed" side's coverage, not because
+    // they add new resolver-logic signal beyond the first.
+    //
+    // Deliberately NOT mirrored here: GET /api/classes/:id/timetable.
+    // canReadClassTimetable's business rule (TIMETABLE_SCOPE_CASES's own
+    // comment) is that ANY teacher — assigned or not — may view ANY class's
+    // timetable; timetables aren't treated as sensitive. staffParent holds
+    // TEACHER, so they are CORRECTLY "allowed" on disjointStudent's class
+    // timetable too. A "denied" expectation there would assert behavior
+    // this resolver was never supposed to have — flagging it instead of
+    // adding a case that contradicts the documented, intentional rule.
+    {
+      name: "GET /api/students/:id",
+      method: "get",
+      cases: STAFF_PARENT_DENIED_DISJOINT_STUDENT,
+      setup: () =>
+        Promise.resolve({
+          url: `/api/students/${world.disjointStudent.id}`,
+          tokens: { staffParent: world.staffParentToken },
+        }),
+    },
+    {
+      name: "GET /api/students/:id/enrollments",
+      method: "get",
+      cases: STAFF_PARENT_DENIED_DISJOINT_STUDENT,
+      setup: () =>
+        Promise.resolve({
+          url: `/api/students/${world.disjointStudent.id}/enrollments`,
+          tokens: { staffParent: world.staffParentToken },
+        }),
+    },
+    {
+      name: "GET /api/students/:id/attendance",
+      method: "get",
+      cases: STAFF_PARENT_DENIED_DISJOINT_STUDENT,
+      setup: () =>
+        Promise.resolve({
+          url: `/api/students/${world.disjointStudent.id}/attendance`,
+          tokens: { staffParent: world.staffParentToken },
+        }),
+    },
+    {
+      name: "GET /api/students/:id/scores",
+      method: "get",
+      cases: STAFF_PARENT_DENIED_DISJOINT_STUDENT,
+      setup: () =>
+        Promise.resolve({
+          url: `/api/students/${world.disjointStudent.id}/scores`,
+          tokens: { staffParent: world.staffParentToken },
+        }),
+    },
+    {
+      name: "GET /api/students/:id/madrassah-progress",
+      method: "get",
+      cases: STAFF_PARENT_DENIED_DISJOINT_STUDENT,
+      setup: () =>
+        Promise.resolve({
+          url: `/api/students/${world.disjointStudent.id}/madrassah-progress`,
+          tokens: { staffParent: world.staffParentToken },
+        }),
+    },
+    {
+      name: "GET /api/results/:studentId/:termId",
+      method: "get",
+      cases: STAFF_PARENT_DENIED_DISJOINT_STUDENT,
+      setup: () =>
+        Promise.resolve({
+          url: `/api/results/${world.disjointStudent.id}/${world.term.id}`,
+          tokens: { staffParent: world.staffParentToken },
+        }),
+    },
+    {
+      name: "GET /api/students/:id/fee-obligations",
+      method: "get",
+      cases: STAFF_PARENT_DENIED_DISJOINT_STUDENT,
+      setup: () =>
+        Promise.resolve({
+          url: `/api/students/${world.disjointStudent.id}/fee-obligations`,
+          tokens: { staffParent: world.staffParentToken },
+        }),
+    },
+    {
+      name: "GET /api/students/:id/payments",
+      method: "get",
+      cases: STAFF_PARENT_DENIED_DISJOINT_STUDENT,
+      setup: () =>
+        Promise.resolve({
+          url: `/api/students/${world.disjointStudent.id}/payments`,
+          tokens: { staffParent: world.staffParentToken },
+        }),
+    },
+    {
+      name: "GET /api/payments/:id/receipt",
+      method: "get",
+      cases: STAFF_PARENT_DENIED_DISJOINT_STUDENT,
+      setup: () =>
+        Promise.resolve({
+          url: `/api/payments/${world.disjointPayment.id}/receipt`,
+          tokens: { staffParent: world.staffParentToken },
         }),
     },
   ];

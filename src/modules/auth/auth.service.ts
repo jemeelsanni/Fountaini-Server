@@ -26,6 +26,20 @@ async function buildAccessTokenPayload(userId: string): Promise<AccessTokenPaylo
     prisma.userRole.findMany({ where: { userId }, select: { role: true } }),
   ]);
 
+  // Every current path that creates a User creates exactly one UserRole row
+  // in the same operation (see users.service.ts's createUser) — there is no
+  // "remove a user's last role" feature yet either, so this shouldn't be
+  // reachable through the API today. It exists as an explicit boundary
+  // check anyway: this is the one place that would otherwise silently issue
+  // a token that authenticates successfully and then is denied on every
+  // single subsequent request with a plain 403, indistinguishable from an
+  // ordinary permission failure. Reject at issuance instead, with a
+  // specific reason, for whatever future path (direct DB edit, a role-
+  // revocation feature that doesn't yet exist) could produce this state.
+  if (userRoles.length === 0) {
+    throw AppError.noRolesAssigned();
+  }
+
   return {
     sub: userId,
     roles: userRoles.map((ur) => ur.role),
