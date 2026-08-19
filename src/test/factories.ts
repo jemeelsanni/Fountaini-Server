@@ -1,13 +1,13 @@
-import argon2 from "argon2";
 import type { Role } from "../../generated/prisma/index.js";
 import { prisma } from "../db/client.js";
 import { signAccessToken } from "../modules/auth/jwt.js";
+import { hashPassword } from "../modules/auth/password.js";
 
 /// Test-only helpers: sign tokens directly rather than round-tripping through
 /// /api/auth/login for every fixture — login itself is already covered by
 /// Phase 1's auth tests, so these just need a valid, correctly-shaped token.
 async function createUser(email: string, roles: Role[], password = "password-123456") {
-  const passwordHash = await argon2.hash(password, { type: argon2.argon2id });
+  const passwordHash = await hashPassword(password);
   return prisma.user.create({
     data: { email, passwordHash, roles: { create: roles.map((role) => ({ role })) } },
   });

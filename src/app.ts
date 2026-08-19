@@ -21,6 +21,7 @@ import { staffRouter } from "./modules/staff/staff.routes.js";
 import { studentsRouter } from "./modules/students/students.routes.js";
 import { timetableRouter } from "./modules/timetable/timetable.routes.js";
 import { usersRouter } from "./modules/users/users.routes.js";
+import { mountOpenApiRoutes } from "./openapi/openapi.routes.js";
 
 export interface RouteMount {
   prefix: string;
@@ -68,6 +69,14 @@ export function createApp() {
   app.get("/health", (_req: Request, res: Response) => {
     res.status(200).json({ status: "ok" });
   });
+
+  // Registered before every routeMounts router below, for the same reason
+  // admissionsRouter must be first among them (see that comment): several
+  // of those routers apply requireAuth as a blanket router.use() with no
+  // path, which — per Express semantics — matches ANY request reaching
+  // that mount point, not just routes defined in that file. These routes
+  // are public (see PUBLIC_ROUTES) and must never reach that blanket auth.
+  mountOpenApiRoutes(app, routeMounts);
 
   for (const { prefix, router } of routeMounts) {
     app.use(prefix, router);

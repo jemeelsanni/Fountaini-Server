@@ -10,4 +10,9 @@ export const PUBLIC_ROUTES: ReadonlySet<string> = new Set([
   "POST /api/auth/refresh",
   "POST /api/auth/logout",
   "POST /api/admission-enquiries",
+  // /api/docs itself is exempt from needing an entry here at all — it's
+  // mounted via router.use(), which the route-guard inventory walker never
+  // sees (only router.get/post/etc. produce a discoverable Route). Only
+  // this one, a real registered GET route, needs to be listed.
+  "GET /api/openapi.json",
 ]);

@@ -1,9 +1,9 @@
-import argon2 from "argon2";
 import request from "supertest";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
 import { resetDb } from "../../test/resetDb.js";
+import { hashPassword } from "./password.js";
 
 const app = createApp();
 
@@ -15,7 +15,7 @@ async function createTestUser(
   const email = overrides.email ?? "user@test.local";
   const password = overrides.password ?? "correct-horse-battery-staple";
   const role = overrides.role ?? "ADMIN";
-  const passwordHash = await argon2.hash(password, { type: argon2.argon2id });
+  const passwordHash = await hashPassword(password);
   const user = await prisma.user.create({
     data: { email, passwordHash, roles: { create: [{ role }] } },
   });
@@ -26,7 +26,7 @@ async function createTestUser(
 /// rejects at token-issuance time rather than letting it authenticate and
 /// then 403 on every subsequent request.
 async function createRolelessUser(email: string, password: string) {
-  const passwordHash = await argon2.hash(password, { type: argon2.argon2id });
+  const passwordHash = await hashPassword(password);
   return prisma.user.create({ data: { email, passwordHash } });
 }
 

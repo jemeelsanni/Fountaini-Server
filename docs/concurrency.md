@@ -210,3 +210,63 @@ fixing it inline unless you've been explicitly asked to fix it — the
 pattern above should make it easy to recognize, but recognizing it and
 deciding it's worth fixing right now are different calls, and the second
 one belongs to whoever's prioritizing the work.
+
+## Known intermittent test failure
+
+**Symptom**: occasional `Test timed out in 5000ms` (Vitest's default
+`testTimeout`) on a handful of tests — seen on
+`academic-structure.test.ts`'s form-teacher-list test,
+`authMatrix.test.ts`'s `PATCH /api/terms/:id/set-current` and
+`GET /api/admission-enquiries` rows, and `admissions.test.ts`'s own
+convert-enquiry concurrency test — plus, separately, occasional malformed
+HTTP responses: a raw `Parse Error: Expected HTTP/` from supertest, and
+responses whose JSON body is shaped like a foreign API's error envelope
+(`{"type":"error","error":{"type":"authentication_error","message":"Invalid
+authentication"},"request_id":null}` — a string that appears nowhere in
+this codebase or its dependencies). None of this is deterministic; it did
+not reproduce on every run.
+
+**Ruled out**: cross-file lock contention. `vitest.config.ts` pins
+`fileParallelism: false` + `maxWorkers: 1` + `pool: "forks"`, and this was
+confirmed live, not just read off the config — sampling the process tree
+with `ps` during a run showed exactly one `forks.js` worker process alive
+at any instant, with a new PID replacing the old one between files. Each
+file runs in its own OS process; a process exit closes every Postgres
+connection it held, which releases every lock and transaction that
+connection held, before the next file's process even starts. Two test
+files cannot contend for the same lock under this configuration — not
+"rarely," structurally cannot.
+
+**Explicitly NOT the cause**: real Postgres lock waits — genuine
+`transactionid`/`ShareLock` entries in `pg_locks` — were captured live via a
+poller running throughout a ~15-minute back-to-back stress run. Every one
+of them traced to `results.test.ts`'s own "compute/finalize concurrency"
+test, which deliberately holds a `SELECT ... FOR UPDATE` lock via
+`awaitLockWaiter` and confirms `finalizeResult()`/`computeResultsForClass()`
+queue behind it on purpose (see "The `awaitLockWaiter` test helper" above).
+That test calls the service functions directly, not through HTTP, and
+never touches another file. Given the no-parallelism finding above, those
+lock waits **cannot** have blocked a test in a different file — they were
+coincident in time during a long stress run, not causal. Stating this
+plainly so nobody re-derives "it must be the lock waits" from the raw
+`pg_locks` capture later: the capture is real, the causal link to the
+timeouts is not.
+
+**Cause**: unknown. Measured at ~20% of full-suite runs failing (9/40),
+under a back-to-back 40-run stress loop (two batches of 20) with an
+additional `psql` poller querying `pg_stat_activity`/`pg_locks` every
+250ms throughout the second batch. That methodology — continuous
+back-to-back runs for ~30 minutes total, plus extra polling load competing
+for the same CPU and Postgres connections — likely inflates the failure
+rate well above what a normal single `npm test` invocation would show; the
+second, more heavily-loaded batch did fail more often (5/20 vs 4/20) than
+the first. A single normal-usage run can still hit it — one did, on an
+unrelated file, while verifying the argon2 change below — so it's not
+purely an artifact of the stress methodology, just likely overstated by it.
+
+**Next step**: re-measure on CI once the pipeline exists. CI is the first
+environment clean of this investigation's own confounds (no concurrent
+diagnostic polling, no back-to-back stress looping) and the first place a
+real baseline failure rate can be measured. Do not re-measure locally by
+running the suite in a loop — that reproduces the same confound this entry
+exists to flag, not a cleaner number.

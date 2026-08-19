@@ -10,6 +10,13 @@ const envSchema = z.object({
   JWT_ACCESS_SECRET: z.string().min(32, "JWT_ACCESS_SECRET must be at least 32 characters"),
   JWT_ACCESS_TTL_SECONDS: z.coerce.number().int().positive().default(900),
   REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().default(30),
+  // The OpenAPI document's `servers` entry (src/openapi) — deliberately not
+  // derived from PORT/req.host, so the generated spec is correct however
+  // it's actually reached (behind Railway's HTTPS edge, a different port,
+  // a proxy path) rather than whatever this process happens to think its
+  // own address is. Defaults to localhost so `npm run dev` works with zero
+  // config; set explicitly in every deployed environment.
+  PUBLIC_BASE_URL: z.url().default("http://localhost:4000"),
 });
 
 export const env = envSchema.parse(process.env);

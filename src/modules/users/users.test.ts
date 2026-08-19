@@ -1,14 +1,14 @@
-import argon2 from "argon2";
 import request from "supertest";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
+import { hashPassword } from "../auth/password.js";
 import { resetDb } from "../../test/resetDb.js";
 
 const app = createApp();
 
 async function createUserAndLogin(email: string, password: string, role: "ADMIN" | "TEACHER") {
-  const passwordHash = await argon2.hash(password, { type: argon2.argon2id });
+  const passwordHash = await hashPassword(password);
   await prisma.user.create({ data: { email, passwordHash, roles: { create: [{ role }] } } });
   const loginRes = await request(app).post("/api/auth/login").send({ email, password });
   return loginRes.body.accessToken as string;
