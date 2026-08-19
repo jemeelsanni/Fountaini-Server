@@ -72,6 +72,18 @@ const NotificationDeliveryStatusSchema = z
 // School / auth / users
 // ---------------------------------------------------------------------------
 
+export const SchoolSchema = z
+  .object({
+    id: id(),
+    name: z.string(),
+    address: z.string().nullable(),
+    contactEmail: z.string().nullable(),
+    contactPhone: z.string().nullable(),
+    createdAt: isoDateTime(),
+    updatedAt: isoDateTime(),
+  })
+  .openapi("School");
+
 /// The only User shape any route ever returns — a fixed subset
 /// (passwordHash/phone/updatedAt are never sent). See users.service.ts's
 /// userListSelect + flattenRoles().

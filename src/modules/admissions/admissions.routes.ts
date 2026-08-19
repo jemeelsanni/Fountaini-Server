@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { requireAuth, requireRole } from "../../authorization/middleware.js";
 import { auditMutation } from "../../http/middleware/auditMutation.js";
+import { admissionEnquiryRateLimiter } from "../../http/middleware/rateLimit.js";
 import { validate } from "../../http/middleware/validate.js";
 import * as controller from "./admissions.controller.js";
 import {
@@ -23,10 +24,9 @@ export const admissionsRouter = Router();
 // protected route below applies requireAuth/requireRole itself instead.
 
 // Public — the one genuinely unauthenticated write endpoint in the whole API.
-// Rate limiting on this route is a known, deliberately deferred gap
-// (cross-cutting polish phase), not an oversight.
 admissionsRouter.post(
   "/admission-enquiries",
+  admissionEnquiryRateLimiter,
   validate({ body: createEnquirySchema }),
   controller.createEnquiry,
 );

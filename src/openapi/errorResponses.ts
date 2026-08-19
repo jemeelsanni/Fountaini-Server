@@ -43,6 +43,7 @@ export const CONFLICT_ROUTE_KEYS: ReadonlySet<string> = new Set([
   "POST /api/staff",
   "PATCH /api/staff/:id",
   "POST /api/timetable-entries",
+  "POST /api/school",
 ]);
 
 /// login/refresh are PUBLIC (no requireRole in front to ever produce an

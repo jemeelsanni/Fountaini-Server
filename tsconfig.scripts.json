@@ -1,0 +1,15 @@
+{
+  // Same reasoning as tsconfig.prisma.json: the base config pins
+  // `rootDir: "src"`, so scripts/ needs its own config to be typechecked
+  // at all — without this, tsc --noEmit silently skips it entirely.
+  // Unlike prisma/seed.ts, this script imports from src/, so rootDir has
+  // to be a common ancestor of both (the project root), not "scripts"
+  // itself — pinning it to "scripts" makes tsc reject every transitively
+  // imported src/ file as outside rootDir.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "types": ["node"]
+  },
+  "include": ["scripts/**/*.ts"]
+}

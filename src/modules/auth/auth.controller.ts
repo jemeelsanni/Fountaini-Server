@@ -1,7 +1,13 @@
 import type { Request, Response } from "express";
 import { AppError } from "../../errors/AppError.js";
 import * as authService from "./auth.service.js";
-import type { ChangePasswordBody, LoginBody, RefreshBody } from "./auth.schemas.js";
+import type {
+  ChangePasswordBody,
+  LoginBody,
+  RefreshBody,
+  RequestPasswordResetBody,
+  ResetPasswordBody,
+} from "./auth.schemas.js";
 
 export async function login(req: Request, res: Response): Promise<void> {
   const { email, password } = req.body as LoginBody;
@@ -42,5 +48,20 @@ export async function changePassword(req: Request, res: Response): Promise<void>
   }
   const { currentPassword, newPassword } = req.body as ChangePasswordBody;
   await authService.changePassword(req.principal.userId, currentPassword, newPassword);
+  res.status(204).send();
+}
+
+// Identical 204 regardless of what requestPasswordReset() actually did
+// internally — see that function's own comment. Nothing here may branch on
+// whether the account existed.
+export async function requestPasswordReset(req: Request, res: Response): Promise<void> {
+  const { email } = req.body as RequestPasswordResetBody;
+  await authService.requestPasswordReset(email);
+  res.status(204).send();
+}
+
+export async function resetPassword(req: Request, res: Response): Promise<void> {
+  const { token, newPassword } = req.body as ResetPasswordBody;
+  await authService.resetPassword(token, newPassword);
   res.status(204).send();
 }

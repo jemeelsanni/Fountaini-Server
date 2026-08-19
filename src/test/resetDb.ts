@@ -39,6 +39,9 @@ export async function resetDb(): Promise<void> {
     prisma.term.deleteMany(),
     prisma.subject.deleteMany(),
     prisma.class.deleteMany(),
+    // School.currentAcademicSessionId FKs to AcademicSession (no cascade),
+    // so this must go before it — same reasoning as everything above.
+    prisma.school.deleteMany(),
     prisma.academicSession.deleteMany(),
     prisma.userRole.deleteMany(),
     prisma.user.deleteMany(),

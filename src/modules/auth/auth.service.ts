@@ -1,9 +1,12 @@
 import { env } from "../../config/env.js";
 import { prisma } from "../../db/client.js";
 import { AppError } from "../../errors/AppError.js";
+import { createNotification } from "../notifications/notifications.service.js";
 import { type AccessTokenPayload, signAccessToken } from "./jwt.js";
 import { hashPassword, verifyPassword } from "./password.js";
-import { generateRefreshToken, hashRefreshToken } from "./tokens.js";
+import { generateOpaqueToken, hashOpaqueToken } from "./tokens.js";
+
+const PASSWORD_RESET_TOKEN_TTL_MINUTES = 30;
 
 export interface IssuedTokens {
   accessToken: string;
@@ -53,13 +56,13 @@ async function issueTokenPair(userId: string, ip?: string, userAgent?: string): 
   const payload = await buildAccessTokenPayload(userId);
   const accessToken = signAccessToken(payload);
 
-  const refreshToken = generateRefreshToken();
+  const refreshToken = generateOpaqueToken();
   const expiresAt = new Date(Date.now() + env.REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000);
 
   const created = await prisma.refreshToken.create({
     data: {
       userId,
-      tokenHash: hashRefreshToken(refreshToken),
+      tokenHash: hashOpaqueToken(refreshToken),
       expiresAt,
       createdByIp: ip,
       userAgent,
@@ -87,7 +90,7 @@ export async function login(input: LoginInput): Promise<IssuedTokens> {
 }
 
 export async function refresh(rawToken: string, ip?: string, userAgent?: string): Promise<IssuedTokens> {
-  const tokenHash = hashRefreshToken(rawToken);
+  const tokenHash = hashOpaqueToken(rawToken);
   const existing = await prisma.refreshToken.findUnique({
     where: { tokenHash },
     include: { user: true },
@@ -133,7 +136,7 @@ export async function refresh(rawToken: string, ip?: string, userAgent?: string)
 }
 
 export async function logout(rawToken: string): Promise<void> {
-  const tokenHash = hashRefreshToken(rawToken);
+  const tokenHash = hashOpaqueToken(rawToken);
   await prisma.refreshToken.updateMany({
     where: { tokenHash, revokedAt: null },
     data: { revokedAt: new Date() },
@@ -161,6 +164,86 @@ export async function changePassword(
     prisma.user.update({ where: { id: userId }, data: { passwordHash: newHash } }),
     prisma.refreshToken.updateMany({
       where: { userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    }),
+  ]);
+}
+
+/// Deliberately returns the same thing (nothing, no throw) whether or not
+/// `email` belongs to a real, active account — the caller must never be
+/// able to tell the two cases apart from the response, or this endpoint
+/// becomes an account-enumeration oracle. If the account exists, a real
+/// token is created and handed to the existing notification provider
+/// interface (see notifications.service.ts) exactly like every other
+/// notification in this codebase — nothing password-reset-specific about
+/// how the message actually gets delivered.
+export async function requestPasswordReset(email: string): Promise<void> {
+  const user = await prisma.user.findUnique({ where: { email } });
+  if (!user || !user.isActive) {
+    return;
+  }
+
+  const rawToken = generateOpaqueToken();
+  const expiresAt = new Date(Date.now() + PASSWORD_RESET_TOKEN_TTL_MINUTES * 60 * 1000);
+
+  const resetToken = await prisma.passwordResetToken.create({
+    data: { userId: user.id, tokenHash: hashOpaqueToken(rawToken), expiresAt },
+  });
+
+  // The raw token itself, not a clickable link: this is an API-only
+  // backend with no frontend page to link to yet. A future frontend would
+  // replace this body with a real reset-password URL carrying the token as
+  // a query param; nothing else about this flow would need to change.
+  await createNotification({
+    type: "PASSWORD_RESET",
+    recipientUserId: user.id,
+    subject: "Reset your password",
+    body:
+      `A password reset was requested for this account. Submit the following token to ` +
+      `POST /api/auth/reset-password within ${PASSWORD_RESET_TOKEN_TTL_MINUTES} minutes to set a new ` +
+      `password: ${rawToken}\n\nIf you didn't request this, no action is needed — your password has not changed.`,
+    channels: ["EMAIL"],
+    relatedEntityType: "PasswordResetToken",
+    relatedEntityId: resetToken.id,
+  });
+}
+
+/// Single-use (claimed atomically — same conditional-updateMany shape as
+/// refresh()'s rotation claim above, see docs/concurrency.md), short expiry
+/// (PASSWORD_RESET_TOKEN_TTL_MINUTES), and invalidates every one of this
+/// user's live refresh tokens on success — a password reset is exactly the
+/// moment every existing session should be forced to re-authenticate, same
+/// as changePassword() above.
+export async function resetPassword(rawToken: string, newPassword: string): Promise<void> {
+  const tokenHash = hashOpaqueToken(rawToken);
+  const existing = await prisma.passwordResetToken.findUnique({ where: { tokenHash } });
+
+  if (!existing) {
+    throw AppError.unauthorized("Invalid reset token");
+  }
+  if (existing.usedAt) {
+    throw AppError.unauthorized("This reset token has already been used");
+  }
+  if (existing.expiresAt < new Date()) {
+    throw AppError.unauthorized("Reset token has expired");
+  }
+
+  // Atomic claim: only one concurrent caller can flip usedAt null -> now —
+  // whoever loses this race hits the same "already used" rejection as a
+  // genuine replay, rather than both racers silently succeeding.
+  const claimed = await prisma.passwordResetToken.updateMany({
+    where: { id: existing.id, usedAt: null },
+    data: { usedAt: new Date() },
+  });
+  if (claimed.count === 0) {
+    throw AppError.unauthorized("This reset token has already been used");
+  }
+
+  const newHash = await hashPassword(newPassword);
+  await prisma.$transaction([
+    prisma.user.update({ where: { id: existing.userId }, data: { passwordHash: newHash } }),
+    prisma.refreshToken.updateMany({
+      where: { userId: existing.userId, revokedAt: null },
       data: { revokedAt: new Date() },
     }),
   ]);

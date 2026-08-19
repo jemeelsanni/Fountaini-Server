@@ -9,6 +9,11 @@ export const PUBLIC_ROUTES: ReadonlySet<string> = new Set([
   // not an access token — requireAuth doesn't apply to them either.
   "POST /api/auth/refresh",
   "POST /api/auth/logout",
+  // Same identical-response-either-way reasoning as login: a password reset
+  // request/completion can't require a valid access token, since the whole
+  // point is recovering an account the caller may be locked out of.
+  "POST /api/auth/forgot-password",
+  "POST /api/auth/reset-password",
   "POST /api/admission-enquiries",
   // /api/docs itself is exempt from needing an entry here at all — it's
   // mounted via router.use(), which the route-guard inventory walker never

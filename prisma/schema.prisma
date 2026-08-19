@@ -972,6 +972,7 @@ enum NotificationType {
   PAYMENT_CONFIRMATION
   ACADEMIC
   ADMIN_GENERAL
+  PASSWORD_RESET
 }
 
 /// The logical, in-app notification. Channel-agnostic by design — this table

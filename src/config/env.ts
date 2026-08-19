@@ -22,9 +22,30 @@ const envSchema = z.object({
   // would also be the wrong tool for this even without that: it treats any
   // non-empty string, including the literal text "false", as true.
   DOCS_ENABLED: z.enum(["true", "false"]).optional(),
+  // Comma-separated allowlist of origins CORS may accept, e.g.
+  // "https://app.example.com,https://staff.example.com" — Railway issues a
+  // distinct URL per environment (preview/staging/prod), so this needs to
+  // support more than one entry, not just one. Optional outside production
+  // (unset means "allow any origin", the old cors()-with-no-options
+  // behavior, which is fine for local dev); required in production — see
+  // the superRefine below, which is what makes an unset CORS_ORIGINS in
+  // production a startup failure instead of a silently-wide-open API.
+  CORS_ORIGINS: z.string().optional(),
 });
 
-const parsedEnv = envSchema.parse(process.env);
+const parsedEnv = envSchema
+  .superRefine((data, ctx) => {
+    if (data.NODE_ENV === "production" && !data.CORS_ORIGINS) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["CORS_ORIGINS"],
+        message:
+          "CORS_ORIGINS must be set in production — a comma-separated list of allowed origins. " +
+          "Refusing to start with CORS wide-open in production by default.",
+      });
+    }
+  })
+  .parse(process.env);
 
 export const env = {
   ...parsedEnv,
@@ -33,4 +54,12 @@ export const env = {
   // everywhere except production; only an explicit DOCS_ENABLED overrides
   // that default in either direction.
   DOCS_ENABLED: parsedEnv.DOCS_ENABLED ? parsedEnv.DOCS_ENABLED === "true" : parsedEnv.NODE_ENV !== "production",
+  // Parsed once here rather than in app.ts, so app.ts's CORS config is a
+  // plain array lookup — undefined/empty means "no allowlist configured",
+  // which the superRefine above guarantees can't happen in production.
+  CORS_ORIGINS: parsedEnv.CORS_ORIGINS
+    ? parsedEnv.CORS_ORIGINS.split(",")
+        .map((origin) => origin.trim())
+        .filter((origin) => origin.length > 0)
+    : undefined,
 };

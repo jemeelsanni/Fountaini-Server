@@ -11,6 +11,7 @@ import { registry } from "./registry.js";
 import { ROUTE_SPECS, type ResponseSpec, type RouteSpec } from "./routeSpecs.js";
 
 const HealthResponseSchema = z.object({ status: z.literal("ok") }).openapi("Health");
+const HealthUnavailableSchema = z.object({ status: z.literal("unavailable") }).openapi("HealthUnavailable");
 
 /// Routes outside src/modules — /health (registered directly on `app`) and
 /// this generator's own /api/openapi.json (registered by
@@ -23,8 +24,11 @@ const HealthResponseSchema = z.object({ status: z.literal("ok") }).openapi("Heal
 /// layer.route) never sees it at all.
 const SPECIAL_ROUTE_SPECS: Record<string, RouteSpec> = {
   "GET /health": {
-    summary: "Liveness check",
-    responses: { 200: { description: "OK", schema: HealthResponseSchema } },
+    summary: "Liveness check — does a trivial DB round-trip (SELECT 1), Railway's healthcheck target",
+    responses: {
+      200: { description: "OK", schema: HealthResponseSchema },
+      503: { description: "Database round-trip failed", schema: HealthUnavailableSchema },
+    },
   },
   "GET /api/openapi.json": {
     summary: "This OpenAPI 3.1 document",

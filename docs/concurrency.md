@@ -264,9 +264,14 @@ the first. A single normal-usage run can still hit it — one did, on an
 unrelated file, while verifying the argon2 change below — so it's not
 purely an artifact of the stress methodology, just likely overstated by it.
 
-**Next step**: re-measure on CI once the pipeline exists. CI is the first
-environment clean of this investigation's own confounds (no concurrent
-diagnostic polling, no back-to-back stress looping) and the first place a
-real baseline failure rate can be measured. Do not re-measure locally by
-running the suite in a loop — that reproduces the same confound this entry
-exists to flag, not a cleaner number.
+**Next step**: the pipeline now exists (`.github/workflows/ci.yml`) and runs
+the full suite twice, as two separate steps, in every job — specifically to
+get a first clean baseline. CI is the first environment free of this
+investigation's own confounds (no concurrent diagnostic polling, no
+back-to-back stress looping), so its result is the real number, not this
+session's inflated stress-test estimate. This entry should be updated with
+the actual pass/fail outcome once a run has completed — it hasn't yet as of
+this writing (the workflow exists but no run has been triggered). Do not
+re-measure locally by running the suite in a loop in the meantime — that
+reproduces the same confound this entry exists to flag, not a cleaner
+number.

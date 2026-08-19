@@ -5,6 +5,7 @@ import { pinoHttp } from "pino-http";
 import "./authorization/types.js";
 import { env } from "./config/env.js";
 import { logger } from "./config/logger.js";
+import { prisma } from "./db/client.js";
 import { AppError } from "./errors/AppError.js";
 import { academicStructureRouter } from "./modules/academic-structure/academic-structure.routes.js";
 import { admissionsRouter } from "./modules/admissions/admissions.routes.js";
@@ -17,6 +18,7 @@ import { madrassahRouter } from "./modules/madrassah/madrassah.routes.js";
 import { notificationsRouter } from "./modules/notifications/notifications.routes.js";
 import { parentsRouter } from "./modules/parents/parents.routes.js";
 import { resultsRouter } from "./modules/results/results.routes.js";
+import { schoolRouter } from "./modules/school/school.routes.js";
 import { scoresRouter } from "./modules/scores/scores.routes.js";
 import { staffRouter } from "./modules/staff/staff.routes.js";
 import { studentsRouter } from "./modules/students/students.routes.js";
@@ -40,6 +42,7 @@ export const routeMounts: RouteMount[] = [
   { prefix: "/api/parents", router: parentsRouter },
   { prefix: "/api/staff", router: staffRouter },
   { prefix: "/api/audit-log", router: auditRouter },
+  { prefix: "/api/school", router: schoolRouter },
   // admissionsRouter must be mounted before any other router sharing the bare
   // "/api" prefix: it's the only one with a public route, and every other
   // router below applies requireAuth as a blanket router.use() with no path —
@@ -62,13 +65,55 @@ export const routeMounts: RouteMount[] = [
 export function createApp() {
   const app = express();
 
+  // Railway terminates TLS at its edge and proxies to this process over one
+  // internal hop — without this, req.ip (and everything derived from it,
+  // e.g. every rate limiter below) resolves to the proxy's own address,
+  // not the real client's, bucketing every request from every real client
+  // as if it came from one IP. `1` means "trust exactly one hop", matching
+  // Railway's topology — not `true`, which would trust the whole
+  // X-Forwarded-For chain including anything a client itself sent.
+  app.set("trust proxy", 1);
+
   app.use(helmet());
-  app.use(cors());
+  app.use(
+    cors({
+      origin(origin, callback) {
+        // No Origin header at all (server-to-server calls, curl, same-origin
+        // requests) — CORS only governs browser cross-origin behavior, so
+        // there's nothing to check against and no reason to block it.
+        if (!origin) {
+          callback(null, true);
+          return;
+        }
+        // Unset CORS_ORIGINS outside production means "allow anything" —
+        // the same wide-open behavior a bare cors() had — env.ts's
+        // superRefine guarantees this can't happen in production.
+        if (!env.CORS_ORIGINS || env.CORS_ORIGINS.includes(origin)) {
+          callback(null, true);
+          return;
+        }
+        callback(new Error(`Origin ${origin} is not allowed by CORS`));
+      },
+    }),
+  );
   app.use(express.json());
   app.use(pinoHttp({ logger }));
 
   app.get("/health", (_req: Request, res: Response) => {
-    res.status(200).json({ status: "ok" });
+    // A trivial DB round-trip, not just "the process is alive" — Railway's
+    // healthcheck target. A process that's up but can't reach Postgres
+    // (bad DATABASE_URL, DB not ready yet, connection pool exhausted)
+    // should fail healthchecks and be treated as unhealthy, not report OK
+    // while every real request 500s.
+    prisma
+      .$queryRaw`SELECT 1`
+      .then(() => {
+        res.status(200).json({ status: "ok" });
+      })
+      .catch((err: unknown) => {
+        logger.error({ err }, "Health check DB round-trip failed");
+        res.status(503).json({ status: "unavailable" });
+      });
   });
 
   // Registered before every routeMounts router below, for the same reason

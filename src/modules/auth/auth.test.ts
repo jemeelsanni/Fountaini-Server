@@ -250,3 +250,151 @@ describe("POST /api/auth/change-password", () => {
     expect(res.status).toBe(401);
   });
 });
+
+/// requestPasswordReset() never returns the token (that would defeat the
+/// point of emailing it) — it's only ever visible in the NotificationEvent
+/// body the notification provider interface received, exactly like a real
+/// user would only see it in their inbox. Reading it back this way in
+/// tests, rather than reaching into auth.service.ts directly, is what
+/// proves the whole delivery path (service -> createNotification ->
+/// NotificationEvent row) actually works end to end.
+async function readResetTokenFromNotification(userId: string): Promise<string> {
+  const event = await prisma.notificationEvent.findFirst({
+    where: { type: "PASSWORD_RESET", recipientUserId: userId },
+    orderBy: { createdAt: "desc" },
+  });
+  const match = /password:\s*(\S+)/.exec(event?.body ?? "");
+  if (!match?.[1]) {
+    throw new Error("No password reset token found in any NotificationEvent for this user");
+  }
+  return match[1];
+}
+
+describe("POST /api/auth/forgot-password", () => {
+  it("creates a reset token and delivers it through the notification provider for a real, active account", async () => {
+    const { user, email } = await createTestUser();
+
+    const res = await request(app).post("/api/auth/forgot-password").send({ email });
+    expect(res.status).toBe(204);
+
+    const tokenRow = await prisma.passwordResetToken.findFirst({ where: { userId: user.id } });
+    expect(tokenRow).not.toBeNull();
+    expect(tokenRow?.usedAt).toBeNull();
+    expect(tokenRow?.expiresAt.getTime()).toBeGreaterThan(Date.now());
+
+    const event = await prisma.notificationEvent.findFirst({
+      where: { type: "PASSWORD_RESET", recipientUserId: user.id },
+    });
+    expect(event).not.toBeNull();
+  });
+
+  it("responds identically (204, no body) for an email that doesn't belong to any account", async () => {
+    const res = await request(app).post("/api/auth/forgot-password").send({ email: "nobody@test.local" });
+    expect(res.status).toBe(204);
+    expect(res.body).toEqual({});
+
+    const anyTokens = await prisma.passwordResetToken.count();
+    expect(anyTokens, "no token should be created for an email with no account").toBe(0);
+  });
+
+  it("responds identically (204) for a deactivated account, and creates no token", async () => {
+    const { user, email } = await createTestUser();
+    await prisma.user.update({ where: { id: user.id }, data: { isActive: false } });
+
+    const res = await request(app).post("/api/auth/forgot-password").send({ email });
+    expect(res.status).toBe(204);
+
+    const tokens = await prisma.passwordResetToken.count({ where: { userId: user.id } });
+    expect(tokens).toBe(0);
+  });
+
+  it("rejects a malformed email", async () => {
+    const res = await request(app).post("/api/auth/forgot-password").send({ email: "not-an-email" });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("POST /api/auth/reset-password", () => {
+  it("sets a new password, allows login with it, and revokes every existing refresh token", async () => {
+    const { user, email, password } = await createTestUser();
+    const loginRes = await request(app).post("/api/auth/login").send({ email, password });
+    const oldRefreshToken = loginRes.body.refreshToken as string;
+
+    await request(app).post("/api/auth/forgot-password").send({ email });
+    const token = await readResetTokenFromNotification(user.id);
+
+    const resetRes = await request(app)
+      .post("/api/auth/reset-password")
+      .send({ token, newPassword: "a-brand-new-password" });
+    expect(resetRes.status).toBe(204);
+
+    const oldRefreshAttempt = await request(app).post("/api/auth/refresh").send({ refreshToken: oldRefreshToken });
+    expect(oldRefreshAttempt.status, "the reset must revoke sessions that predate it").toBe(401);
+
+    const oldPasswordLogin = await request(app).post("/api/auth/login").send({ email, password });
+    expect(oldPasswordLogin.status).toBe(401);
+
+    const newPasswordLogin = await request(app)
+      .post("/api/auth/login")
+      .send({ email, password: "a-brand-new-password" });
+    expect(newPasswordLogin.status).toBe(200);
+  });
+
+  it("is single-use — a second attempt with the same token is rejected even with a valid new password", async () => {
+    const { user, email } = await createTestUser();
+    await request(app).post("/api/auth/forgot-password").send({ email });
+    const token = await readResetTokenFromNotification(user.id);
+
+    const first = await request(app)
+      .post("/api/auth/reset-password")
+      .send({ token, newPassword: "first-new-password" });
+    expect(first.status).toBe(204);
+
+    const second = await request(app)
+      .post("/api/auth/reset-password")
+      .send({ token, newPassword: "second-new-password" });
+    expect(second.status).toBe(401);
+  });
+
+  it("resolves two concurrent uses of the same token as exactly one winner", async () => {
+    const { user, email } = await createTestUser();
+    await request(app).post("/api/auth/forgot-password").send({ email });
+    const token = await readResetTokenFromNotification(user.id);
+
+    const [a, b] = await Promise.all([
+      request(app).post("/api/auth/reset-password").send({ token, newPassword: "candidate-password-a" }),
+      request(app).post("/api/auth/reset-password").send({ token, newPassword: "candidate-password-b" }),
+    ]);
+
+    const statuses = [a.status, b.status].sort((x, y) => x - y);
+    expect(statuses).toEqual([204, 401]);
+  });
+
+  it("rejects an unknown token", async () => {
+    const res = await request(app)
+      .post("/api/auth/reset-password")
+      .send({ token: "not-a-real-token", newPassword: "a-brand-new-password" });
+    expect(res.status).toBe(401);
+  });
+
+  it("rejects an expired token", async () => {
+    const { user, email } = await createTestUser();
+    await request(app).post("/api/auth/forgot-password").send({ email });
+    const token = await readResetTokenFromNotification(user.id);
+
+    await prisma.passwordResetToken.updateMany({
+      where: { userId: user.id },
+      data: { expiresAt: new Date(Date.now() - 1000) },
+    });
+
+    const res = await request(app)
+      .post("/api/auth/reset-password")
+      .send({ token, newPassword: "a-brand-new-password" });
+    expect(res.status).toBe(401);
+  });
+
+  it("rejects a malformed request body", async () => {
+    const res = await request(app).post("/api/auth/reset-password").send({ token: "x", newPassword: "short" });
+    expect(res.status).toBe(400);
+  });
+});

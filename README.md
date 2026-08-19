@@ -221,8 +221,9 @@ one — see [CI](#ci) below for the actual backstop.
 `.github/workflows/ci.yml` runs on every push to `main` and every pull
 request: install, typecheck, lint, build, then — against two fresh
 Postgres databases created in the job itself, the same dev/test split
-described in [The test database](#the-test-database) — migrate and run the
-seed script for real, then run the full test suite.
+described in [The test database](#the-test-database) — generate
+`openapi.json`, migrate and run the seed script for real, then run the
+full test suite twice.
 
 Running the seed script itself, not just type-checking it, is deliberate:
 this project's seed script broke silently once already (a schema migration
@@ -230,6 +231,21 @@ dropped a column it still referenced) in a way no type-check would have
 caught, for the reason explained in [Code quality](#code-quality) above.
 Actually executing it against a real, empty database is the only check
 that would have caught that at the time, so that's what CI does.
+
+The build fails if the freshly generated `openapi.json` differs from the
+copy committed at the repo root (see [API documentation](#api-documentation)
+for why that file is committed at all) — `git diff --exit-code` against it
+right after generating it. The generated file is also uploaded as a workflow
+artifact regardless of whether the rest of the job passes, so it's always
+inspectable from the Actions run.
+
+The test suite runs twice, as two separate steps, not once: see
+[docs/concurrency.md](docs/concurrency.md)'s "Known intermittent test
+failure" section for why. In short, an intermittent test-timeout failure was
+observed locally but its real baseline rate couldn't be cleanly measured
+under this repo's own stress-testing methodology; CI's runner is the first
+environment free of that methodology's confounds, so both passes' results
+are the first trustworthy data point on how often it actually happens.
 
 ## API documentation
 
@@ -258,3 +274,98 @@ this generated spec — `src/openapi/openapi.test.ts` asserts it as part of
 the normal test suite, so a new route added without corresponding
 documentation fails the build the same way an unguarded (no auth/role
 check) route already does.
+
+With `DOCS_ENABLED` off (the production default), the live `/api/docs`
+page isn't reachable at all — `openapi.json` at the repo root is how a
+frontend developer reads the contract in that case. It's generated, not
+hand-written, and CI fails the build if the committed copy doesn't match
+what the code actually produces (see [CI](#ci)) — regenerate it locally
+with `npm run generate:openapi` after any route change and commit the
+result alongside your code change, the same way you'd commit a lockfile
+change.
+
+## Deploying to Railway
+
+This section covers what's specific to Railway. Everything in
+[Environment variables](#environment-variables) still applies — Railway
+just needs a few of them set to particular kinds of values, and a couple of
+its own dashboard settings configured correctly.
+
+### Build: Docker, not Nixpacks
+
+`railway.json` sets `build.builder` to `DOCKERFILE`, which makes Railway
+build and run the repo's own multi-stage `Dockerfile` instead of its
+default Nixpacks auto-detection. **This means the Dockerfile must build
+cleanly, or nothing deploys at all** — there's no fallback. Before pushing
+a change to the Dockerfile (or to anything the build stage touches —
+`package.json`, `tsconfig*.json`, `prisma/schema.prisma`), verify it builds
+locally:
+
+```bash
+docker build .
+```
+
+The image runs as a non-root user and is built in stages so the final
+runtime image only carries production dependencies, the compiled `dist/`
+output, the generated Prisma client, and `prisma/` itself (needed for the
+pre-deploy migration step below) — not the TypeScript compiler, ESLint,
+Vitest, or any other dev-only tooling.
+
+### Migrations run as a pre-deploy command, not in the start command
+
+`prisma migrate deploy` must run **once, before** a new deployment starts
+receiving traffic — not every time the server process boots (that would
+race multiple instances migrating concurrently on any deploy that scales
+past one instance) and not left for someone to remember to run manually.
+
+Railway has a setting for exactly this. In the service's **Settings ->
+Deploy -> Pre-Deploy Command**, set:
+
+```
+npx prisma migrate deploy
+```
+
+`railway.json` also declares this as `deploy.preDeployCommand`, so a fresh
+service created from this repo picks it up automatically — the dashboard
+setting above is what to check/set by hand if you're configuring an
+existing service, or if you ever need to confirm what's actually
+configured (railway.json is a starting point Railway may not always keep
+perfectly in sync with dashboard-made changes). Either way, `dist/server.js`
+itself (the start command) never runs migrations — only ever the pre-deploy
+step does.
+
+### Database URL: internal, not public
+
+Railway's Postgres plugin gives you two connection strings. Use the
+**internal** one (`*.railway.internal`) for this service's `DATABASE_URL`
+— it only resolves inside Railway's private network, is faster (no round
+trip to the public internet), and isn't exposed outside your project. The
+**public** one (a `*.proxy.rlwy.net` host) is for connecting from outside
+Railway — your own laptop via `psql`, a local script — not for the
+deployed app itself. Both are documented, side by side, in `.env.example`.
+
+### CORS_ORIGINS is required in production
+
+The server refuses to start in production without it (see
+[Environment variables](#environment-variables) and `src/config/env.ts`).
+Railway issues a distinct URL per environment — production, staging, every
+PR preview — so if a frontend is deployed on Railway too, `CORS_ORIGINS`
+commonly needs more than one entry as you add environments; it's a plain
+comma-separated list.
+
+### Healthcheck and restart policy
+
+`railway.json` points Railway's healthcheck at `GET /health`, which does a
+real `SELECT 1` against Postgres (not just "is the process alive") — see
+`src/app.ts`. `deploy.restartPolicyType: ON_FAILURE` with a bounded retry
+count means a crash-looping deploy fails visibly instead of restarting
+forever silently.
+
+### SIGTERM and graceful shutdown
+
+Railway sends `SIGTERM` on every redeploy or restart. `src/server.ts`
+handles it: stop accepting new connections, let in-flight requests finish,
+disconnect Prisma, then exit — not an abrupt kill mid-request. There's a
+30-second bounded fallback in case something never finishes on its own,
+but Railway's own grace period before a force-kill is longer than that, so
+this should never actually need to fire in practice.

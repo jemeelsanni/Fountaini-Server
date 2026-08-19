@@ -54,6 +54,37 @@ jobs:
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/school_portal?schema=public
 
+      # openapi.json is committed at the repo root as the contract-of-record
+      # for the frontend — DOCS_ENABLED is off in production, so version
+      # control, not a live endpoint, is how it reads the API shape (see
+      # README.md's "API documentation"). generateOpenApiDocument() never
+      # queries the database; DATABASE_URL here only needs to satisfy
+      # env.ts's z.url() check, and points at the scratch DB above (already
+      # created and migrated by this point) for consistency with the rest
+      # of the job rather than out of any real need.
+      - name: Generate openapi.json
+        run: npm run generate:openapi
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/school_portal?schema=public
+          JWT_ACCESS_SECRET: ci-only-insecure-jwt-secret-do-not-use-in-production-000000
+
+      # Fails the build if a route/schema change wasn't accompanied by
+      # re-running `npm run generate:openapi` and committing the result —
+      # otherwise the committed file silently drifts from what the code
+      # actually serves.
+      - name: Check openapi.json is up to date
+        run: |
+          if ! git diff --exit-code openapi.json; then
+            echo "::error::openapi.json is stale. Run 'npm run generate:openapi' and commit the result."
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: openapi
+          path: openapi.json
+
       # The actual point of this job, per the incident that motivated it:
       # prisma/seed.ts silently broke at runtime during an earlier schema
       # migration (it used a scalar field the schema no longer had) without
@@ -82,5 +113,17 @@ jobs:
       # (committed, credentials matching the postgres service above) itself
       # — see README.md's "The test database" section for why this file's
       # values are what they are.
-      - name: Run tests
+      #
+      # Run twice, deliberately: docs/concurrency.md documents an
+      # intermittent test-timeout failure whose true baseline rate was never
+      # measured cleanly, because every measurement so far ran under this
+      # session's own confounds (back-to-back stress loops, a concurrent
+      # diagnostic poller). GitHub's runner is the first environment free of
+      # both, so two independent passes in the same job give a first real
+      # data point on neutral hardware — not a retry-until-green, both
+      # results are reported.
+      - name: Run tests (1st pass)
+        run: npm test
+
+      - name: Run tests (2nd pass)
         run: npm test

@@ -4,7 +4,13 @@ import { z } from "zod";
 import "./zodSetup.js";
 import { createAcademicSessionSchema, createClassFormTeacherSchema, createClassSchema, createClassSubjectAssignmentSchema, createSubjectSchema, createTermSchema, idParamsSchema as academicStructureIdParamsSchema } from "../modules/academic-structure/academic-structure.schemas.js";
 import { convertEnquirySchema, createEnquirySchema, idParamsSchema as admissionsIdParamsSchema, listEnquiriesQuerySchema, updateEnquirySchema } from "../modules/admissions/admissions.schemas.js";
-import { changePasswordSchema, loginSchema, refreshSchema } from "../modules/auth/auth.schemas.js";
+import {
+  changePasswordSchema,
+  loginSchema,
+  refreshSchema,
+  requestPasswordResetSchema,
+  resetPasswordSchema,
+} from "../modules/auth/auth.schemas.js";
 import { classAttendanceQuerySchema, correctAttendanceSchema, idParamsSchema as attendanceIdParamsSchema, openSessionSchema, scanSchema } from "../modules/attendance/attendance.schemas.js";
 import { listAuditLogQuerySchema } from "../modules/audit/audit.schemas.js";
 import { createFeeStructureSchema, idParamsSchema as feesIdParamsSchema, recordPaymentSchema, updateFeeObligationSchema } from "../modules/fees/fees.schemas.js";
@@ -20,6 +26,7 @@ import {
   studentTermParamsSchema,
   writeCommentSchema,
 } from "../modules/results/results.schemas.js";
+import { createSchoolSchema, updateSchoolSchema } from "../modules/school/school.schemas.js";
 import { bulkUpsertScoresSchema, idParamsSchema as scoresIdParamsSchema, submitScoresSchema } from "../modules/scores/scores.schemas.js";
 import { createStaffSchema, idParamsSchema as staffIdParamsSchema, updateStaffSchema } from "../modules/staff/staff.schemas.js";
 import { createEnrollmentSchema, createStudentSchema, idParamsSchema as studentsIdParamsSchema, updateStudentSchema } from "../modules/students/students.schemas.js";
@@ -62,6 +69,7 @@ import {
   ResultSchema,
   ResultWithStudentSchema,
   ScanResultSchema,
+  SchoolSchema,
   ScoreSchema,
   StaffSchema,
   StaffWithUserSchema,
@@ -307,6 +315,20 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     requestBody: changePasswordSchema,
     responses: { 204: noContent },
   },
+  "POST /api/auth/forgot-password": {
+    summary:
+      "Request a password reset email (public). Always responds 204 regardless of whether the email " +
+      "belongs to an account — the response never reveals whether an address is registered.",
+    requestBody: requestPasswordResetSchema,
+    responses: { 204: noContent },
+  },
+  "POST /api/auth/reset-password": {
+    summary:
+      "Complete a password reset using the token emailed by the forgot-password request (public). " +
+      "Single-use, short-lived, and revokes every existing refresh token for the account on success.",
+    requestBody: resetPasswordSchema,
+    responses: { 204: noContent },
+  },
 
   // --- fees -----------------------------------------------------------------
   "POST /api/fee-structures": {
@@ -487,6 +509,22 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     requestParams: resultsIdParamsSchema,
     requestBody: writeCommentSchema,
     responses: { 200: { description: "OK", schema: ResultSchema } },
+  },
+
+  // --- school -----------------------------------------------------------------
+  "GET /api/school": {
+    summary: "Get the school's singleton record (admin only)",
+    responses: { 200: { description: "OK", schema: SchoolSchema } },
+  },
+  "POST /api/school": {
+    summary: "Create the school's singleton record (admin only) — fails once one already exists",
+    requestBody: createSchoolSchema,
+    responses: { 201: { description: "Created", schema: SchoolSchema } },
+  },
+  "PATCH /api/school": {
+    summary: "Update the school's singleton record (admin only)",
+    requestBody: updateSchoolSchema,
+    responses: { 200: { description: "OK", schema: SchoolSchema } },
   },
 
   // --- scores -----------------------------------------------------------------

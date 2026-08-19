@@ -16,3 +16,14 @@ export const changePasswordSchema = z.object({
   newPassword: z.string().min(8),
 });
 export type ChangePasswordBody = z.infer<typeof changePasswordSchema>;
+
+export const requestPasswordResetSchema = z.object({
+  email: z.email(),
+});
+export type RequestPasswordResetBody = z.infer<typeof requestPasswordResetSchema>;
+
+export const resetPasswordSchema = z.object({
+  token: z.string().min(1),
+  newPassword: z.string().min(8),
+});
+export type ResetPasswordBody = z.infer<typeof resetPasswordSchema>;
