@@ -32,7 +32,22 @@ declare global {
 /// blanket, path-less requireAuth further down the chain would otherwise
 /// intercept these before Express ever checks whether it actually owns the
 /// path.
-export function mountOpenApiRoutes(app: Express, mounts: RouteMount[]): void {
+///
+/// `enabled` is threaded through explicitly (app.ts passes env.DOCS_ENABLED)
+/// rather than read from env directly in here, so a test can exercise the
+/// disabled case without mutating global env state — see openapi.test.ts.
+/// When disabled, neither route is registered at all: a request to either
+/// path just falls through to the app's normal 404 handler, same as any
+/// other route that doesn't exist. The spec's own route-coverage check
+/// (openapi.test.ts) calls generateOpenApiDocument() directly rather than
+/// through these HTTP routes, so it keeps running regardless of this flag —
+/// disabling public docs access was never meant to also stop verifying
+/// every route still HAS documentation.
+export function mountOpenApiRoutes(app: Express, mounts: RouteMount[], enabled: boolean): void {
+  if (!enabled) {
+    return;
+  }
+
   app.get("/api/openapi.json", (_req, res) => {
     res.status(200).json(generateOpenApiDocument(app, mounts));
   });

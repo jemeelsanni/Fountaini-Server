@@ -158,6 +158,7 @@ server refuses to start rather than run with a missing or malformed value.
 | `JWT_ACCESS_TTL_SECONDS` | How long an issued access token stays valid, in seconds. Defaults to `900` (15 minutes). |
 | `REFRESH_TOKEN_TTL_DAYS` | How long a refresh token stays valid before it must be used to rotate to a new one. Defaults to `30`. |
 | `PUBLIC_BASE_URL` | The externally-reachable base URL for this API. Used for exactly one thing: the `servers` entry in the generated OpenAPI spec, so the "try it out" requests in `/api/docs` point at the right host. Defaults to `http://localhost:4000`, which is correct for local dev — **set this explicitly in every deployed environment** (e.g. `https://your-app.up.railway.app`), or the docs will show requests going to the wrong place. |
+| `DOCS_ENABLED` | Whether `/api/docs` and `/api/openapi.json` are mounted at all. Unset by default, which means "on everywhere except `NODE_ENV=production`" — the generated spec's `x-roles` on every operation is a complete map of who can call what, not something to leave publicly reachable in production by default. Set explicitly (`true`/`false`) to override that default in either direction. |
 
 Two more, used only by the seed script (`prisma/seed.ts`) and **not**
 present in `.env.example`, since they're optional and only relevant to that
@@ -202,9 +203,33 @@ npm run lint         # ESLint
 npm run lint:fix     # ESLint, auto-fixing what it safely can
 ```
 
-`typecheck` only checks `src/**/*.ts` (see `tsconfig.json`'s `include`) —
-scripts under `prisma/` (like the seed script) run via `tsx` directly and
-aren't covered by it.
+`typecheck` runs against two separate `tsconfig`s: the main one
+(`src/**/*.ts`) and `tsconfig.prisma.json` (`prisma/**/*.ts` — the seed
+script and its data files). They're separate configs, not one shared
+`include`, because the main one pins `rootDir: "src"`, which TypeScript
+enforces even under `--noEmit`.
+
+Worth knowing: a type-check, even with `prisma/` included, does **not**
+reliably catch a Prisma `create()`/`update()` call passing a field an input
+type no longer has — Prisma's generated input types are complex enough
+(conditional `XOR` types) that TypeScript's excess-property checking
+doesn't fire through them. That's a real, confirmed gap, not a hypothetical
+one — see [CI](#ci) below for the actual backstop.
+
+## CI
+
+`.github/workflows/ci.yml` runs on every push to `main` and every pull
+request: install, typecheck, lint, build, then — against two fresh
+Postgres databases created in the job itself, the same dev/test split
+described in [The test database](#the-test-database) — migrate and run the
+seed script for real, then run the full test suite.
+
+Running the seed script itself, not just type-checking it, is deliberate:
+this project's seed script broke silently once already (a schema migration
+dropped a column it still referenced) in a way no type-check would have
+caught, for the reason explained in [Code quality](#code-quality) above.
+Actually executing it against a real, empty database is the only check
+that would have caught that at the time, so that's what CI does.
 
 ## API documentation
 
@@ -223,7 +248,10 @@ it.
 
 Both are public — no login needed to view the docs themselves (you'll still
 need a real access token to actually call most of the routes they
-describe, same as always).
+describe, same as always). Both are also gated by `DOCS_ENABLED` (see
+[Environment variables](#environment-variables)): on by default in dev,
+off by default in production, since the spec's `x-roles` on every
+operation amounts to a complete authorization map of the API.
 
 Every route registered anywhere in `src/modules/` is required to appear in
 this generated spec — `src/openapi/openapi.test.ts` asserts it as part of

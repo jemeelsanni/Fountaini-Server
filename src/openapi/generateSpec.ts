@@ -6,6 +6,7 @@ import { env } from "../config/env.js";
 import { buildRouteInventory, type DiscoveredRoute, type RouteMount } from "../authorization/routeInventory.js";
 import { PUBLIC_ROUTES } from "../authorization/publicRoutes.js";
 import "./zodSetup.js";
+import { commonErrorResponses } from "./errorResponses.js";
 import { registry } from "./registry.js";
 import { ROUTE_SPECS, type ResponseSpec, type RouteSpec } from "./routeSpecs.js";
 
@@ -64,7 +65,8 @@ export function findUndocumentedRoutes(inventory: DiscoveredRoute[]): string[] {
 }
 
 function registerRoute(route: DiscoveredRoute, spec: RouteSpec): void {
-  const isPublic = PUBLIC_ROUTES.has(routeKey(route));
+  const key = routeKey(route);
+  const isPublic = PUBLIC_ROUTES.has(key);
   const request: {
     body?: ReturnType<typeof jsonContent>;
     params?: RouteParameter;
@@ -80,6 +82,16 @@ function registerRoute(route: DiscoveredRoute, spec: RouteSpec): void {
     request.query = spec.requestQuery;
   }
 
+  // Error responses are mechanically derived (see errorResponses.ts) —
+  // spec.responses (the route's own declared success responses) is spread
+  // last so an explicit entry there would win on any status-code collision,
+  // though none exists today: the derived set only ever produces
+  // 400/401/403/404/409, never a 2xx.
+  const responses = {
+    ...buildResponses(commonErrorResponses(route, key, isPublic, spec)),
+    ...buildResponses(spec.responses),
+  };
+
   registry.registerPath({
     method: route.method.toLowerCase() as "get" | "post" | "put" | "patch" | "delete",
     path: expressPathToOpenApi(route.path),
@@ -90,7 +102,7 @@ function registerRoute(route: DiscoveredRoute, spec: RouteSpec): void {
     ...(route.allowedRoles ? { "x-roles": [...route.allowedRoles].sort() } : {}),
     ...(isPublic ? {} : { security: [{ bearerAuth: [] }] }),
     request,
-    responses: buildResponses(spec.responses),
+    responses,
   });
 }
 

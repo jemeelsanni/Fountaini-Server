@@ -17,6 +17,20 @@ const envSchema = z.object({
   // own address is. Defaults to localhost so `npm run dev` works with zero
   // config; set explicitly in every deployed environment.
   PUBLIC_BASE_URL: z.url().default("http://localhost:4000"),
+  // Left unset here (not `.default(...)`) rather than defaulted directly —
+  // its default depends on NODE_ENV, computed below. z.coerce.boolean()
+  // would also be the wrong tool for this even without that: it treats any
+  // non-empty string, including the literal text "false", as true.
+  DOCS_ENABLED: z.enum(["true", "false"]).optional(),
 });
 
-export const env = envSchema.parse(process.env);
+const parsedEnv = envSchema.parse(process.env);
+
+export const env = {
+  ...parsedEnv,
+  // /api/docs and /api/openapi.json publish `x-roles` for every route — a
+  // complete authorization map of the API — so this is on by default
+  // everywhere except production; only an explicit DOCS_ENABLED overrides
+  // that default in either direction.
+  DOCS_ENABLED: parsedEnv.DOCS_ENABLED ? parsedEnv.DOCS_ENABLED === "true" : parsedEnv.NODE_ENV !== "production",
+};

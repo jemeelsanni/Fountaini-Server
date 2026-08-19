@@ -3,6 +3,7 @@ import express, { type NextFunction, type Request, type Response, type Router } 
 import helmet from "helmet";
 import { pinoHttp } from "pino-http";
 import "./authorization/types.js";
+import { env } from "./config/env.js";
 import { logger } from "./config/logger.js";
 import { AppError } from "./errors/AppError.js";
 import { academicStructureRouter } from "./modules/academic-structure/academic-structure.routes.js";
@@ -76,7 +77,10 @@ export function createApp() {
   // path, which — per Express semantics — matches ANY request reaching
   // that mount point, not just routes defined in that file. These routes
   // are public (see PUBLIC_ROUTES) and must never reach that blanket auth.
-  mountOpenApiRoutes(app, routeMounts);
+  // Gated by DOCS_ENABLED (on by default outside production — see env.ts):
+  // the spec publishes `x-roles` for every route, a complete authorization
+  // map, not something to leave publicly reachable in production by default.
+  mountOpenApiRoutes(app, routeMounts, env.DOCS_ENABLED);
 
   for (const { prefix, router } of routeMounts) {
     app.use(prefix, router);

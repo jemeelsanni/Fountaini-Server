@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - run: npm run lint
+
+      - run: npm run build
+
+      # Two databases, mirroring the local dev/test split documented in
+      # README.md's "The test database" section — not one database shared
+      # between the seed-verification step below and the test suite, so a
+      # row the seed script creates can never be mistaken for test fixture
+      # data or vice versa.
+      - name: Create databases
+        run: |
+          PGPASSWORD=postgres psql -h localhost -U postgres -c "CREATE DATABASE school_portal;"
+          PGPASSWORD=postgres psql -h localhost -U postgres -c "CREATE DATABASE school_portal_test;"
+
+      - name: Migrate the scratch database
+        run: npx prisma migrate deploy
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/school_portal?schema=public
+
+      # The actual point of this job, per the incident that motivated it:
+      # prisma/seed.ts silently broke at runtime during an earlier schema
+      # migration (it used a scalar field the schema no longer had) without
+      # any typecheck or lint catching it — prisma/ wasn't in tsconfig's
+      # `include` at the time (now fixed, see tsconfig.prisma.json), but
+      # even with that fixed, a Prisma create()/update() call passing a
+      # field an input type no longer has does NOT reliably trigger a
+      # TypeScript excess-property error, because Prisma's generated
+      # create/update input types are complex conditional (XOR) types that
+      # defeat TS's structural excess-property checking — confirmed by
+      # deliberately reintroducing that exact bug locally and observing
+      # `tsc --noEmit` stay clean. A type-check alone would not have caught
+      # it; actually running the seed against a real, fresh database is the
+      # only check that does.
+      - name: Run the seed against a fresh database
+        run: npm run db:seed
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/school_portal?schema=public
+
+      - name: Migrate the test database
+        run: npx prisma migrate deploy
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/school_portal_test?schema=public
+
+      # No DATABASE_URL override here: vitest.setup.ts loads .env.test
+      # (committed, credentials matching the postgres service above) itself
+      # — see README.md's "The test database" section for why this file's
+      # values are what they are.
+      - name: Run tests
+        run: npm test

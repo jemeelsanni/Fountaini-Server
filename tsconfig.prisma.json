@@ -1,0 +1,19 @@
+{
+  // Separate from tsconfig.json rather than an extra entry in its
+  // `include`: the base config pins `rootDir: "src"`, and TypeScript
+  // errors ("File is not under 'rootDir'") on any included file outside
+  // it, --noEmit or not. This is prisma/'s own equivalent, sharing every
+  // other compiler option via `extends` so it stays in sync with the main
+  // config rather than drifting into its own laxer ruleset.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "prisma",
+    // Without this, `process`/`console` are unresolved here even though
+    // @types/node is installed — TS's automatic @types inclusion apparently
+    // doesn't kick in the same way for this second, narrower `include` (this
+    // isn't needed in the base tsconfig.json, which resolves the same
+    // globals for src/ with no explicit `types` at all).
+    "types": ["node"]
+  },
+  "include": ["prisma/**/*.ts"]
+}
