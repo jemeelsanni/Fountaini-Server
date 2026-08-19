@@ -324,6 +324,127 @@ describe("class-subject-teacher assignments", () => {
   });
 });
 
+describe("class form teachers", () => {
+  it("assigns a form teacher and rejects a non-teaching staff role", async () => {
+    const { token } = await createAdmin("admin@test.local");
+    const { staff: teacherStaff } = await createTeacher("teacher@test.local");
+    const { staff: bursarStaff } = await createBursar("bursar@test.local");
+    const klass = await createClass("JSS1", "A");
+    const session = await prisma.academicSession.create({
+      data: { name: "2026/2027", startDate: new Date("2026-09-01"), endDate: new Date("2027-07-31") },
+    });
+
+    const validAssignment = await request(app)
+      .post("/api/class-form-teachers")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ classId: klass.id, teacherId: teacherStaff.id, academicSessionId: session.id });
+    expect(validAssignment.status).toBe(201);
+
+    const bursarAssignment = await request(app)
+      .post("/api/class-form-teachers")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ classId: klass.id, teacherId: bursarStaff.id, academicSessionId: session.id });
+    expect(bursarAssignment.status).toBe(400);
+  });
+
+  it("rejects a second form teacher for the same class/session (one form teacher per class per session)", async () => {
+    const { token } = await createAdmin("admin@test.local");
+    const { staff: teacherA } = await createTeacher("teacher-a@test.local");
+    const { staff: teacherB } = await createTeacher("teacher-b@test.local");
+    const klass = await createClass("JSS1", "A");
+    const session = await prisma.academicSession.create({
+      data: { name: "2026/2027", startDate: new Date("2026-09-01"), endDate: new Date("2027-07-31") },
+    });
+
+    await request(app)
+      .post("/api/class-form-teachers")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ classId: klass.id, teacherId: teacherA.id, academicSessionId: session.id });
+    const res = await request(app)
+      .post("/api/class-form-teachers")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ classId: klass.id, teacherId: teacherB.id, academicSessionId: session.id });
+
+    expect(res.status).toBe(409);
+  });
+
+  it("allows a class to have a different form teacher in a different session", async () => {
+    const { token } = await createAdmin("admin@test.local");
+    const { staff: teacherA } = await createTeacher("teacher-a@test.local");
+    const { staff: teacherB } = await createTeacher("teacher-b@test.local");
+    const klass = await createClass("JSS1", "A");
+    const sessionA = await prisma.academicSession.create({
+      data: { name: "2025/2026", startDate: new Date("2025-09-01"), endDate: new Date("2026-07-31") },
+    });
+    const sessionB = await prisma.academicSession.create({
+      data: { name: "2026/2027", startDate: new Date("2026-09-01"), endDate: new Date("2027-07-31") },
+    });
+
+    const resA = await request(app)
+      .post("/api/class-form-teachers")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ classId: klass.id, teacherId: teacherA.id, academicSessionId: sessionA.id });
+    const resB = await request(app)
+      .post("/api/class-form-teachers")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ classId: klass.id, teacherId: teacherB.id, academicSessionId: sessionB.id });
+
+    expect(resA.status).toBe(201);
+    expect(resB.status).toBe(201);
+  });
+
+  it("scopes a teacher's form-teacher list to their own assignments regardless of the query param", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const { staff: teacherA, token: teacherAToken } = await createTeacher("teacher-a@test.local");
+    const { staff: teacherB } = await createTeacher("teacher-b@test.local");
+    const klassA = await createClass("JSS1", "A");
+    const klassB = await createClass("JSS1", "B");
+    const session = await prisma.academicSession.create({
+      data: { name: "2026/2027", startDate: new Date("2026-09-01"), endDate: new Date("2027-07-31") },
+    });
+
+    await prisma.classFormTeacher.create({
+      data: { classId: klassA.id, teacherId: teacherA.id, academicSessionId: session.id },
+    });
+    await prisma.classFormTeacher.create({
+      data: { classId: klassB.id, teacherId: teacherB.id, academicSessionId: session.id },
+    });
+
+    const res = await request(app)
+      .get(`/api/class-form-teachers?teacherId=${teacherB.id}`)
+      .set("Authorization", `Bearer ${teacherAToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].teacherId).toBe(teacherA.id);
+
+    const asAdmin = await request(app)
+      .get("/api/class-form-teachers")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(asAdmin.body).toHaveLength(2);
+  });
+
+  it("deletes a form teacher assignment", async () => {
+    const { token } = await createAdmin("admin@test.local");
+    const { staff } = await createTeacher("teacher@test.local");
+    const klass = await createClass("JSS1", "A");
+    const session = await prisma.academicSession.create({
+      data: { name: "2026/2027", startDate: new Date("2026-09-01"), endDate: new Date("2027-07-31") },
+    });
+    const assignment = await prisma.classFormTeacher.create({
+      data: { classId: klass.id, teacherId: staff.id, academicSessionId: session.id },
+    });
+
+    const res = await request(app)
+      .delete(`/api/class-form-teachers/${assignment.id}`)
+      .set("Authorization", `Bearer ${token}`);
+    expect(res.status).toBe(204);
+
+    const stillThere = await prisma.classFormTeacher.findUnique({ where: { id: assignment.id } });
+    expect(stillThere).toBeNull();
+  });
+});
+
 async function createCurrentSessionViaApi(appInstance: ReturnType<typeof createApp>, token: string, name = "S") {
   const res = await request(appInstance)
     .post("/api/academic-sessions")

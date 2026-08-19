@@ -3,6 +3,7 @@ import * as service from "./academic-structure.service.js";
 import type {
   CreateAcademicSessionBody,
   CreateClassBody,
+  CreateClassFormTeacherBody,
   CreateClassSubjectAssignmentBody,
   CreateSubjectBody,
   CreateTermBody,
@@ -80,5 +81,26 @@ export async function listClassSubjectAssignments(req: Request, res: Response): 
 export async function deleteClassSubjectAssignment(req: Request, res: Response): Promise<void> {
   const { id } = req.params as unknown as IdParams;
   await service.deleteClassSubjectAssignment(id);
+  res.status(204).send();
+}
+
+export async function createClassFormTeacher(req: Request, res: Response): Promise<void> {
+  const assignment = await service.createClassFormTeacher(req.body as CreateClassFormTeacherBody);
+  res.status(201).json(assignment);
+}
+
+export async function listClassFormTeachers(req: Request, res: Response): Promise<void> {
+  const queryTeacherId = typeof req.query.teacherId === "string" ? req.query.teacherId : undefined;
+  const classId = typeof req.query.classId === "string" ? req.query.classId : undefined;
+
+  const teacherId =
+    req.principal?.roles.has("TEACHER") ? (req.principal.staffId ?? undefined) : queryTeacherId;
+
+  res.status(200).json(await service.listClassFormTeachers({ teacherId, classId }));
+}
+
+export async function deleteClassFormTeacher(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as unknown as IdParams;
+  await service.deleteClassFormTeacher(id);
   res.status(204).send();
 }

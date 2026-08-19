@@ -214,6 +214,93 @@ describe("full report card lifecycle", () => {
   });
 });
 
+describe("class teacher / principal comments — normal (non-override) write path", () => {
+  async function buildDraftResultWithFormTeacher() {
+    const session = await createCurrentAcademicSession("2026/2027");
+    const term = await createTermForSession(session.id, "First Term", 1);
+    const klass = await createClass("JSS1", "A");
+    const student = await createBareStudent("ADM-001");
+    await enrollStudent(student.id, klass.id, session.id);
+
+    const { staff: formTeacherStaff, token: formTeacherToken } = await createTeacher("form-teacher@test.local");
+    await prisma.classFormTeacher.create({
+      data: { classId: klass.id, teacherId: formTeacherStaff.id, academicSessionId: session.id },
+    });
+
+    const [result] = await computeResultsForClass({ classId: klass.id, termId: term.id });
+    return { result: result as { id: string; status: string }, formTeacherToken };
+  }
+
+  it("lets the form teacher write classTeacherComment on a DRAFT result without creating a ResultOverride row", async () => {
+    const { result, formTeacherToken } = await buildDraftResultWithFormTeacher();
+    expect(result.status).toBe("DRAFT");
+
+    const res = await request(app)
+      .patch(`/api/results/${result.id}/class-teacher-comment`)
+      .set("Authorization", `Bearer ${formTeacherToken}`)
+      .send({ comment: "A pleasure to teach this term." });
+
+    expect(res.status).toBe(200);
+    expect(res.body.classTeacherComment).toBe("A pleasure to teach this term.");
+    const overrides = await prisma.resultOverride.findMany({ where: { resultId: result.id } });
+    expect(overrides, "the routine write path must never write a ResultOverride row").toHaveLength(0);
+  });
+
+  it("lets an admin write principalComment on a DRAFT result without creating a ResultOverride row", async () => {
+    const { result } = await buildDraftResultWithFormTeacher();
+    const { token: adminToken } = await createAdmin("admin2@test.local");
+
+    const res = await request(app)
+      .patch(`/api/results/${result.id}/principal-comment`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ comment: "Keep up the good work." });
+
+    expect(res.status).toBe(200);
+    expect(res.body.principalComment).toBe("Keep up the good work.");
+    const overrides = await prisma.resultOverride.findMany({ where: { resultId: result.id } });
+    expect(overrides).toHaveLength(0);
+  });
+
+  it("rejects both direct comment writes once the result is FINALIZED, and leaves overrideResult as the only path", async () => {
+    const { result, formTeacherToken } = await buildDraftResultWithFormTeacher();
+    const { token: adminToken, user: adminUser } = await createAdmin("admin3@test.local");
+
+    const finalizeRes = await request(app)
+      .post(`/api/results/${result.id}/finalize`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(finalizeRes.status).toBe(200);
+
+    const classTeacherAttempt = await request(app)
+      .patch(`/api/results/${result.id}/class-teacher-comment`)
+      .set("Authorization", `Bearer ${formTeacherToken}`)
+      .send({ comment: "Too late now." });
+    expect(classTeacherAttempt.status).toBe(400);
+
+    const principalAttempt = await request(app)
+      .patch(`/api/results/${result.id}/principal-comment`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ comment: "Too late now." });
+    expect(principalAttempt.status).toBe(400);
+
+    // overrideResult's own FINALIZED-only behavior is unchanged: it's still
+    // the one way to change either comment field once finalized.
+    const overrideRes = await request(app)
+      .post(`/api/results/${result.id}/override`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({
+        fieldName: "classTeacherComment",
+        newValue: "Corrected comment after review.",
+        reason: "Original comment had a factual error about attendance.",
+      });
+    expect(overrideRes.status).toBe(200);
+    expect(overrideRes.body.classTeacherComment).toBe("Corrected comment after review.");
+
+    const overrides = await prisma.resultOverride.findMany({ where: { resultId: result.id } });
+    expect(overrides).toHaveLength(1);
+    expect(overrides[0]?.performedByUserId).toBe(adminUser.id);
+  });
+});
+
 describe("compute/finalize concurrency", () => {
   it("never lets a concurrent recompute silently change a result after it's finalized", async () => {
     const iterations = 50;

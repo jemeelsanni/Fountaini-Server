@@ -36,3 +36,13 @@ export const overrideResultSchema = z.object({
   reason: z.string().min(10, "A meaningful reason is required for overriding a finalized result"),
 });
 export type OverrideResultBody = z.infer<typeof overrideResultSchema>;
+
+/// The normal (non-override) comment write path — only valid while the
+/// Result is still DRAFT; see writeClassTeacherComment/writePrincipalComment
+/// in results.service.ts. Unlike overrideResultSchema, no `reason` field:
+/// this isn't a correction that needs justifying, it's the routine first
+/// write.
+export const writeCommentSchema = z.object({
+  comment: z.string().min(1),
+});
+export type WriteCommentBody = z.infer<typeof writeCommentSchema>;

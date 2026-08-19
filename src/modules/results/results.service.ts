@@ -206,3 +206,42 @@ export async function overrideResult(id: string, actorUserId: string, input: Ove
     return updated;
   });
 }
+
+/// Rejects with 404 (no such result) or 400 (not DRAFT) — never silently
+/// writes a comment that's no longer supposed to be writable this way. The
+/// `updateMany({ where: { id, status: "DRAFT" } })` + `count === 0` shape is
+/// the project's standard fix for the read-then-write race documented in
+/// docs/concurrency.md: without the status re-check baked into the WRITE's
+/// own WHERE clause, a concurrent finalizeResult() landing between a plain
+/// read and a plain write here could let a routine comment silently land on
+/// an already-FINALIZED result — exactly the "backwards" bug this whole
+/// feature exists to close, just moved one race window over.
+async function writeDraftResultField(
+  id: string,
+  data: { classTeacherComment: string } | { principalComment: string },
+) {
+  const { count } = await prisma.result.updateMany({
+    where: { id, status: "DRAFT" },
+    data,
+  });
+
+  if (count === 0) {
+    const result = await prisma.result.findUnique({ where: { id }, select: { id: true } });
+    if (!result) {
+      throw AppError.notFound("Result not found");
+    }
+    throw AppError.badRequest(
+      "Comments can only be written directly while the result is DRAFT — once finalized, use the override endpoint",
+    );
+  }
+
+  return prisma.result.findUniqueOrThrow({ where: { id } });
+}
+
+export function writeClassTeacherComment(id: string, comment: string) {
+  return writeDraftResultField(id, { classTeacherComment: comment });
+}
+
+export function writePrincipalComment(id: string, comment: string) {
+  return writeDraftResultField(id, { principalComment: comment });
+}

@@ -7,6 +7,7 @@ import type {
   IdParams,
   OverrideResultBody,
   StudentTermParams,
+  WriteCommentBody,
 } from "./results.schemas.js";
 
 export async function computeResults(req: Request, res: Response): Promise<void> {
@@ -39,4 +40,16 @@ export async function overrideResult(req: Request, res: Response): Promise<void>
   const { id } = req.params as unknown as IdParams;
   const updated = await service.overrideResult(id, req.principal.userId, req.body as OverrideResultBody);
   res.status(200).json(updated);
+}
+
+export async function writeClassTeacherComment(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as unknown as IdParams;
+  const { comment } = req.body as WriteCommentBody;
+  res.status(200).json(await service.writeClassTeacherComment(id, comment));
+}
+
+export async function writePrincipalComment(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as unknown as IdParams;
+  const { comment } = req.body as WriteCommentBody;
+  res.status(200).json(await service.writePrincipalComment(id, comment));
 }

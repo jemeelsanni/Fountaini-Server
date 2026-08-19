@@ -4,6 +4,7 @@ import { AppError } from "../../errors/AppError.js";
 import type {
   CreateAcademicSessionBody,
   CreateClassBody,
+  CreateClassFormTeacherBody,
   CreateClassSubjectAssignmentBody,
   CreateSubjectBody,
   CreateTermBody,
@@ -195,5 +196,53 @@ export async function deleteClassSubjectAssignment(id: string) {
   const { count } = await prisma.classSubjectAssignment.deleteMany({ where: { id } });
   if (count === 0) {
     throw AppError.notFound("Assignment not found");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Class form teachers
+// ---------------------------------------------------------------------------
+
+export async function createClassFormTeacher(input: CreateClassFormTeacherBody) {
+  const [klass, session, teacher] = await Promise.all([
+    prisma.class.findUnique({ where: { id: input.classId } }),
+    prisma.academicSession.findUnique({ where: { id: input.academicSessionId } }),
+    prisma.staff.findUnique({ where: { id: input.teacherId }, include: { user: { include: { roles: true } } } }),
+  ]);
+
+  if (!klass) throw AppError.notFound("Class not found");
+  if (!session) throw AppError.notFound("Academic session not found");
+  if (!teacher) throw AppError.notFound("Teacher (staff) not found");
+  const teacherRoles = new Set(teacher.user.roles.map((ur) => ur.role));
+  if (!teacherRoles.has("TEACHER") && !teacherRoles.has("ADMIN")) {
+    throw AppError.badRequest("The assigned staff member must have the TEACHER (or ADMIN) role");
+  }
+
+  try {
+    return await prisma.classFormTeacher.create({ data: input });
+  } catch (err) {
+    if (isUniqueConstraintError(err)) {
+      throw AppError.conflict("This class already has a form teacher assigned for this session");
+    }
+    throw err;
+  }
+}
+
+export function listClassFormTeachers(filter: { teacherId?: string; classId?: string }) {
+  return prisma.classFormTeacher.findMany({
+    where: {
+      teacherId: filter.teacherId,
+      classId: filter.classId,
+    },
+    include: { class: true, teacher: true, academicSession: true },
+  });
+}
+
+export async function deleteClassFormTeacher(id: string) {
+  // Same deleteMany-then-count reasoning as deleteClassSubjectAssignment
+  // above: avoids an unhandled P2025 on a concurrent double-delete.
+  const { count } = await prisma.classFormTeacher.deleteMany({ where: { id } });
+  if (count === 0) {
+    throw AppError.notFound("Form teacher assignment not found");
   }
 }

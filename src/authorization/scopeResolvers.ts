@@ -159,3 +159,44 @@ export async function canReadClassTimetable(principal: Principal, classId: strin
 
   return false;
 }
+
+/// "The form teacher may write classTeacherComment on a DRAFT result for
+/// their own class" — this is the resolver that enforces WHO. Deliberately
+/// does not check Result.status (DRAFT vs FINALIZED): that's business state,
+/// not identity, and belongs to writeClassTeacherComment()'s own 400, the
+/// same split canActOnAssignment/canReadPayment already draw for their own
+/// resolvers (see canReadPayment's "payment not found -> false" below for
+/// the same not-found-collapses-to-denied precedent this mirrors).
+export async function canWriteClassTeacherComment(
+  principal: Principal,
+  resultId: string,
+): Promise<boolean> {
+  if (principal.roles.has("ADMIN")) {
+    return true;
+  }
+  if (!principal.roles.has("TEACHER") || !principal.staffId) {
+    return false;
+  }
+
+  const result = await prisma.result.findUnique({
+    where: { id: resultId },
+    select: {
+      enrollment: { select: { classId: true } },
+      term: { select: { academicSessionId: true } },
+    },
+  });
+  if (!result) {
+    return false;
+  }
+
+  const formTeacher = await prisma.classFormTeacher.findUnique({
+    where: {
+      classId_academicSessionId: {
+        classId: result.enrollment.classId,
+        academicSessionId: result.term.academicSessionId,
+      },
+    },
+    select: { teacherId: true },
+  });
+  return formTeacher?.teacherId === principal.staffId;
+}

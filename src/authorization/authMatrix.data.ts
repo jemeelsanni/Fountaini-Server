@@ -42,7 +42,8 @@ export type ActorKey =
   | "unlinkedParent"
   | "ownStudent"
   | "otherStudent"
-  | "staffParent";
+  | "staffParent"
+  | "formTeacher";
 
 /// A concrete rejection status, or "allowed" — meaning the request must reach
 /// past the authorization layer (i.e. NOT be blocked with 401/403). Business
@@ -190,6 +191,7 @@ export const BESPOKE_ROUTE_KEYS: readonly string[] = [
   "GET /api/staff/:id",
   "GET /api/staff/:id/timetable",
   "GET /api/classes/:id/timetable",
+  "PATCH /api/results/:id/class-teacher-comment",
 ];
 
 let uniqueCounter = 0;
@@ -218,13 +220,34 @@ async function buildSharedWorld(generics: GenericActors) {
     `${unique("matrix-target")}@test.local`,
     unique("MATRIX-TGT"),
   );
-  await enrollStudent(targetStudent.id, klass.id, session.id);
+  const targetEnrollment = await enrollStudent(targetStudent.id, klass.id, session.id);
 
   const { staff: assignedTeacherStaff, token: assignedTeacherToken } = await createTeacher(
     `${unique("matrix-assigned-teacher")}@test.local`,
   );
   const assignment = await createAssignment(klass.id, subject.id, assignedTeacherStaff.id, session.id);
   const component = await createAssessmentComponent(session.id, unique("CA"), "CA", 40, 1);
+
+  // A form teacher for `klass`, distinct from assignedTeacherStaff (who is
+  // only a SUBJECT teacher there) — proves canWriteClassTeacherComment's
+  // TEACHER branch checks the form-teacher assignment specifically, not
+  // "any teacher connected to this class somehow." targetResult is the
+  // DRAFT report card the class-teacher-comment/principal-comment routes
+  // are tested against.
+  const { staff: formTeacherStaff, token: formTeacherToken } = await createTeacher(
+    `${unique("matrix-form-teacher")}@test.local`,
+  );
+  await prisma.classFormTeacher.create({
+    data: { classId: klass.id, teacherId: formTeacherStaff.id, academicSessionId: session.id },
+  });
+  const targetResult = await prisma.result.create({
+    data: {
+      studentId: targetStudent.id,
+      enrollmentId: targetEnrollment.id,
+      termId: term.id,
+      status: "DRAFT",
+    },
+  });
 
   const { parent: linkedParentRow, token: linkedParentToken } = await createParent(
     `${unique("matrix-linked-parent")}@test.local`,
@@ -369,6 +392,8 @@ async function buildSharedWorld(generics: GenericActors) {
     staffParentAssignment,
     disjointStudent,
     disjointPayment,
+    formTeacherToken,
+    targetResult,
   };
 }
 
@@ -417,6 +442,25 @@ const ASSIGNMENT_SCOPE_CASES: MatrixCase[] = [
   { actor: "unauthenticated", expectedStatus: 401 },
   { actor: "admin", expectedStatus: "allowed" },
   { actor: "assignedTeacher", expectedStatus: "allowed" },
+  { actor: "unassignedTeacher", expectedStatus: 403 },
+  { actor: "bursar", expectedStatus: 403 },
+  { actor: "unlinkedParent", expectedStatus: 403 },
+  { actor: "otherStudent", expectedStatus: 403 },
+];
+
+/// canWriteClassTeacherComment sits behind requireRole("ADMIN", "TEACHER"),
+/// same as canActOnAssignment. The sharp negative case here is
+/// assignedTeacher: they teach a SUBJECT in this exact class (a real
+/// ClassSubjectAssignment) but are not its form teacher — 403 for them is
+/// what proves this resolver checks the form-teacher assignment
+/// specifically, not "any teacher with some connection to this class."
+/// unassignedTeacher (no connection at all) is the weaker, redundant-but-
+/// cheap sanity check alongside it.
+const CLASS_TEACHER_COMMENT_CASES: MatrixCase[] = [
+  { actor: "unauthenticated", expectedStatus: 401 },
+  { actor: "admin", expectedStatus: "allowed" },
+  { actor: "formTeacher", expectedStatus: "allowed" },
+  { actor: "assignedTeacher", expectedStatus: 403 },
   { actor: "unassignedTeacher", expectedStatus: 403 },
   { actor: "bursar", expectedStatus: 403 },
   { actor: "unlinkedParent", expectedStatus: 403 },
@@ -493,6 +537,16 @@ export async function buildBespokeRows(generics: GenericActors): Promise<MatrixR
 
   const assignmentScopeTokens: Partial<Record<ActorKey, string>> = {
     admin: generics.admin.token,
+    assignedTeacher: world.assignedTeacherToken,
+    unassignedTeacher: generics.teacher.token,
+    bursar: generics.bursar.token,
+    unlinkedParent: generics.parent.token,
+    otherStudent: generics.student.token,
+  };
+
+  const classTeacherCommentTokens: Partial<Record<ActorKey, string>> = {
+    admin: generics.admin.token,
+    formTeacher: world.formTeacherToken,
     assignedTeacher: world.assignedTeacherToken,
     unassignedTeacher: generics.teacher.token,
     bursar: generics.bursar.token,
@@ -612,6 +666,17 @@ export async function buildBespokeRows(generics: GenericActors): Promise<MatrixR
         Promise.resolve({
           url: `/api/classes/${world.class.id}/timetable`,
           tokens: world.studentScopeTokens,
+        }),
+    },
+    {
+      name: "PATCH /api/results/:id/class-teacher-comment",
+      method: "patch",
+      cases: CLASS_TEACHER_COMMENT_CASES,
+      setup: () =>
+        Promise.resolve({
+          url: `/api/results/${world.targetResult.id}/class-teacher-comment`,
+          body: { comment: "Matrix test comment" },
+          tokens: classTeacherCommentTokens,
         }),
     },
 

@@ -49,3 +49,10 @@ export const createClassSubjectAssignmentSchema = z.object({
   academicSessionId: z.string().min(1),
 });
 export type CreateClassSubjectAssignmentBody = z.infer<typeof createClassSubjectAssignmentSchema>;
+
+export const createClassFormTeacherSchema = z.object({
+  classId: z.string().min(1),
+  teacherId: z.string().min(1),
+  academicSessionId: z.string().min(1),
+});
+export type CreateClassFormTeacherBody = z.infer<typeof createClassFormTeacherSchema>;

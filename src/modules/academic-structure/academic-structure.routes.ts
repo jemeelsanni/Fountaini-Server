@@ -6,6 +6,7 @@ import { validate } from "../../http/middleware/validate.js";
 import * as controller from "./academic-structure.controller.js";
 import {
   createAcademicSessionSchema,
+  createClassFormTeacherSchema,
   createClassSchema,
   createClassSubjectAssignmentSchema,
   createSubjectSchema,
@@ -93,4 +94,24 @@ academicStructureRouter.delete(
   validate({ params: idParamsSchema }),
   auditMutation("ClassSubjectAssignment", "ASSIGNMENT_DELETED"),
   controller.deleteClassSubjectAssignment,
+);
+
+academicStructureRouter.post(
+  "/class-form-teachers",
+  requireRole("ADMIN"),
+  validate({ body: createClassFormTeacherSchema }),
+  auditMutation("ClassFormTeacher", "FORM_TEACHER_ASSIGNED"),
+  controller.createClassFormTeacher,
+);
+academicStructureRouter.get(
+  "/class-form-teachers",
+  requireRole("ADMIN", "TEACHER"),
+  controller.listClassFormTeachers,
+);
+academicStructureRouter.delete(
+  "/class-form-teachers/:id",
+  requireRole("ADMIN"),
+  validate({ params: idParamsSchema }),
+  auditMutation("ClassFormTeacher", "FORM_TEACHER_UNASSIGNED"),
+  controller.deleteClassFormTeacher,
 );
