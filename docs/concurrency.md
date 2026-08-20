@@ -264,14 +264,16 @@ the first. A single normal-usage run can still hit it — one did, on an
 unrelated file, while verifying the argon2 change below — so it's not
 purely an artifact of the stress methodology, just likely overstated by it.
 
-**Next step**: the pipeline now exists (`.github/workflows/ci.yml`) and runs
-the full suite twice, as two separate steps, in every job — specifically to
-get a first clean baseline. CI is the first environment free of this
-investigation's own confounds (no concurrent diagnostic polling, no
-back-to-back stress looping), so its result is the real number, not this
-session's inflated stress-test estimate. This entry should be updated with
-the actual pass/fail outcome once a run has completed — it hasn't yet as of
-this writing (the workflow exists but no run has been triggered). Do not
-re-measure locally by running the suite in a loop in the meantime — that
-reproduces the same confound this entry exists to flag, not a cleaner
-number.
+**First CI measurement**: run
+[32315338456](https://github.com/jemeelsanni/Fountaini-Server/actions/runs/32315338456)
+(commit `5f4f429`, 2026-08-19) — both the "Run tests (1st pass)" and "Run
+tests (2nd pass)" steps passed cleanly, 0/2 hit the timeout. This is one
+data point, not a rate: two suite executions on GitHub's neutral hardware
+isn't enough to distinguish "the flake is rare" from "the flake didn't fire
+this time," especially against a ~20%-under-stress estimate that was itself
+called out as likely inflated by that stress methodology. Treat this as the
+first entry in an ongoing tally, not a resolution — update this line with
+each subsequent CI run's outcome (pass/fail on each of the two steps) until
+enough runs have accumulated to state a real rate. Do not re-measure locally
+by running the suite in a loop — that reproduces the same confound this
+entry exists to flag, not a cleaner number.
