@@ -159,6 +159,9 @@ server refuses to start rather than run with a missing or malformed value.
 | `REFRESH_TOKEN_TTL_DAYS` | How long a refresh token stays valid before it must be used to rotate to a new one. Defaults to `30`. |
 | `PUBLIC_BASE_URL` | The externally-reachable base URL for this API. Used for exactly one thing: the `servers` entry in the generated OpenAPI spec, so the "try it out" requests in `/api/docs` point at the right host. Defaults to `http://localhost:4000`, which is correct for local dev — **set this explicitly in every deployed environment** (e.g. `https://your-app.up.railway.app`), or the docs will show requests going to the wrong place. |
 | `DOCS_ENABLED` | Whether `/api/docs` and `/api/openapi.json` are mounted at all. Unset by default, which means "on everywhere except `NODE_ENV=production`" — the generated spec's `x-roles` on every operation is a complete map of who can call what, not something to leave publicly reachable in production by default. Set explicitly (`true`/`false`) to override that default in either direction. |
+| `CORS_ORIGINS` | Comma-separated allowlist of origins the API's CORS policy accepts. Optional outside production (unset = allow any origin); **required in production** — see [CORS_ORIGINS is required in production](#deploying-to-railway) below. |
+| `NOTIFICATION_PROVIDER` | `console` (default) or `resend`. Selects which `NotificationProvider` actually sends EMAIL/SMS/WHATSAPP messages — `console` just logs, so nothing is delivered. **Required to be `resend` in production** — see [A real notification provider is required in production](#deploying-to-railway) below. |
+| `RESEND_API_KEY`, `EMAIL_FROM_ADDRESS` | [Resend](https://resend.com) credentials for sending real email from `fountaini.academy`, used only when `NOTIFICATION_PROVIDER=resend`. `RESEND_API_KEY` is required whenever `NOTIFICATION_PROVIDER=resend`, checked at startup. `EMAIL_FROM_ADDRESS` defaults to `no-reply@fountaini.academy`, which (or the domain more broadly) must be a verified sending identity in the Resend dashboard. |
 
 Two more, used only by the seed script (`prisma/seed.ts`) and **not**
 present in `.env.example`, since they're optional and only relevant to that
@@ -353,6 +356,20 @@ PR preview — so if a frontend is deployed on Railway too, `CORS_ORIGINS`
 commonly needs more than one entry as you add environments; it's a plain
 comma-separated list.
 
+### A real notification provider is required in production
+
+The server refuses to start in production unless
+`NOTIFICATION_PROVIDER=resend` (see
+[Environment variables](#environment-variables) and `src/config/env.ts`) —
+the default `console` provider only logs, which for something like a
+password reset link means a single-use credential sitting in the
+production log stream with no user ever actually receiving it.
+`ResendNotificationProvider` (`src/modules/notifications/providers/`)
+sends real email via [Resend](https://resend.com) from a verified
+`fountaini.academy` address; set `RESEND_API_KEY` to a real Resend API key.
+It never logs a message's subject or body at any level, in either the success
+or failure path — only the recipient address and channel on failure.
+
 ### Healthcheck and restart policy
 
 `railway.json` points Railway's healthcheck at `GET /health`, which does a
@@ -365,7 +382,15 @@ forever silently.
 
 Railway sends `SIGTERM` on every redeploy or restart. `src/server.ts`
 handles it: stop accepting new connections, let in-flight requests finish,
-disconnect Prisma, then exit — not an abrupt kill mid-request. There's a
-30-second bounded fallback in case something never finishes on its own,
-but Railway's own grace period before a force-kill is longer than that, so
-this should never actually need to fire in practice.
+disconnect Prisma, then exit — not an abrupt kill mid-request. The actual
+closing is done by `closeServerGracefully()`
+([src/gracefulShutdown.ts](src/gracefulShutdown.ts)), which has two bounded
+fallbacks, not one: after 10 seconds it force-closes every remaining
+connection, including active ones, rather than wait indefinitely for a
+request that never finishes; the outer 30-second timeout in `server.ts` is
+a last resort in case even that hangs (e.g. Prisma's own disconnect). Both
+exist because a client can hold a connection open across a redeploy — on
+Node 20+, `server.close()` already closes purely *idle* keep-alive
+connections on its own (verified directly against Node's source), but it
+deliberately never touches one that's still mid-request, which is what the
+10-second fallback is actually for.

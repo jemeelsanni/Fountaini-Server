@@ -1,11 +1,16 @@
 import type { NotificationChannel, NotificationType } from "../../../generated/prisma/index.js";
+import { env } from "../../config/env.js";
 import { prisma } from "../../db/client.js";
 import { ConsoleNotificationProvider } from "./providers/ConsoleNotificationProvider.js";
 import type { NotificationProvider } from "./providers/NotificationProvider.js";
+import { ResendNotificationProvider } from "./providers/ResendNotificationProvider.js";
 
-// The only place a concrete provider is chosen. Swap this line for a real
-// vendor implementation later — nothing else changes.
-const provider: NotificationProvider = new ConsoleNotificationProvider();
+// The only place a concrete provider is chosen, selected by
+// NOTIFICATION_PROVIDER — "console" (the dev/test default) just logs, so
+// env.ts's superRefine refuses to start the app in production with
+// anything other than "resend" selected here.
+const provider: NotificationProvider =
+  env.NOTIFICATION_PROVIDER === "resend" ? new ResendNotificationProvider() : new ConsoleNotificationProvider();
 
 interface CreateNotificationInput {
   type: NotificationType;

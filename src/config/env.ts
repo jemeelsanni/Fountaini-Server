@@ -31,6 +31,18 @@ const envSchema = z.object({
   // the superRefine below, which is what makes an unset CORS_ORIGINS in
   // production a startup failure instead of a silently-wide-open API.
   CORS_ORIGINS: z.string().optional(),
+  // "console" (the default) just logs — nothing is actually delivered, so
+  // it must never be selected in production; see the superRefine below.
+  // "resend" sends real email via ResendNotificationProvider.
+  NOTIFICATION_PROVIDER: z.enum(["console", "resend"]).default("console"),
+  // Required only when NOTIFICATION_PROVIDER=resend — see the superRefine
+  // below. Never defaulted: this is a secret, not a convenience value.
+  RESEND_API_KEY: z.string().optional(),
+  // The verified fountaini.academy sending address. Has a real default
+  // (unlike RESEND_API_KEY) since it isn't a secret and Resend requires the
+  // domain to be verified either way; override for a display name, e.g.
+  // "Fountaini Academy <no-reply@fountaini.academy>".
+  EMAIL_FROM_ADDRESS: z.string().default("no-reply@fountaini.academy"),
 });
 
 const parsedEnv = envSchema
@@ -42,6 +54,22 @@ const parsedEnv = envSchema
         message:
           "CORS_ORIGINS must be set in production — a comma-separated list of allowed origins. " +
           "Refusing to start with CORS wide-open in production by default.",
+      });
+    }
+    if (data.NODE_ENV === "production" && data.NOTIFICATION_PROVIDER !== "resend") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["NOTIFICATION_PROVIDER"],
+        message:
+          'NOTIFICATION_PROVIDER must be "resend" in production — the console provider only logs messages, ' +
+          "so no user would ever actually receive a password reset email or any other notification.",
+      });
+    }
+    if (data.NOTIFICATION_PROVIDER === "resend" && !data.RESEND_API_KEY) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["RESEND_API_KEY"],
+        message: "RESEND_API_KEY must be set when NOTIFICATION_PROVIDER=resend.",
       });
     }
   })
