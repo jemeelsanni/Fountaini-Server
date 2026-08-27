@@ -22,6 +22,7 @@ import {
   classTermParamsSchema,
   computeResultsSchema,
   idParamsSchema as resultsIdParamsSchema,
+  listResultsForStudentQuerySchema,
   overrideResultSchema,
   studentTermParamsSchema,
   writeCommentSchema,
@@ -68,6 +69,7 @@ import {
   ReceiptSchema,
   ResultSchema,
   ResultWithStudentSchema,
+  ResultWithTermSchema,
   ScanResultSchema,
   SchoolSchema,
   ScoreSchema,
@@ -459,6 +461,11 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     requestParams: parentsIdParamsSchema,
     responses: { 200: { description: "OK", schema: ParentSchema } },
   },
+  "GET /api/parents/:id/children": {
+    summary: "List a parent's linked children — ADMIN, or that parent themself",
+    requestParams: parentsIdParamsSchema,
+    responses: { 200: { description: "OK", schema: z.array(StudentParentWithStudentSchema) } },
+  },
   "POST /api/parents/:id/children": {
     summary: "Link a student to a parent",
     requestParams: parentsIdParamsSchema,
@@ -481,6 +488,12 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     summary: "Get a student's report-card result for a term",
     requestParams: studentTermParamsSchema,
     responses: { 200: { description: "OK", schema: ResultSchema } },
+  },
+  "GET /api/students/:id/results": {
+    summary: "List a student's report-card results across terms, newest first",
+    requestParams: resultsIdParamsSchema,
+    requestQuery: listResultsForStudentQuerySchema,
+    responses: { 200: { description: "OK", schema: z.array(ResultWithTermSchema) } },
   },
   "GET /api/classes/:id/results/:termId": {
     summary: "List a class's report-card results for a term",

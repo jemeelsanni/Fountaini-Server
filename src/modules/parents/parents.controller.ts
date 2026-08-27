@@ -22,6 +22,11 @@ export async function getParent(req: Request, res: Response): Promise<void> {
   res.status(200).json(await service.getParentById(id));
 }
 
+export async function listChildrenForParentId(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as unknown as IdParams;
+  res.status(200).json(await service.listChildrenForParent(id));
+}
+
 export async function linkChild(req: Request, res: Response): Promise<void> {
   const { id } = req.params as unknown as IdParams;
   const link = await service.linkChild(id, req.body as LinkChildBody);

@@ -40,4 +40,29 @@ export const SENSITIVE_ROUTE_ROLES: Readonly<Record<string, readonly Role[]>> = 
   "PATCH /api/academic-sessions/:id/set-current": ["ADMIN"],
   "POST /api/academic-sessions/:id/terms": ["ADMIN"],
   "PATCH /api/terms/:id/set-current": ["ADMIN"],
+
+  // --- Parent privacy: family structure ---
+  // Not a mutation, but pinned like one anyway: this route enumerates a
+  // family's children from a parent id — TEACHER must never be widened onto
+  // it (see canReadParent's own comment for why). Representable here only
+  // because canReadParent's eligible set is a hard, narrow allowlist —
+  // requireRole("ADMIN", "PARENT") sits in front of the requireScope check
+  // specifically so this file's role-set comparison (which reads
+  // route.allowedRoles, populated only by requireRole) has something real
+  // to compare against.
+  //
+  // GET /api/students/:id/results (the other new route from this pass) is
+  // deliberately NOT here: it's gated by canReadStudent alone, the same as
+  // six existing sibling routes (GET /api/students/:id,
+  // /:id/attendance, /:id/scores, /:id/madrassah-progress, /:id/enrollments,
+  // and GET /api/results/:studentId/:termId) — none of which are in this
+  // file, because none of them carry a requireRole tag this file's
+  // allowedRoles comparison could check against. Adding a requireRole
+  // wrapper to only the new route to force it in here would make it
+  // inconsistent with every sibling that shares its exact authorization
+  // shape, for a check this file was never built to express for this
+  // family of routes. It's still fully covered elsewhere: routeGuards.test.ts
+  // (has-a-guard) and the auth matrix's STUDENT_SCOPE_CASES (the precise
+  // per-actor allow/deny table).
+  "GET /api/parents/:id/children": ["ADMIN", "PARENT"],
 };

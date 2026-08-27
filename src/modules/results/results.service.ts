@@ -1,4 +1,6 @@
 import { Prisma } from "../../../generated/prisma/index.js";
+import { resolveStudentAccessLevel } from "../../authorization/scopeResolvers.js";
+import type { Principal } from "../../authorization/types.js";
 import { prisma } from "../../db/client.js";
 import { AppError } from "../../errors/AppError.js";
 import type { ComputeResultsBody, OverrideResultBody } from "./results.schemas.js";
@@ -117,12 +119,64 @@ export async function computeResultsForClass(input: ComputeResultsBody) {
   return prisma.result.findMany({ where: { studentId: { in: studentIds }, termId: input.termId } });
 }
 
-export async function getResultForStudentTerm(studentId: string, termId: string) {
+/// The finalized-only filter below is deliberately not an authorization
+/// check: the route's requireScope(canReadStudent(...)) already decided
+/// this principal may read this student's records at all. This is a
+/// visibility filter on top of that — a caller whose access to this
+/// specific student is RESTRICTED (PARENT or STUDENT-self; see
+/// resolveStudentAccessLevel) simply doesn't have a non-finalized result in
+/// their visible set, which reads as the same 404 as asking before compute
+/// ever ran. FULL access (ADMIN, or a TEACHER assigned to this student's
+/// class) sees every status.
+export async function getResultForStudentTerm(studentId: string, termId: string, principal: Principal) {
   const result = await prisma.result.findUnique({ where: { studentId_termId: { studentId, termId } } });
   if (!result) {
     throw AppError.notFound("No result found for this student/term");
   }
+
+  const accessLevel = await resolveStudentAccessLevel(principal, studentId);
+  if (accessLevel !== "FULL" && result.status !== "FINALIZED") {
+    throw AppError.notFound("No result found for this student/term");
+  }
+
   return result;
+}
+
+/// Same finalized-only visibility rule as getResultForStudentTerm above,
+/// pushed into the query's WHERE clause instead of filtered after the fact
+/// — a list endpoint should just omit rows a RESTRICTED caller can't see,
+/// not 404 the whole request over one non-finalized entry among others.
+export async function listResultsForStudent(
+  studentId: string,
+  academicSessionId: string | undefined,
+  principal: Principal,
+) {
+  const accessLevel = await resolveStudentAccessLevel(principal, studentId);
+
+  const results = await prisma.result.findMany({
+    where: {
+      studentId,
+      ...(academicSessionId ? { term: { academicSessionId } } : {}),
+      ...(accessLevel !== "FULL" ? { status: "FINALIZED" } : {}),
+    },
+    include: {
+      term: {
+        select: {
+          id: true,
+          name: true,
+          order: true,
+          academicSession: { select: { id: true, name: true } },
+        },
+      },
+    },
+    orderBy: [{ term: { academicSession: { startDate: "desc" } } }, { term: { order: "desc" } }],
+  });
+
+  return results.map(({ term, ...result }) => ({
+    ...result,
+    term: { id: term.id, name: term.name, order: term.order },
+    session: term.academicSession,
+  }));
 }
 
 export function listResultsForClass(classId: string, termId: string) {

@@ -12,6 +12,7 @@ import {
   createCurrentAcademicSession,
   createGradingScaleWithBands,
   createParent,
+  createStaffParent,
   createStudentWithLogin,
   createSubject,
   createTeacher,
@@ -375,4 +376,328 @@ describe("compute/finalize concurrency", () => {
       expect(Number(finalResult.averageScore), `iteration ${i}`).toBe(50);
     }
   }, 120_000);
+});
+
+describe("non-finalized results are invisible to PARENT/STUDENT", () => {
+  async function buildDraftResultForLinkedParent() {
+    const session = await createCurrentAcademicSession("2026/2027");
+    const term = await createTermForSession(session.id, "First Term", 1);
+    const klass = await createClass("JSS1", "A");
+    const student = await createBareStudent("ADM-001");
+    const enrollment = await enrollStudent(student.id, klass.id, session.id);
+
+    const { parent, token: parentToken } = await createParent("parent@test.local");
+    await prisma.studentParent.create({
+      data: { parentId: parent.id, studentId: student.id, relationship: "MOTHER" },
+    });
+
+    const result = await prisma.result.create({
+      data: { studentId: student.id, enrollmentId: enrollment.id, termId: term.id, status: "DRAFT" },
+    });
+
+    return { session, term, klass, student, parentToken, result };
+  }
+
+  // The security-critical pair: this is the actual leak from the audit —
+  // demonstrated failing before the fix (see the report), passing after.
+  it("returns 404 for a DRAFT result and 200 once FINALIZED, for a linked parent", async () => {
+    const { term, student, parentToken, result } = await buildDraftResultForLinkedParent();
+
+    const whileDraft = await request(app)
+      .get(`/api/results/${student.id}/${term.id}`)
+      .set("Authorization", `Bearer ${parentToken}`);
+    expect(whileDraft.status).toBe(404);
+
+    await prisma.result.update({ where: { id: result.id }, data: { status: "FINALIZED" } });
+
+    const onceFinalized = await request(app)
+      .get(`/api/results/${student.id}/${term.id}`)
+      .set("Authorization", `Bearer ${parentToken}`);
+    expect(onceFinalized.status).toBe(200);
+    expect(onceFinalized.body.status).toBe("FINALIZED");
+  });
+
+  it("same pair for GET /api/students/:id/results — the DRAFT result is absent from the list, present once FINALIZED", async () => {
+    const { student, parentToken, result } = await buildDraftResultForLinkedParent();
+
+    const whileDraft = await request(app)
+      .get(`/api/students/${student.id}/results`)
+      .set("Authorization", `Bearer ${parentToken}`);
+    expect(whileDraft.status).toBe(200);
+    expect(whileDraft.body).toEqual([]);
+
+    await prisma.result.update({ where: { id: result.id }, data: { status: "FINALIZED" } });
+
+    const onceFinalized = await request(app)
+      .get(`/api/students/${student.id}/results`)
+      .set("Authorization", `Bearer ${parentToken}`);
+    expect(onceFinalized.status).toBe(200);
+    expect(onceFinalized.body).toHaveLength(1);
+    expect(onceFinalized.body[0].id).toBe(result.id);
+    expect(onceFinalized.body[0].status).toBe("FINALIZED");
+  });
+
+  it("the same DRAFT result is 404 for the student themself too, not just their parent", async () => {
+    const session = await createCurrentAcademicSession("2026/2027");
+    const term = await createTermForSession(session.id, "First Term", 1);
+    const klass = await createClass("JSS1", "A");
+    const { student, token: studentToken } = await createStudentWithLogin("student@test.local", "ADM-002");
+    const enrollment = await enrollStudent(student.id, klass.id, session.id);
+    await prisma.result.create({
+      data: { studentId: student.id, enrollmentId: enrollment.id, termId: term.id, status: "DRAFT" },
+    });
+
+    const res = await request(app)
+      .get(`/api/results/${student.id}/${term.id}`)
+      .set("Authorization", `Bearer ${studentToken}`);
+    expect(res.status).toBe(404);
+  });
+
+  it("does not over-restrict: ADMIN and an assigned TEACHER still see a DRAFT result on both routes", async () => {
+    const session = await createCurrentAcademicSession("2026/2027");
+    const term = await createTermForSession(session.id, "First Term", 1);
+    const klass = await createClass("JSS1", "A");
+    const subject = await createSubject("Maths", "MTH");
+    const { staff: teacherStaff, token: teacherToken } = await createTeacher("teacher@test.local");
+    await createAssignment(klass.id, subject.id, teacherStaff.id, session.id);
+    const student = await createBareStudent("ADM-003");
+    const enrollment = await enrollStudent(student.id, klass.id, session.id);
+    const result = await prisma.result.create({
+      data: { studentId: student.id, enrollmentId: enrollment.id, termId: term.id, status: "DRAFT" },
+    });
+    const { token: adminToken } = await createAdmin("admin@test.local");
+
+    for (const token of [adminToken, teacherToken]) {
+      const perTerm = await request(app)
+        .get(`/api/results/${student.id}/${term.id}`)
+        .set("Authorization", `Bearer ${token}`);
+      expect(perTerm.status).toBe(200);
+      expect(perTerm.body.status).toBe("DRAFT");
+
+      const list = await request(app)
+        .get(`/api/students/${student.id}/results`)
+        .set("Authorization", `Bearer ${token}`);
+      expect(list.status).toBe(200);
+      expect(list.body.map((r: { id: string }) => r.id)).toContain(result.id);
+    }
+  });
+
+  it("a staff-parent sees the full lifecycle for a student in their own assigned class, but only finalized results for their own child — derived per student, not per role held", async () => {
+    const session = await createCurrentAcademicSession("2026/2027");
+    const term = await createTermForSession(session.id, "First Term", 1);
+
+    const staffParent = await createStaffParent("staff-parent@test.local");
+
+    // Their OWN teaching class — a student here proves the TEACHER path
+    // grants full lifecycle visibility.
+    const teachingClass = await createClass("JSS2", "A");
+    const subject = await createSubject("English", "ENG");
+    await createAssignment(teachingClass.id, subject.id, staffParent.staff.id, session.id);
+    const classStudent = await createBareStudent("ADM-CLASS");
+    const classEnrollment = await enrollStudent(classStudent.id, teachingClass.id, session.id);
+    const classResult = await prisma.result.create({
+      data: { studentId: classStudent.id, enrollmentId: classEnrollment.id, termId: term.id, status: "DRAFT" },
+    });
+
+    // Their own child — enrolled in a DIFFERENT class they don't teach, so
+    // only the PARENT link (not any teaching relationship) explains access.
+    const otherClass = await createClass("JSS2", "B");
+    const childStudent = await createBareStudent("ADM-CHILD");
+    const childEnrollment = await enrollStudent(childStudent.id, otherClass.id, session.id);
+    await prisma.studentParent.create({
+      data: { parentId: staffParent.parent.id, studentId: childStudent.id, relationship: "FATHER" },
+    });
+    const childResult = await prisma.result.create({
+      data: { studentId: childStudent.id, enrollmentId: childEnrollment.id, termId: term.id, status: "DRAFT" },
+    });
+
+    // Fully disjoint — neither their child nor in any class they teach.
+    const disjointStudent = await createBareStudent("ADM-DISJOINT");
+    const disjointEnrollment = await enrollStudent(disjointStudent.id, otherClass.id, session.id);
+    await prisma.result.create({
+      data: {
+        studentId: disjointStudent.id,
+        enrollmentId: disjointEnrollment.id,
+        termId: term.id,
+        status: "DRAFT",
+      },
+    });
+
+    // --- 1. A student in their assigned class, DRAFT: visible on both
+    // routes — FULL access via the TEACHER path. This is what proves the
+    // TEACHER branch's short-circuit-to-FULL isn't accidentally masked or
+    // collapsed by the PARENT branch also being checked on this principal
+    // (it's just irrelevant to this student, since staffParent isn't
+    // classStudent's parent at all).
+    const classDraftPerTerm = await request(app)
+      .get(`/api/results/${classStudent.id}/${term.id}`)
+      .set("Authorization", `Bearer ${staffParent.token}`);
+    expect(classDraftPerTerm.status).toBe(200);
+    expect(classDraftPerTerm.body.status).toBe("DRAFT");
+
+    const classDraftList = await request(app)
+      .get(`/api/students/${classStudent.id}/results`)
+      .set("Authorization", `Bearer ${staffParent.token}`);
+    expect(classDraftList.status).toBe(200);
+    expect(classDraftList.body).toHaveLength(1);
+    expect(classDraftList.body[0].id).toBe(classResult.id);
+    expect(classDraftList.body[0].status).toBe("DRAFT");
+
+    // --- 2. Their own child, NOT in their assigned class, DRAFT: hidden on
+    // both routes — RESTRICTED via the PARENT path alone. The list route
+    // must be checked here too, while still DRAFT, not just after
+    // finalizing below — an empty array is the list's equivalent of the
+    // per-term route's 404.
+    const childDraftPerTerm = await request(app)
+      .get(`/api/results/${childStudent.id}/${term.id}`)
+      .set("Authorization", `Bearer ${staffParent.token}`);
+    expect(childDraftPerTerm.status).toBe(404);
+
+    const childDraftList = await request(app)
+      .get(`/api/students/${childStudent.id}/results`)
+      .set("Authorization", `Bearer ${staffParent.token}`);
+    expect(childDraftList.status).toBe(200);
+    expect(childDraftList.body).toEqual([]);
+
+    await prisma.result.update({ where: { id: childResult.id }, data: { status: "FINALIZED" } });
+
+    const childFinalizedPerTerm = await request(app)
+      .get(`/api/results/${childStudent.id}/${term.id}`)
+      .set("Authorization", `Bearer ${staffParent.token}`);
+    expect(childFinalizedPerTerm.status).toBe(200);
+    expect(childFinalizedPerTerm.body.status).toBe("FINALIZED");
+
+    const childFinalizedList = await request(app)
+      .get(`/api/students/${childStudent.id}/results`)
+      .set("Authorization", `Bearer ${staffParent.token}`);
+    expect(childFinalizedList.body).toHaveLength(1);
+    expect(childFinalizedList.body[0].id).toBe(childResult.id);
+    expect(childFinalizedList.body[0].status).toBe("FINALIZED");
+
+    // --- 3. disjointStudent: neither their child nor in any class they
+    // teach — an ownership denial (403), not a visibility filter, on both
+    // routes. Unaffected by status (still DRAFT here).
+    const disjointPerTerm = await request(app)
+      .get(`/api/results/${disjointStudent.id}/${term.id}`)
+      .set("Authorization", `Bearer ${staffParent.token}`);
+    expect(disjointPerTerm.status).toBe(403);
+
+    const disjointList = await request(app)
+      .get(`/api/students/${disjointStudent.id}/results`)
+      .set("Authorization", `Bearer ${staffParent.token}`);
+    expect(disjointList.status).toBe(403);
+  });
+});
+
+describe("GET /api/students/:id/results", () => {
+  it("sorts by session start date descending, then term order descending — not createdAt or insertion order", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const klass = await createClass("JSS1", "A");
+    const student = await createBareStudent("ADM-001");
+
+    // Two sessions, deliberately created with the LATER-starting one first
+    // and the earlier one second — if the sort were accidentally following
+    // createdAt/insertion order instead of startDate, this would produce
+    // the wrong result order.
+    const laterSession = await prisma.academicSession.create({
+      data: { name: "2027/2028", startDate: new Date("2027-09-01"), endDate: new Date("2028-07-31") },
+    });
+    const earlierSession = await prisma.academicSession.create({
+      data: { name: "2026/2027", startDate: new Date("2026-09-01"), endDate: new Date("2027-07-31") },
+    });
+
+    // Two terms within earlierSession, term 2 created before term 1 — same
+    // reasoning: proves the sort uses `order`, not creation sequence.
+    const earlierTerm2 = await prisma.term.create({
+      data: {
+        academicSessionId: earlierSession.id,
+        name: "Second Term",
+        order: 2,
+        startDate: new Date("2027-01-01"),
+        endDate: new Date("2027-04-01"),
+      },
+    });
+    const earlierTerm1 = await prisma.term.create({
+      data: {
+        academicSessionId: earlierSession.id,
+        name: "First Term",
+        order: 1,
+        startDate: new Date("2026-09-01"),
+        endDate: new Date("2026-12-15"),
+      },
+    });
+    const laterTerm1 = await prisma.term.create({
+      data: {
+        academicSessionId: laterSession.id,
+        name: "First Term",
+        order: 1,
+        startDate: new Date("2027-09-01"),
+        endDate: new Date("2027-12-15"),
+      },
+    });
+
+    const enrollLater = await enrollStudent(student.id, klass.id, laterSession.id);
+    const enrollEarlier = await enrollStudent(student.id, klass.id, earlierSession.id);
+
+    const resultLaterTerm1 = await prisma.result.create({
+      data: { studentId: student.id, enrollmentId: enrollLater.id, termId: laterTerm1.id, status: "FINALIZED" },
+    });
+    const resultEarlierTerm1 = await prisma.result.create({
+      data: { studentId: student.id, enrollmentId: enrollEarlier.id, termId: earlierTerm1.id, status: "FINALIZED" },
+    });
+    const resultEarlierTerm2 = await prisma.result.create({
+      data: { studentId: student.id, enrollmentId: enrollEarlier.id, termId: earlierTerm2.id, status: "FINALIZED" },
+    });
+
+    const res = await request(app)
+      .get(`/api/students/${student.id}/results`)
+      .set("Authorization", `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.map((r: { id: string }) => r.id)).toEqual([
+      resultLaterTerm1.id,
+      resultEarlierTerm2.id,
+      resultEarlierTerm1.id,
+    ]);
+    expect(res.body[0].session).toEqual({ id: laterSession.id, name: laterSession.name });
+    expect(res.body[0].term).toEqual({ id: laterTerm1.id, name: laterTerm1.name, order: 1 });
+  });
+
+  it("filters by ?academicSessionId= when given", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const klass = await createClass("JSS1", "A");
+    const student = await createBareStudent("ADM-001");
+
+    const sessionA = await createCurrentAcademicSession("2026/2027");
+    const termA = await createTermForSession(sessionA.id, "First Term", 1);
+    const enrollA = await enrollStudent(student.id, klass.id, sessionA.id);
+    const resultA = await prisma.result.create({
+      data: { studentId: student.id, enrollmentId: enrollA.id, termId: termA.id, status: "FINALIZED" },
+    });
+
+    const sessionB = await prisma.academicSession.create({
+      data: { name: "2025/2026", startDate: new Date("2025-09-01"), endDate: new Date("2026-07-31") },
+    });
+    const termB = await prisma.term.create({
+      data: {
+        academicSessionId: sessionB.id,
+        name: "First Term",
+        order: 1,
+        startDate: new Date("2025-09-01"),
+        endDate: new Date("2025-12-15"),
+      },
+    });
+    const enrollB = await enrollStudent(student.id, klass.id, sessionB.id);
+    await prisma.result.create({
+      data: { studentId: student.id, enrollmentId: enrollB.id, termId: termB.id, status: "FINALIZED" },
+    });
+
+    const res = await request(app)
+      .get(`/api/students/${student.id}/results?academicSessionId=${sessionA.id}`)
+      .set("Authorization", `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].id).toBe(resultA.id);
+  });
 });

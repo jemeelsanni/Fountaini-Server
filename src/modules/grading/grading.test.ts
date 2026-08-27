@@ -1,7 +1,7 @@
 import request from "supertest";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../app.js";
-import { createAdmin, createCurrentAcademicSession, createTeacher } from "../../test/factories.js";
+import { createAdmin, createCurrentAcademicSession, createParent, createTeacher } from "../../test/factories.js";
 import { resetDb } from "../../test/resetDb.js";
 
 const app = createApp();
@@ -31,6 +31,28 @@ describe("assessment components", () => {
       .set("Authorization", `Bearer ${teacherToken}`);
     expect(list.status).toBe(200);
     expect(list.body).toHaveLength(1);
+  });
+
+  // The actual fix: this route was ADMIN+TEACHER-only before this pass,
+  // which left a PARENT unable to read assessment-component definitions
+  // even though the sibling reference-data routes (sessions, terms,
+  // grading-scale) were already open to every authenticated role. Fails
+  // before the requireRole widening in grading.routes.ts, passes after.
+  it("is readable by a PARENT, not just ADMIN/TEACHER", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const { token: parentToken } = await createParent("parent@test.local");
+    const session = await createCurrentAcademicSession("2026/2027");
+    await request(app)
+      .post(`/api/academic-sessions/${session.id}/assessment-components`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ code: "CA1", name: "First CA", type: "CA", maxScore: 20, order: 1 });
+
+    const res = await request(app)
+      .get(`/api/academic-sessions/${session.id}/assessment-components`)
+      .set("Authorization", `Bearer ${parentToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
   });
 
   it("rejects a duplicate component code within the same session", async () => {
@@ -73,6 +95,23 @@ describe("grading scale and bands", () => {
     expect(getRes.status).toBe(200);
     expect(getRes.body.bands).toHaveLength(1);
     expect(getRes.body.bands[0].grade).toBe("A");
+  });
+
+  // Already open before this pass (requireRole(...ALL_ROLES)) — added
+  // coverage for an already-correct path, not a fail-before regression test.
+  it("is readable by a PARENT, not just ADMIN", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const { token: parentToken } = await createParent("parent@test.local");
+    const session = await createCurrentAcademicSession("2026/2027");
+    await request(app)
+      .post(`/api/academic-sessions/${session.id}/grading-scale`)
+      .set("Authorization", `Bearer ${adminToken}`);
+
+    const res = await request(app)
+      .get(`/api/academic-sessions/${session.id}/grading-scale`)
+      .set("Authorization", `Bearer ${parentToken}`);
+
+    expect(res.status).toBe(200);
   });
 
   it("rejects a second grading scale for the same session", async () => {

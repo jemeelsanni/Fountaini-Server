@@ -5,6 +5,7 @@ import type {
   ClassTermParams,
   ComputeResultsBody,
   IdParams,
+  ListResultsForStudentQuery,
   OverrideResultBody,
   StudentTermParams,
   WriteCommentBody,
@@ -16,8 +17,20 @@ export async function computeResults(req: Request, res: Response): Promise<void>
 }
 
 export async function getResultForStudentTerm(req: Request, res: Response): Promise<void> {
+  if (!req.principal) {
+    throw AppError.unauthorized();
+  }
   const { studentId, termId } = req.params as unknown as StudentTermParams;
-  res.status(200).json(await service.getResultForStudentTerm(studentId, termId));
+  res.status(200).json(await service.getResultForStudentTerm(studentId, termId, req.principal));
+}
+
+export async function listResultsForStudent(req: Request, res: Response): Promise<void> {
+  if (!req.principal) {
+    throw AppError.unauthorized();
+  }
+  const { id } = req.params as unknown as IdParams;
+  const { academicSessionId } = req.query as unknown as ListResultsForStudentQuery;
+  res.status(200).json(await service.listResultsForStudent(id, academicSessionId, req.principal));
 }
 
 export async function listResultsForClass(req: Request, res: Response): Promise<void> {

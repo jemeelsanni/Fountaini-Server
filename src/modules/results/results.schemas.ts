@@ -15,6 +15,11 @@ export const classTermParamsSchema = z.object({
 });
 export type ClassTermParams = z.infer<typeof classTermParamsSchema>;
 
+export const listResultsForStudentQuerySchema = z.object({
+  academicSessionId: z.string().min(1).optional(),
+});
+export type ListResultsForStudentQuery = z.infer<typeof listResultsForStudentQuerySchema>;
+
 export const computeResultsSchema = z.object({
   classId: z.string().min(1),
   termId: z.string().min(1),
