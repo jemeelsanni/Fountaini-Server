@@ -1,11 +1,13 @@
 import { Router } from "express";
-import { requireAuth, requireRole } from "../../authorization/middleware.js";
+import { requireAuth, requireRole, requireScope } from "../../authorization/middleware.js";
+import { canReadParent } from "../../authorization/scopeResolvers.js";
 import { auditMutation } from "../../http/middleware/auditMutation.js";
 import { validate } from "../../http/middleware/validate.js";
 import * as controller from "./parents.controller.js";
 import {
   createParentSchema,
   idParamsSchema,
+  type IdParams,
   linkChildSchema,
   parentChildParamsSchema,
 } from "./parents.schemas.js";
@@ -30,6 +32,13 @@ parentsRouter.get(
   requireRole("ADMIN"),
   validate({ params: idParamsSchema }),
   controller.getParent,
+);
+parentsRouter.get(
+  "/:id/children",
+  requireRole("ADMIN", "PARENT"),
+  validate({ params: idParamsSchema }),
+  requireScope((principal, req) => canReadParent(principal, (req.params as unknown as IdParams).id)),
+  controller.listChildrenForParentId,
 );
 parentsRouter.post(
   "/:id/children",

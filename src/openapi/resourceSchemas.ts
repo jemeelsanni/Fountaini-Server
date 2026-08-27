@@ -371,6 +371,19 @@ export const ResultWithStudentSchema = ResultSchema.extend({
   student: StudentSchema,
 }).openapi("ResultWithStudent");
 
+/// GET /api/students/:id/results — a cross-term list, so each entry needs
+/// enough of its term/session to be identified without a second round-trip
+/// (bare termId alone isn't enough once results span multiple terms). Kept
+/// deliberately minimal rather than nesting the full Term/AcademicSession
+/// resources: {id, name} for the session, plus {id, name, order} for the
+/// term (order is what the list is actually sorted by, alongside the
+/// session's startDate — neither startDate nor endDate is exposed here,
+/// since nothing in this list view needs them).
+export const ResultWithTermSchema = ResultSchema.extend({
+  term: z.object({ id: id(), name: z.string(), order: z.number().int() }),
+  session: z.object({ id: id(), name: z.string() }),
+}).openapi("ResultWithTerm");
+
 // ---------------------------------------------------------------------------
 // Madrassah / Qur'an progress
 // ---------------------------------------------------------------------------

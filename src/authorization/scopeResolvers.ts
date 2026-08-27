@@ -1,22 +1,36 @@
 import { prisma } from "../db/client.js";
 import type { Principal } from "./types.js";
 
-/// A student's record is readable by: any ADMIN; the student themself; a
-/// parent linked via StudentParent; or a teacher currently assigned (via
-/// ClassSubjectAssignment, scoped to the CURRENT academic session) to the
-/// class the student is actively enrolled in this session.
+/// Distinguishes not just WHETHER a principal may read a student's record
+/// (see canReadStudent, which this backs) but the LEVEL of access: "FULL"
+/// (any ADMIN, or a teacher currently assigned — via ClassSubjectAssignment,
+/// scoped to the CURRENT academic session — to the class the student is
+/// actively enrolled in this session) sees a student's records at every
+/// lifecycle stage; "RESTRICTED" (the student themself, or a parent linked
+/// via StudentParent) is meant for resources with a draft/in-progress phase
+/// that shouldn't be visible until finalized (see
+/// getResultForStudentTerm's status filter — the only caller of this
+/// distinction today). `null` means no access at all.
 ///
 /// A principal can hold more than one of these roles at once (a
-/// staff-parent, say) — each branch below only ever returns early on a
-/// match and otherwise falls through to the next, so a role that doesn't
-/// apply here never suppresses a different role that does.
-export async function canReadStudent(principal: Principal, studentId: string): Promise<boolean> {
+/// staff-parent, say) for the SAME student — every applicable path is
+/// checked, not just the first match, and FULL wins if any FULL-granting
+/// path applies even when a RESTRICTED path also would (e.g. a staff-parent
+/// whose own child happens to sit in their own assigned class). TEACHER is
+/// checked last and returns immediately on a match so that case is never
+/// masked by an earlier RESTRICTED match.
+export async function resolveStudentAccessLevel(
+  principal: Principal,
+  studentId: string,
+): Promise<"FULL" | "RESTRICTED" | null> {
   if (principal.roles.has("ADMIN")) {
-    return true;
+    return "FULL";
   }
 
+  let restricted = false;
+
   if (principal.roles.has("STUDENT") && principal.studentId === studentId) {
-    return true;
+    restricted = true;
   }
 
   if (principal.roles.has("PARENT") && principal.parentId) {
@@ -25,7 +39,7 @@ export async function canReadStudent(principal: Principal, studentId: string): P
       select: { id: true },
     });
     if (link !== null) {
-      return true;
+      restricted = true;
     }
   }
 
@@ -44,12 +58,20 @@ export async function canReadStudent(principal: Principal, studentId: string): P
         select: { id: true },
       });
       if (assignment !== null) {
-        return true;
+        return "FULL";
       }
     }
   }
 
-  return false;
+  return restricted ? "RESTRICTED" : null;
+}
+
+/// A student's record is readable by: any ADMIN; the student themself; a
+/// parent linked via StudentParent; or a teacher currently assigned to the
+/// class the student is actively enrolled in this session — i.e. either
+/// access level resolveStudentAccessLevel can return.
+export async function canReadStudent(principal: Principal, studentId: string): Promise<boolean> {
+  return (await resolveStudentAccessLevel(principal, studentId)) !== null;
 }
 
 /// Self-access only (plus ADMIN) — no DB lookup needed since Staff.id is
@@ -57,6 +79,16 @@ export async function canReadStudent(principal: Principal, studentId: string): P
 /// mechanism as everything else so ownership checks stay in one place.
 export function canReadStaff(principal: Principal, staffId: string): Promise<boolean> {
   return Promise.resolve(principal.roles.has("ADMIN") || principal.staffId === staffId);
+}
+
+/// The Parent-record analog of canReadStaff: self-access only (plus ADMIN),
+/// no DB lookup needed since Parent.id is already carried on the Principal.
+/// TEACHER is deliberately not consulted here — a teacher must not be able
+/// to enumerate a family's structure (which children belong to which
+/// parent) starting from a parent id, unlike canReadStudent's TEACHER
+/// branch, which is about a specific already-known student.
+export function canReadParent(principal: Principal, parentId: string): Promise<boolean> {
+  return Promise.resolve(principal.roles.has("ADMIN") || principal.parentId === parentId);
 }
 
 /// "Teachers can only enter scores for classes/subjects assigned to them" —

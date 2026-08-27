@@ -182,6 +182,7 @@ export const BESPOKE_ROUTE_KEYS: readonly string[] = [
   "GET /api/students/:id/scores",
   "GET /api/students/:id/madrassah-progress",
   "GET /api/results/:studentId/:termId",
+  "GET /api/students/:id/results",
   "GET /api/students/:id/fee-obligations",
   "GET /api/students/:id/payments",
   "GET /api/payments/:id/receipt",
@@ -192,6 +193,7 @@ export const BESPOKE_ROUTE_KEYS: readonly string[] = [
   "GET /api/staff/:id/timetable",
   "GET /api/classes/:id/timetable",
   "PATCH /api/results/:id/class-teacher-comment",
+  "GET /api/parents/:id/children",
 ];
 
 let uniqueCounter = 0;
@@ -394,6 +396,7 @@ async function buildSharedWorld(generics: GenericActors) {
     disjointPayment,
     formTeacherToken,
     targetResult,
+    linkedParentId: linkedParentRow.id,
   };
 }
 
@@ -477,6 +480,22 @@ const STAFF_SCOPE_CASES: MatrixCase[] = [
   { actor: "unassignedTeacher", expectedStatus: 403 }, // a different staff member
   { actor: "bursar", expectedStatus: 403 },
   { actor: "unlinkedParent", expectedStatus: 403 },
+  { actor: "otherStudent", expectedStatus: 403 },
+];
+
+/// canReadParent: ADMIN or self (parentId match) only — the Parent-record
+/// analog of STAFF_SCOPE_CASES. unlinkedParent stands in for "a different
+/// parent" here (it has no bearing on being unlinked from any student for
+/// this row — the name is just reused from the shared actor vocabulary):
+/// the point is it's a real parent account whose own id is NOT the target,
+/// proving "PARENT reading another family's children" is denied.
+const PARENT_SCOPE_CASES: MatrixCase[] = [
+  { actor: "unauthenticated", expectedStatus: 401 },
+  { actor: "admin", expectedStatus: "allowed" },
+  { actor: "linkedParent", expectedStatus: "allowed" }, // self
+  { actor: "unlinkedParent", expectedStatus: 403 }, // a different parent
+  { actor: "assignedTeacher", expectedStatus: 403 },
+  { actor: "bursar", expectedStatus: 403 },
   { actor: "otherStudent", expectedStatus: 403 },
 ];
 
@@ -573,6 +592,22 @@ export async function buildBespokeRows(generics: GenericActors): Promise<MatrixR
       "GET /api/results/:studentId/:termId",
       `/api/results/${world.targetStudent.id}/${world.term.id}`,
     ),
+    // Same canReadStudent gate as every studentScopeRow above — this
+    // matrix's job is proving WHO gets past authorization, not what's
+    // inside the list once they do. The finalized-only content filter is a
+    // separate, non-authorization concern tested directly against
+    // results.service.ts (see results.test.ts), not here.
+    studentScopeRow("GET /api/students/:id/results", `/api/students/${world.targetStudent.id}/results`),
+    {
+      name: "GET /api/parents/:id/children",
+      method: "get",
+      cases: PARENT_SCOPE_CASES,
+      setup: () =>
+        Promise.resolve({
+          url: `/api/parents/${world.linkedParentId}/children`,
+          tokens: world.studentScopeTokens,
+        }),
+    },
     financialsScopeRow(
       "GET /api/students/:id/fee-obligations",
       `/api/students/${world.targetStudent.id}/fee-obligations`,
@@ -755,6 +790,16 @@ export async function buildBespokeRows(generics: GenericActors): Promise<MatrixR
       setup: () =>
         Promise.resolve({
           url: `/api/results/${world.disjointStudent.id}/${world.term.id}`,
+          tokens: { staffParent: world.staffParentToken },
+        }),
+    },
+    {
+      name: "GET /api/students/:id/results",
+      method: "get",
+      cases: STAFF_PARENT_DENIED_DISJOINT_STUDENT,
+      setup: () =>
+        Promise.resolve({
+          url: `/api/students/${world.disjointStudent.id}/results`,
           tokens: { staffParent: world.staffParentToken },
         }),
     },

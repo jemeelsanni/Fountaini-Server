@@ -23,7 +23,7 @@ gradingRouter.post(
 );
 gradingRouter.get(
   "/academic-sessions/:id/assessment-components",
-  requireRole("ADMIN", "TEACHER"),
+  requireRole(...ALL_ROLES),
   validate({ params: idParamsSchema }),
   controller.listAssessmentComponents,
 );

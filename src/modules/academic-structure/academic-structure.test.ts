@@ -3,7 +3,14 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
 import { setCurrentAcademicSession, setCurrentTerm } from "./academic-structure.service.js";
-import { createAdmin, createBursar, createClass, createSubject, createTeacher } from "../../test/factories.js";
+import {
+  createAdmin,
+  createBursar,
+  createClass,
+  createParent,
+  createSubject,
+  createTeacher,
+} from "../../test/factories.js";
 import { resetDb } from "../../test/resetDb.js";
 
 const app = createApp();
@@ -103,6 +110,27 @@ describe("academic sessions", () => {
 });
 
 describe("terms", () => {
+  // A PARENT needs a termId to call GET /api/results/:studentId/:termId —
+  // this route was already open to every authenticated role before this
+  // pass (requireRole(...ALL_ROLES)), so this is added coverage for an
+  // already-correct path, not a fail-before/pass-after regression test.
+  it("is readable by a PARENT, not just staff roles", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const { token: parentToken } = await createParent("parent@test.local");
+    const session = await createCurrentSessionViaApi(app, adminToken);
+    await request(app)
+      .post(`/api/academic-sessions/${session.id}/terms`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ name: "First Term", order: 1, startDate: "2026-09-01", endDate: "2026-12-15" });
+
+    const res = await request(app)
+      .get(`/api/academic-sessions/${session.id}/terms`)
+      .set("Authorization", `Bearer ${parentToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+  });
+
   it("rejects a duplicate order within the same session", async () => {
     const { token } = await createAdmin("admin@test.local");
     const session = await createCurrentSessionViaApi(app, token);

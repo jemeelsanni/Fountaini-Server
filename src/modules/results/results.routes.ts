@@ -9,6 +9,7 @@ import {
   computeResultsSchema,
   idParamsSchema,
   type IdParams,
+  listResultsForStudentQuerySchema,
   overrideResultSchema,
   studentTermParamsSchema,
   type StudentTermParams,
@@ -32,6 +33,12 @@ resultsRouter.get(
     canReadStudent(principal, (req.params as unknown as StudentTermParams).studentId),
   ),
   controller.getResultForStudentTerm,
+);
+resultsRouter.get(
+  "/students/:id/results",
+  validate({ params: idParamsSchema, query: listResultsForStudentQuerySchema }),
+  requireScope((principal, req) => canReadStudent(principal, (req.params as unknown as IdParams).id)),
+  controller.listResultsForStudent,
 );
 resultsRouter.get(
   "/classes/:id/results/:termId",

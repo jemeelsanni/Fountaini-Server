@@ -226,6 +226,27 @@ authentication"},"request_id":null}` — a string that appears nowhere in
 this codebase or its dependencies). None of this is deterministic; it did
 not reproduce on every run.
 
+**2026-08-27 addition**: the same class reproduced repeatedly during a
+session of local runs against a Docker-containerized Postgres (see the
+version-mismatch entry below for why local Postgres was containerized at
+all) — on `authMatrix.test.ts`'s `GET /api/class-form-teachers` and
+`DELETE /api/class-form-teachers/:id` rows (the exact
+`{"type":"error","error":{"type":"authentication_error",...}}` envelope
+again), and on `attendance.test.ts`'s "scan/close concurrency" test, which
+hit three different outcomes across three consecutive local attempts on an
+otherwise-unchanged setup: a `Test timed out in 120000ms` (its own longer
+configured timeout, not the 5000ms default) inside a full-suite run, a fast
+`Parse Error: Expected HTTP/` on an immediate isolated re-run, and a clean
+pass on a second isolated re-run. That same test also timed out at 120s
+identically against a Postgres 17 container before the version was
+corrected to 16 — i.e. it failed on both major versions, in different ways,
+and also passed on 16 — which argues against Postgres major version being
+the explanation for this specific test's instability. Raw counts for
+anyone extending this tally later: 2 full local-suite runs on
+`postgres:16` this session, 1/2 clean; 1 full run on a `postgres:17`
+container beforehand, also 1 failure. Small sample, not a rate — noted here
+because it's a real local observation, not because it's conclusive.
+
 **Ruled out**: cross-file lock contention. `vitest.config.ts` pins
 `fileParallelism: false` + `maxWorkers: 1` + `pool: "forks"`, and this was
 confirmed live, not just read off the config — sampling the process tree
@@ -277,3 +298,58 @@ each subsequent CI run's outcome (pass/fail on each of the two steps) until
 enough runs have accumulated to state a real rate. Do not re-measure locally
 by running the suite in a loop — that reproduces the same confound this
 entry exists to flag, not a cleaner number.
+
+## attendance.test.ts scan/close: folded into the known flake above, not separate
+
+An earlier version of this entry treated the "scan/close concurrency"
+timeout as a second, distinct, unexplained failure and speculated it might
+be caused by Docker/virtualization overhead. That was premature — retracted
+here rather than left to mislead the next reader. Once the local Postgres
+version was corrected from 17 to 16 (see below) and the test was re-run
+several more times, it produced a *different* failure mode each time (a
+120s timeout, a fast `Parse Error: Expected HTTP/`, and a clean pass, across
+three consecutive local attempts — see the 2026-08-27 addition to the
+"Known intermittent test failure" section above), and separate,
+unrelated `authMatrix.test.ts` rows failed with the exact JSON envelope
+that section already documents. That's the signature of the *same*
+pre-existing, unexplained, load-sensitive flake landing on a different
+sampling of tests this session — not a new, deterministic, Docker- or
+version-specific bug. Do not record "virtualization I/O overhead" or any
+other specific cause here without direct evidence for it; there isn't any
+yet.
+
+## Local Postgres major-version mismatch (2026-08-27, corrected same day)
+
+`docker-compose.yml` and `.github/workflows/ci.yml` both pin `postgres:16`.
+A local container stood up this session to work around the port-5432
+conflict above was launched intending `postgres:16` but was actually
+running **17.11** (`SELECT version()` confirmed it directly) — the image
+tag wasn't verified before use. Corrected the same session: the container
+was rebuilt on `postgres:16` (confirmed via `SELECT version()` →
+`PostgreSQL 16.15`), migrations re-applied, and the full suite re-run
+against it.
+
+This matters specifically because this codebase leans on Postgres advisory
+locks (`pg_advisory_xact_lock`/`hashtext`, e.g.
+`setCurrentAcademicSession`, `createSchool`) and partial unique indexes
+(`add_qr_code_one_active_partial_index`,
+`add_current_session_term_partial_indexes`) — exactly the kind of surface
+where a major-version difference could plausibly matter without showing up
+as an obvious test failure, even though nothing this session's testing
+surfaced pointed at that specific mechanism (see the flake entry above).
+
+**Production's version was not confirmed as part of this fix.** Local now
+matches CI at 16, but Railway's Postgres plugin version is unknown — if it
+differs, the mismatch has moved rather than closed, and production is the
+instance that actually matters for real users hitting these code paths.
+Concretely, until confirmed: don't treat a local or CI pass on
+`setCurrentAcademicSession`, `createSchool`, or anything exercising the two
+partial unique indexes above as proof the same behavior holds in
+production. The specific risk isn't a known correctness bug (nothing
+currently documents 16-vs-17 changing advisory-lock or partial-index
+semantics) — it's that this is exactly the kind of low-level locking/index
+surface where an undocumented or edge-case behavioral difference between
+major versions could exist and wouldn't necessarily announce itself as a
+loud failure. Check Railway's dashboard (Postgres plugin → version) or
+`SELECT version()` via `railway connect postgres`, and update this entry
+with the result.
