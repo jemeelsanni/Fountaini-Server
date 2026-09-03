@@ -166,6 +166,13 @@ export const StudentParentWithStudentSchema = StudentParentSchema.extend({
   student: StudentSchema,
 }).openapi("StudentParentWithStudent");
 
+/// GET /api/students/:id/parents — the mirror of GET /api/parents/:id/children
+/// (StudentParentWithStudentSchema above), nesting the parent side instead
+/// of the student side.
+export const StudentParentWithParentSchema = StudentParentSchema.extend({
+  parent: ParentSchema,
+}).openapi("StudentParentWithParent");
+
 // ---------------------------------------------------------------------------
 // Academic structure
 // ---------------------------------------------------------------------------
@@ -298,6 +305,38 @@ export const ScoreSchema = z
     updatedAt: isoDateTime(),
   })
   .openapi("Score");
+
+/// GET /api/class-subject-assignments/:id/scores's per-student, per-
+/// component shape — rawScore is null wherever nothing's been entered yet,
+/// which is the whole point of this endpoint (it's how the entry sheet UI
+/// knows which cells are still blank).
+export const ScoreSheetEntrySchema = z
+  .object({
+    assessmentComponentId: id(),
+    code: z.string(),
+    maxScore: decimalString(),
+    rawScore: decimalString().nullable(),
+  })
+  .openapi("ScoreSheetEntry");
+
+export const ScoreSheetStudentSchema = z
+  .object({
+    studentId: id(),
+    firstName: z.string(),
+    lastName: z.string(),
+    admissionNumber: z.string(),
+    scores: z.array(ScoreSheetEntrySchema),
+  })
+  .openapi("ScoreSheetStudent");
+
+export const ScoreSheetSchema = z
+  .object({
+    status: ScoreStatusSchema.openapi({
+      description: "SUBMITTED once any score in this sheet has been submitted — submission is all-or-nothing",
+    }),
+    students: z.array(ScoreSheetStudentSchema),
+  })
+  .openapi("ScoreSheet");
 
 export const GradeBandSchema = z
   .object({
@@ -684,6 +723,7 @@ export const NotificationEventSchema = z
     relatedEntityType: z.string().nullable(),
     relatedEntityId: z.string().nullable(),
     createdAt: isoDateTime(),
+    readAt: isoDateTime().nullable().openapi({ description: "null = unread" }),
   })
   .openapi("NotificationEvent");
 
@@ -705,6 +745,10 @@ export const NotificationDeliverySchema = z
 export const NotificationEventWithDeliveriesSchema = NotificationEventSchema.extend({
   deliveries: z.array(NotificationDeliverySchema),
 }).openapi("NotificationEventWithDeliveries");
+
+export const MarkAllNotificationsReadResultSchema = z
+  .object({ markedCount: z.number().int().nonnegative() })
+  .openapi("MarkAllNotificationsReadResult");
 
 // ---------------------------------------------------------------------------
 // Audit log

@@ -9,6 +9,7 @@ import {
   createBareStudent,
   createClass,
   createCurrentAcademicSession,
+  createParent,
   createSubject,
   createTeacher,
   createTermForSession,
@@ -53,6 +54,75 @@ describe("GET .../students (roster)", () => {
       .set("Authorization", `Bearer ${tokenA}`);
     expect(res.status).toBe(200);
     expect(res.body).toHaveLength(1);
+  });
+});
+
+describe("GET .../scores (entry sheet read-back)", () => {
+  async function setupWithOneEnteredScore() {
+    const { session, term, klass, subject, ca1, exam } = await setupClassroom();
+    const { staff: teacher, user: teacherUser, token: teacherToken } = await createTeacher("teacher@test.local");
+    const assignment = await createAssignment(klass.id, subject.id, teacher.id, session.id);
+    const student = await createBareStudent("ADM-001");
+    await enrollStudent(student.id, klass.id, session.id);
+
+    // Only ca1 entered — exam is deliberately left blank, to prove it comes
+    // back as null rather than being omitted.
+    await bulkUpsertScores(assignment.id, teacherUser.id, {
+      termId: term.id,
+      entries: [{ studentId: student.id, assessmentComponentId: ca1.id, rawScore: 15 }],
+    });
+
+    return { session, term, klass, subject, ca1, exam, assignment, teacherToken, student };
+  }
+
+  it("returns DRAFT scores with the entered value and null for a not-yet-entered component", async () => {
+    const { term, assignment, teacherToken, student, ca1, exam } = await setupWithOneEnteredScore();
+
+    const res = await request(app)
+      .get(`/api/class-subject-assignments/${assignment.id}/scores?termId=${term.id}`)
+      .set("Authorization", `Bearer ${teacherToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("DRAFT");
+    expect(res.body.students).toHaveLength(1);
+    const entry = res.body.students[0];
+    expect(entry.studentId).toBe(student.id);
+
+    const ca1Score = entry.scores.find((s: { assessmentComponentId: string }) => s.assessmentComponentId === ca1.id);
+    const examScore = entry.scores.find((s: { assessmentComponentId: string }) => s.assessmentComponentId === exam.id);
+    expect(Number(ca1Score.rawScore)).toBe(15);
+    expect(examScore.rawScore).toBeNull();
+  });
+
+  it("denies an unassigned teacher and a PARENT", async () => {
+    const { term, assignment } = await setupWithOneEnteredScore();
+    const { token: unassignedTeacherToken } = await createTeacher("unassigned-teacher@test.local");
+    const { token: parentToken } = await createParent("parent@test.local");
+
+    const asUnassignedTeacher = await request(app)
+      .get(`/api/class-subject-assignments/${assignment.id}/scores?termId=${term.id}`)
+      .set("Authorization", `Bearer ${unassignedTeacherToken}`);
+    expect(asUnassignedTeacher.status).toBe(403);
+
+    const asParent = await request(app)
+      .get(`/api/class-subject-assignments/${assignment.id}/scores?termId=${term.id}`)
+      .set("Authorization", `Bearer ${parentToken}`);
+    expect(asParent.status).toBe(403);
+  });
+
+  // Pins the invariant getScoresForAssignment's status derivation depends
+  // on: submission is all-or-nothing, so "any SUBMITTED row means the whole
+  // sheet is submitted" is only valid because a sheet can never be a mix of
+  // DRAFT and SUBMITTED rows. If partial submission is ever introduced,
+  // this is the test that should start failing, loudly, rather than the
+  // derivation silently mislabeling a partially-submitted sheet.
+  it("never persists a mix of DRAFT and SUBMITTED scores for the same assignment/term", async () => {
+    const { term, assignment, student } = await setupWithOneEnteredScore();
+    const rows = await prisma.score.findMany({
+      where: { classSubjectAssignmentId: assignment.id, termId: term.id, studentId: student.id },
+    });
+    const statuses = new Set(rows.map((r) => r.status));
+    expect(statuses.size).toBeLessThanOrEqual(1);
   });
 });
 

@@ -1,10 +1,15 @@
 import { Router } from "express";
 import { requireAuth, requireRole, requireScope } from "../../authorization/middleware.js";
-import { canReadStudent, canWriteClassTeacherComment } from "../../authorization/scopeResolvers.js";
+import {
+  canReadClassResults,
+  canReadStudent,
+  canWriteClassTeacherComment,
+} from "../../authorization/scopeResolvers.js";
 import { auditMutation } from "../../http/middleware/auditMutation.js";
 import { validate } from "../../http/middleware/validate.js";
 import * as controller from "./results.controller.js";
 import {
+  type ClassTermParams,
   classTermParamsSchema,
   computeResultsSchema,
   idParamsSchema,
@@ -42,8 +47,12 @@ resultsRouter.get(
 );
 resultsRouter.get(
   "/classes/:id/results/:termId",
-  requireRole("ADMIN"),
+  requireRole("ADMIN", "TEACHER"),
   validate({ params: classTermParamsSchema }),
+  requireScope((principal, req) => {
+    const { id, termId } = req.params as unknown as ClassTermParams;
+    return canReadClassResults(principal, id, termId);
+  }),
   controller.listResultsForClass,
 );
 resultsRouter.post(

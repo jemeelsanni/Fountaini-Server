@@ -8,6 +8,7 @@ import {
   bulkUpsertScoresSchema,
   idParamsSchema,
   type IdParams,
+  scoresForAssignmentQuerySchema,
   submitScoresSchema,
 } from "./scores.schemas.js";
 
@@ -25,6 +26,13 @@ scoresRouter.get(
   validate({ params: idParamsSchema }),
   scopeToAssignment,
   controller.getRoster,
+);
+scoresRouter.get(
+  "/class-subject-assignments/:id/scores",
+  requireRole("ADMIN", "TEACHER"),
+  validate({ params: idParamsSchema, query: scoresForAssignmentQuerySchema }),
+  scopeToAssignment,
+  controller.getScoresForAssignment,
 );
 scoresRouter.put(
   "/class-subject-assignments/:id/scores",

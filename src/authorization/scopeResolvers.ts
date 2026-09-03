@@ -1,6 +1,47 @@
 import { prisma } from "../db/client.js";
 import type { Principal } from "./types.js";
 
+/// Shared by resolveStudentAccessLevel's TEACHER branch and
+/// canReadStudentParents: "is this staff member currently assigned (via
+/// ClassSubjectAssignment, scoped to the CURRENT academic session) to a
+/// class this student is actively enrolled in." One DB round trip, one
+/// place the assignment-lookup logic lives.
+async function isTeacherAssignedToStudent(staffId: string, studentId: string): Promise<boolean> {
+  const enrollments = await prisma.enrollment.findMany({
+    where: { studentId, status: "ACTIVE", academicSession: { isCurrent: true } },
+    select: { classId: true, academicSessionId: true },
+  });
+  if (enrollments.length === 0) {
+    return false;
+  }
+  const assignment = await prisma.classSubjectAssignment.findFirst({
+    where: {
+      teacherId: staffId,
+      OR: enrollments.map((e) => ({ classId: e.classId, academicSessionId: e.academicSessionId })),
+    },
+    select: { id: true },
+  });
+  return assignment !== null;
+}
+
+/// Shared by canWriteClassTeacherComment and canReadClassResults: "is this
+/// staff member the FORM teacher (ClassFormTeacher, not any subject
+/// teacher) of this class for this academic session." Both resolvers reach
+/// this from different inputs — one from a resultId, one from a bare
+/// classId+termId — so the outer functions can't literally be the same
+/// call, but the actual form-teacher check is one place.
+async function isFormTeacherOfClass(
+  staffId: string,
+  classId: string,
+  academicSessionId: string,
+): Promise<boolean> {
+  const formTeacher = await prisma.classFormTeacher.findUnique({
+    where: { classId_academicSessionId: { classId, academicSessionId } },
+    select: { teacherId: true },
+  });
+  return formTeacher?.teacherId === staffId;
+}
+
 /// Distinguishes not just WHETHER a principal may read a student's record
 /// (see canReadStudent, which this backs) but the LEVEL of access: "FULL"
 /// (any ADMIN, or a teacher currently assigned — via ClassSubjectAssignment,
@@ -44,22 +85,8 @@ export async function resolveStudentAccessLevel(
   }
 
   if (principal.roles.has("TEACHER") && principal.staffId) {
-    const enrollments = await prisma.enrollment.findMany({
-      where: { studentId, status: "ACTIVE", academicSession: { isCurrent: true } },
-      select: { classId: true, academicSessionId: true },
-    });
-
-    if (enrollments.length > 0) {
-      const assignment = await prisma.classSubjectAssignment.findFirst({
-        where: {
-          teacherId: principal.staffId,
-          OR: enrollments.map((e) => ({ classId: e.classId, academicSessionId: e.academicSessionId })),
-        },
-        select: { id: true },
-      });
-      if (assignment !== null) {
-        return "FULL";
-      }
+    if (await isTeacherAssignedToStudent(principal.staffId, studentId)) {
+      return "FULL";
     }
   }
 
@@ -72,6 +99,26 @@ export async function resolveStudentAccessLevel(
 /// access level resolveStudentAccessLevel can return.
 export async function canReadStudent(principal: Principal, studentId: string): Promise<boolean> {
   return (await resolveStudentAccessLevel(principal, studentId)) !== null;
+}
+
+/// Narrower than canReadStudent: ADMIN, the assigned teacher, or the
+/// student themself — deliberately NOT a linked parent (this is the
+/// resolver behind GET /api/students/:id/parents; a parent doesn't need
+/// this route to see their own household, and it isn't the place for a
+/// second parent's contact details to leak to). A genuinely new resolver
+/// rather than a reuse: no existing one keeps TEACHER+ADMIN+self while
+/// excluding PARENT.
+export async function canReadStudentParents(principal: Principal, studentId: string): Promise<boolean> {
+  if (principal.roles.has("ADMIN")) {
+    return true;
+  }
+  if (principal.roles.has("STUDENT") && principal.studentId === studentId) {
+    return true;
+  }
+  if (principal.roles.has("TEACHER") && principal.staffId) {
+    return isTeacherAssignedToStudent(principal.staffId, studentId);
+  }
+  return false;
 }
 
 /// Self-access only (plus ADMIN) — no DB lookup needed since Staff.id is
@@ -142,6 +189,23 @@ export async function canReadPayment(principal: Principal, paymentId: string): P
     return false;
   }
   return canReadStudentFinancials(principal, payment.feeObligation.studentId);
+}
+
+/// Same shape as canReadPayment: ADMIN/BURSAR always; anyone else only via
+/// canReadStudentFinancials on the obligation's own student (a linked
+/// parent, or the student themself).
+export async function canReadFeeObligation(principal: Principal, feeObligationId: string): Promise<boolean> {
+  if (principal.roles.has("ADMIN") || principal.roles.has("BURSAR")) {
+    return true;
+  }
+  const obligation = await prisma.feeObligation.findUnique({
+    where: { id: feeObligationId },
+    select: { studentId: true },
+  });
+  if (!obligation) {
+    return false;
+  }
+  return canReadStudentFinancials(principal, obligation.studentId);
 }
 
 /// Timetable data isn't sensitive the way scores/fees are — "Maths is taught
@@ -221,14 +285,58 @@ export async function canWriteClassTeacherComment(
     return false;
   }
 
-  const formTeacher = await prisma.classFormTeacher.findUnique({
-    where: {
-      classId_academicSessionId: {
-        classId: result.enrollment.classId,
-        academicSessionId: result.term.academicSessionId,
-      },
-    },
-    select: { teacherId: true },
+  return isFormTeacherOfClass(principal.staffId, result.enrollment.classId, result.term.academicSessionId);
+}
+
+/// "The form teacher may read their own class's results for a term" — the
+/// GET analog of canWriteClassTeacherComment, reached from a bare
+/// classId+termId (a class-results listing, not one already-known result)
+/// rather than a resultId, so it derives academicSessionId from the term
+/// itself before calling the same shared form-teacher check. A SUBJECT
+/// teacher assigned to this class is deliberately still denied — that
+/// distinction (form teacher vs. subject teacher) is the whole point of
+/// the ClassFormTeacher table, same as canWriteClassTeacherComment.
+export async function canReadClassResults(
+  principal: Principal,
+  classId: string,
+  termId: string,
+): Promise<boolean> {
+  if (principal.roles.has("ADMIN")) {
+    return true;
+  }
+  if (!principal.roles.has("TEACHER") || !principal.staffId) {
+    return false;
+  }
+
+  const term = await prisma.term.findUnique({ where: { id: termId }, select: { academicSessionId: true } });
+  if (!term) {
+    return false;
+  }
+
+  return isFormTeacherOfClass(principal.staffId, classId, term.academicSessionId);
+}
+
+/// Self-access only (plus ADMIN) — the Student-record analog of
+/// canReadStaff/canReadParent. No DB lookup needed: Student.id is already
+/// carried on the Principal as studentId. Backs QR code self-rotation/read.
+export function canManageStudentQrCode(principal: Principal, studentId: string): Promise<boolean> {
+  return Promise.resolve(principal.roles.has("ADMIN") || principal.studentId === studentId);
+}
+
+/// A notification is manageable only by ADMIN or the user it was actually
+/// sent to — there's no role-based path into someone else's notifications
+/// at all, so this is a DB lookup, not a role check with a self-only
+/// shortcut like canReadStaff/canReadParent/canManageStudentQrCode above.
+export async function canManageOwnNotification(
+  principal: Principal,
+  notificationId: string,
+): Promise<boolean> {
+  if (principal.roles.has("ADMIN")) {
+    return true;
+  }
+  const notification = await prisma.notificationEvent.findUnique({
+    where: { id: notificationId },
+    select: { recipientUserId: true },
   });
-  return formTeacher?.teacherId === principal.staffId;
+  return notification?.recipientUserId === principal.userId;
 }

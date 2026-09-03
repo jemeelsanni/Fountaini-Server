@@ -701,3 +701,41 @@ describe("GET /api/students/:id/results", () => {
     expect(res.body[0].id).toBe(resultA.id);
   });
 });
+
+describe("GET /api/classes/:id/results/:termId", () => {
+  it("lets the form teacher read their own class's results, but denies a subject teacher assigned to the same class", async () => {
+    const session = await createCurrentAcademicSession("2026/2027");
+    const term = await createTermForSession(session.id, "First Term", 1);
+    const klass = await createClass("JSS1", "A");
+    const student = await createBareStudent("ADM-001");
+    await enrollStudent(student.id, klass.id, session.id);
+
+    const { staff: formTeacherStaff, token: formTeacherToken } = await createTeacher("form-teacher@test.local");
+    await prisma.classFormTeacher.create({
+      data: { classId: klass.id, teacherId: formTeacherStaff.id, academicSessionId: session.id },
+    });
+
+    // A SUBJECT teacher assigned to this exact class — the negative case
+    // that proves this route checks the form-teacher assignment
+    // specifically, not "any teacher connected to this class somehow."
+    const subject = await createSubject("Mathematics", "MTH");
+    const { staff: subjectTeacherStaff, token: subjectTeacherToken } = await createTeacher(
+      "subject-teacher@test.local",
+    );
+    await createAssignment(klass.id, subject.id, subjectTeacherStaff.id, session.id);
+
+    await computeResultsForClass({ classId: klass.id, termId: term.id });
+
+    const asFormTeacher = await request(app)
+      .get(`/api/classes/${klass.id}/results/${term.id}`)
+      .set("Authorization", `Bearer ${formTeacherToken}`);
+    expect(asFormTeacher.status).toBe(200);
+    expect(asFormTeacher.body).toHaveLength(1);
+    expect(asFormTeacher.body[0].studentId).toBe(student.id);
+
+    const asSubjectTeacher = await request(app)
+      .get(`/api/classes/${klass.id}/results/${term.id}`)
+      .set("Authorization", `Bearer ${subjectTeacherToken}`);
+    expect(asSubjectTeacher.status).toBe(403);
+  });
+});

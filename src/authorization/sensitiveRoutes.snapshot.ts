@@ -31,7 +31,9 @@ export const SENSITIVE_ROUTE_ROLES: Readonly<Record<string, readonly Role[]>> = 
   // --- Payments: confirm ---
   "POST /api/payments/:id/confirm": ["ADMIN", "BURSAR"],
 
-  // --- Fee obligations: mutations (routes rooted at /fee-obligations/:id) ---
+  // --- Fee structures / obligations: mutations ---
+  "PATCH /api/fee-structures/:id": ["ADMIN", "BURSAR"],
+  "DELETE /api/fee-structures/:id": ["ADMIN", "BURSAR"],
   "PATCH /api/fee-obligations/:id": ["ADMIN", "BURSAR"],
   "POST /api/fee-obligations/:id/payments": ["ADMIN", "BURSAR"],
 

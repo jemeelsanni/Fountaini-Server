@@ -155,3 +155,62 @@ describe("GET /api/notifications", () => {
     expect(asParent2.body).toHaveLength(0);
   });
 });
+
+describe("PATCH /api/notifications/:id/read", () => {
+  it("marks a notification read, is idempotent on a second call, and denies another user's notification", async () => {
+    const { parent: parent1, token: token1 } = await createParent("parent1@test.local");
+    const { token: token2 } = await createParent("parent2@test.local");
+
+    const notification = await prisma.notificationEvent.create({
+      data: {
+        type: "ADMIN_GENERAL",
+        recipientUserId: parent1.userId,
+        subject: "Hello",
+        body: "Body",
+      },
+    });
+
+    const first = await request(app)
+      .patch(`/api/notifications/${notification.id}/read`)
+      .set("Authorization", `Bearer ${token1}`);
+    expect(first.status).toBe(200);
+    expect(first.body.readAt).not.toBeNull();
+    const firstReadAt = first.body.readAt as string;
+
+    const second = await request(app)
+      .patch(`/api/notifications/${notification.id}/read`)
+      .set("Authorization", `Bearer ${token1}`);
+    expect(second.status).toBe(200);
+    // Idempotent: the original readAt is preserved, not bumped.
+    expect(second.body.readAt).toBe(firstReadAt);
+
+    const asOtherUser = await request(app)
+      .patch(`/api/notifications/${notification.id}/read`)
+      .set("Authorization", `Bearer ${token2}`);
+    expect([403, 404]).toContain(asOtherUser.status);
+  });
+});
+
+describe("POST /api/notifications/read-all", () => {
+  it("marks every one of the caller's own unread notifications read, and none of another user's", async () => {
+    const { parent: parent1, token: token1 } = await createParent("parent1@test.local");
+    const { parent: parent2 } = await createParent("parent2@test.local");
+
+    await prisma.notificationEvent.createMany({
+      data: [
+        { type: "ADMIN_GENERAL", recipientUserId: parent1.userId, subject: "A", body: "A" },
+        { type: "ADMIN_GENERAL", recipientUserId: parent1.userId, subject: "B", body: "B" },
+        { type: "ADMIN_GENERAL", recipientUserId: parent2.userId, subject: "C", body: "C" },
+      ],
+    });
+
+    const res = await request(app).post("/api/notifications/read-all").set("Authorization", `Bearer ${token1}`);
+    expect(res.status).toBe(200);
+    expect(res.body.markedCount).toBe(2);
+
+    const unreadForParent2 = await prisma.notificationEvent.count({
+      where: { recipientUserId: parent2.userId, readAt: null },
+    });
+    expect(unreadForParent2).toBe(1);
+  });
+});

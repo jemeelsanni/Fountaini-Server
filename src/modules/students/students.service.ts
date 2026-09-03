@@ -53,11 +53,39 @@ export async function updateStudent(id: string, input: UpdateStudentBody) {
     throw AppError.notFound("Student not found");
   }
 
+  if (input.userId) {
+    const user = await prisma.user.findUnique({ where: { id: input.userId }, include: { roles: true } });
+    if (!user) {
+      throw AppError.notFound("User not found");
+    }
+    if (!user.roles.some((ur) => ur.role === "STUDENT")) {
+      throw AppError.badRequest("The linked user must have the STUDENT role");
+    }
+  }
+
   try {
+    if (input.userId) {
+      // Conditional claim, not read-then-write: the WHERE clause re-checks
+      // userId is still null at write time, so two concurrent attaches to
+      // the same student can't both succeed (see docs/concurrency.md). The
+      // "target user already linked to a DIFFERENT student" case is caught
+      // below instead — Student.userId's own DB-level unique constraint
+      // (schema.prisma) rejects that write outright as a P2002, regardless
+      // of this WHERE clause.
+      const { count } = await prisma.student.updateMany({ where: { id, userId: null }, data: input });
+      if (count === 0) {
+        throw AppError.conflict("This student already has a linked user account");
+      }
+      return await prisma.student.findUniqueOrThrow({ where: { id } });
+    }
     return await prisma.student.update({ where: { id }, data: input });
   } catch (err) {
     if (isUniqueConstraintError(err)) {
-      throw AppError.conflict("A student with this admission number already exists");
+      throw AppError.conflict(
+        input.userId
+          ? "This user is already linked to another student record"
+          : "A student with this admission number already exists",
+      );
     }
     throw err;
   }
@@ -84,6 +112,13 @@ export async function createEnrollment(studentId: string, input: CreateEnrollmen
     }
     throw err;
   }
+}
+
+export function listParentsForStudent(studentId: string) {
+  return prisma.studentParent.findMany({
+    where: { studentId },
+    include: { parent: true },
+  });
 }
 
 export function listEnrollmentsForStudent(studentId: string) {

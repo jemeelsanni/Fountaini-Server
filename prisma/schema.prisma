@@ -989,6 +989,9 @@ model NotificationEvent {
   relatedEntityType String?
   relatedEntityId   String?
   createdAt         DateTime         @default(now())
+  /// Null = unread. Set once, on first PATCH .../:id/read; re-marking an
+  /// already-read notification is a no-op (idempotent), not an error.
+  readAt            DateTime?
 
   deliveries NotificationDelivery[]
 

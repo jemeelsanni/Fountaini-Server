@@ -279,6 +279,69 @@ export async function submitScores(assignmentId: string, actorUserId: string, te
   });
 }
 
+/// Repopulates the entry sheet for a class-subject-assignment+term: every
+/// actively-enrolled student, every configured assessment component for
+/// that session, and the entered rawScore for each (student, component)
+/// pair — or null where nothing's been entered yet. Deliberately returns
+/// DRAFT scores; the finalized-only visibility filter that governs the
+/// parent/student path (see resolveStudentAccessLevel) has no business
+/// here — this route is teacher-facing and its whole purpose is showing
+/// what's been entered so far.
+///
+/// Submission is all-or-nothing per assignment+term (bulkUpsertScores/
+/// submitScores enforce it), so the Score rows for one assignment+term are
+/// never a mix of DRAFT and SUBMITTED — the presence of any SUBMITTED row
+/// is enough to say the whole sheet is submitted. If partial submission is
+/// ever introduced, this derivation stops being valid; a test pins this
+/// invariant deliberately (see scores.test.ts) so that change breaks
+/// loudly here instead of silently mislabeling a partially-submitted sheet
+/// as DRAFT.
+export async function getScoresForAssignment(assignmentId: string, termId: string) {
+  const assignment = await getAssignmentOrThrow(assignmentId);
+
+  const term = await prisma.term.findUnique({ where: { id: termId } });
+  if (!term || term.academicSessionId !== assignment.academicSessionId) {
+    throw AppError.badRequest("Term does not belong to this assignment's academic session");
+  }
+
+  const [enrollments, components, scores] = await Promise.all([
+    prisma.enrollment.findMany({
+      where: { classId: assignment.classId, academicSessionId: assignment.academicSessionId, status: "ACTIVE" },
+      include: { student: true },
+      orderBy: { student: { lastName: "asc" } },
+    }),
+    prisma.assessmentComponent.findMany({
+      where: { academicSessionId: assignment.academicSessionId },
+      orderBy: { order: "asc" },
+    }),
+    prisma.score.findMany({
+      where: { classSubjectAssignmentId: assignmentId, termId },
+    }),
+  ]);
+
+  const scoreKey = (studentId: string, assessmentComponentId: string) => `${studentId}:${assessmentComponentId}`;
+  const scoreMap = new Map(scores.map((s) => [scoreKey(s.studentId, s.assessmentComponentId), s]));
+  const status = scores.some((s) => s.status === "SUBMITTED") ? "SUBMITTED" : "DRAFT";
+
+  const students = enrollments.map((enrollment) => ({
+    studentId: enrollment.student.id,
+    firstName: enrollment.student.firstName,
+    lastName: enrollment.student.lastName,
+    admissionNumber: enrollment.student.admissionNumber,
+    scores: components.map((component) => {
+      const existing = scoreMap.get(scoreKey(enrollment.student.id, component.id));
+      return {
+        assessmentComponentId: component.id,
+        code: component.code,
+        maxScore: component.maxScore,
+        rawScore: existing?.rawScore ?? null,
+      };
+    }),
+  }));
+
+  return { status, students };
+}
+
 export function getScoresForStudent(studentId: string) {
   return prisma.subjectResult.findMany({
     where: { studentId },

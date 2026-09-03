@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { requireAuth, requireRole, requireScope } from "../../authorization/middleware.js";
-import { canReadStudent } from "../../authorization/scopeResolvers.js";
+import { canManageStudentQrCode, canReadStudent } from "../../authorization/scopeResolvers.js";
 import { auditMutation } from "../../http/middleware/auditMutation.js";
 import { validate } from "../../http/middleware/validate.js";
 import * as controller from "./attendance.controller.js";
@@ -56,14 +56,16 @@ attendanceRouter.get(
 );
 attendanceRouter.post(
   "/students/:id/qr-code/rotate",
-  requireRole("ADMIN"),
+  requireRole("ADMIN", "STUDENT"),
   validate({ params: idParamsSchema }),
+  requireScope((principal, req) => canManageStudentQrCode(principal, (req.params as unknown as IdParams).id)),
   auditMutation("StudentQrCode", "QR_CODE_ROTATED"),
   controller.rotateQrCode,
 );
 attendanceRouter.get(
   "/students/:id/qr-code",
-  requireRole("ADMIN"),
+  requireRole("ADMIN", "STUDENT"),
   validate({ params: idParamsSchema }),
+  requireScope((principal, req) => canManageStudentQrCode(principal, (req.params as unknown as IdParams).id)),
   controller.getActiveQrCode,
 );
