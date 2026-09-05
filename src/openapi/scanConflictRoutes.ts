@@ -21,6 +21,7 @@ const MODULE_NAMES = [
   "madrassah",
   "notifications",
   "parents",
+  "ratings",
   "results",
   "school",
   "scores",
@@ -198,6 +199,7 @@ import * as gradingController from "../modules/grading/grading.controller.js";
 import * as madrassahController from "../modules/madrassah/madrassah.controller.js";
 import * as notificationsController from "../modules/notifications/notifications.controller.js";
 import * as parentsController from "../modules/parents/parents.controller.js";
+import * as ratingsController from "../modules/ratings/ratings.controller.js";
 import * as resultsController from "../modules/results/results.controller.js";
 import * as schoolController from "../modules/school/school.controller.js";
 import * as scoresController from "../modules/scores/scores.controller.js";
@@ -217,6 +219,7 @@ const CONTROLLER_MODULES: Record<string, Record<string, unknown>> = {
   madrassah: madrassahController,
   notifications: notificationsController,
   parents: parentsController,
+  ratings: ratingsController,
   results: resultsController,
   school: schoolController,
   scores: scoresController,

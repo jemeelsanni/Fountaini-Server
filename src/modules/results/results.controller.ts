@@ -4,9 +4,12 @@ import * as service from "./results.service.js";
 import type {
   ClassTermParams,
   ComputeResultsBody,
+  ComputeSessionResultsBody,
   IdParams,
   ListResultsForStudentQuery,
   OverrideResultBody,
+  ReleaseWithholdingBody,
+  StudentSessionParams,
   StudentTermParams,
   WriteCommentBody,
 } from "./results.schemas.js";
@@ -44,6 +47,39 @@ export async function finalizeResult(req: Request, res: Response): Promise<void>
   }
   const { id } = req.params as unknown as IdParams;
   res.status(200).json(await service.finalizeResult(id, req.principal.userId));
+}
+
+export async function rankClassResults(req: Request, res: Response): Promise<void> {
+  const { id, termId } = req.params as unknown as ClassTermParams;
+  res.status(200).json(await service.rankClassResults(id, termId));
+}
+
+export async function releaseWithholding(req: Request, res: Response): Promise<void> {
+  if (!req.principal) {
+    throw AppError.unauthorized();
+  }
+  const { id } = req.params as unknown as IdParams;
+  const { reason } = req.body as ReleaseWithholdingBody;
+  res.status(200).json(await service.releaseWithholding(id, req.principal.userId, reason));
+}
+
+export async function computeSessionResults(req: Request, res: Response): Promise<void> {
+  if (!req.principal) {
+    throw AppError.unauthorized();
+  }
+  const results = await service.computeSessionResultsForClass(
+    req.body as ComputeSessionResultsBody,
+    req.principal.userId,
+  );
+  res.status(200).json(results);
+}
+
+export async function getSessionResultForStudent(req: Request, res: Response): Promise<void> {
+  if (!req.principal) {
+    throw AppError.unauthorized();
+  }
+  const { studentId, academicSessionId } = req.params as unknown as StudentSessionParams;
+  res.status(200).json(await service.getSessionResultForStudent(studentId, academicSessionId, req.principal));
 }
 
 export async function overrideResult(req: Request, res: Response): Promise<void> {

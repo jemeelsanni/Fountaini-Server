@@ -95,6 +95,29 @@ export function listNotificationsForUser(userId: string) {
   });
 }
 
+/// Idempotent by design: re-marking an already-read notification is a 200,
+/// not a 409 or a no-op error — the caller wanted it read, and it already
+/// is. `readAt: null` in the WHERE guard means the write only actually
+/// happens (and only the FIRST read timestamp is ever kept) when it isn't
+/// already set; either way the current row is returned. Ownership (is this
+/// the caller's own notification) is enforced by the route's own
+/// requireScope gate, not here.
+export async function markNotificationRead(id: string) {
+  await prisma.notificationEvent.updateMany({
+    where: { id, readAt: null },
+    data: { readAt: new Date() },
+  });
+  return prisma.notificationEvent.findUniqueOrThrow({ where: { id } });
+}
+
+export async function markAllNotificationsRead(userId: string) {
+  const { count } = await prisma.notificationEvent.updateMany({
+    where: { recipientUserId: userId, readAt: null },
+    data: { readAt: new Date() },
+  });
+  return { markedCount: count };
+}
+
 /// Finds every fee obligation with a positive outstanding balance and sends a
 /// FEE_REMINDER to each linked parent. Manually triggered for MVP (see
 /// POST /api/notifications/fee-reminders/trigger) — periodic scheduling is a

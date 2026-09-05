@@ -19,6 +19,14 @@ export const SENSITIVE_ROUTE_ROLES: Readonly<Record<string, readonly Role[]>> = 
   "POST /api/results/compute": ["ADMIN"],
   "POST /api/results/:id/finalize": ["ADMIN"],
   "POST /api/results/:id/override": ["ADMIN"],
+  // Unblocks a withheld report card despite an outstanding balance —
+  // ADMIN-only for the same reason overriding a finalized field is.
+  "POST /api/results/:id/release-withholding": ["ADMIN"],
+
+  // --- Ratings: affective/psychomotor entry ---
+  // requireRole tags ADMIN+TEACHER; requireScope narrows TEACHER further to
+  // only the form teacher of this specific class (canWriteClassRatings).
+  "PUT /api/classes/:id/results/:termId/ratings": ["ADMIN", "TEACHER"],
 
   // --- Users: create / activate / deactivate (account lifecycle) ---
   "POST /api/users": ["ADMIN"],
@@ -31,7 +39,9 @@ export const SENSITIVE_ROUTE_ROLES: Readonly<Record<string, readonly Role[]>> = 
   // --- Payments: confirm ---
   "POST /api/payments/:id/confirm": ["ADMIN", "BURSAR"],
 
-  // --- Fee obligations: mutations (routes rooted at /fee-obligations/:id) ---
+  // --- Fee structures / obligations: mutations ---
+  "PATCH /api/fee-structures/:id": ["ADMIN", "BURSAR"],
+  "DELETE /api/fee-structures/:id": ["ADMIN", "BURSAR"],
   "PATCH /api/fee-obligations/:id": ["ADMIN", "BURSAR"],
   "POST /api/fee-obligations/:id/payments": ["ADMIN", "BURSAR"],
 

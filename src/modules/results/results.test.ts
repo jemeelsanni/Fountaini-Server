@@ -25,6 +25,19 @@ import { waitForAuditLog } from "../../test/waitForAuditLog.js";
 
 const app = createApp();
 
+/// createTermForSession (test/factories.ts) always sets isCurrent: true —
+/// fine for the vast majority of tests, which only ever need one term per
+/// session, but a second call for the SAME session collides with the
+/// "at most one current term per session" partial unique index. The
+/// three-term-session fixtures below don't rely on any term being current,
+/// so this local, non-current variant sidesteps that instead of touching
+/// the shared factory's behavior for every other caller.
+function createTerm(academicSessionId: string, name: string, order: number) {
+  return prisma.term.create({
+    data: { academicSessionId, name, order, startDate: new Date("2026-09-01"), endDate: new Date("2026-12-15") },
+  });
+}
+
 async function enterAndSubmit(
   token: string,
   assignmentId: string,
@@ -699,5 +712,530 @@ describe("GET /api/students/:id/results", () => {
     expect(res.status).toBe(200);
     expect(res.body).toHaveLength(1);
     expect(res.body[0].id).toBe(resultA.id);
+  });
+});
+
+describe("GET /api/classes/:id/results/:termId", () => {
+  it("lets the form teacher read their own class's results, but denies a subject teacher assigned to the same class", async () => {
+    const session = await createCurrentAcademicSession("2026/2027");
+    const term = await createTermForSession(session.id, "First Term", 1);
+    const klass = await createClass("JSS1", "A");
+    const student = await createBareStudent("ADM-001");
+    await enrollStudent(student.id, klass.id, session.id);
+
+    const { staff: formTeacherStaff, token: formTeacherToken } = await createTeacher("form-teacher@test.local");
+    await prisma.classFormTeacher.create({
+      data: { classId: klass.id, teacherId: formTeacherStaff.id, academicSessionId: session.id },
+    });
+
+    // A SUBJECT teacher assigned to this exact class — the negative case
+    // that proves this route checks the form-teacher assignment
+    // specifically, not "any teacher connected to this class somehow."
+    const subject = await createSubject("Mathematics", "MTH");
+    const { staff: subjectTeacherStaff, token: subjectTeacherToken } = await createTeacher(
+      "subject-teacher@test.local",
+    );
+    await createAssignment(klass.id, subject.id, subjectTeacherStaff.id, session.id);
+
+    await computeResultsForClass({ classId: klass.id, termId: term.id });
+
+    const asFormTeacher = await request(app)
+      .get(`/api/classes/${klass.id}/results/${term.id}`)
+      .set("Authorization", `Bearer ${formTeacherToken}`);
+    expect(asFormTeacher.status).toBe(200);
+    expect(asFormTeacher.body).toHaveLength(1);
+    expect(asFormTeacher.body[0].studentId).toBe(student.id);
+
+    const asSubjectTeacher = await request(app)
+      .get(`/api/classes/${klass.id}/results/${term.id}`)
+      .set("Authorization", `Bearer ${subjectTeacherToken}`);
+    expect(asSubjectTeacher.status).toBe(403);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature A — session result averaging
+// ---------------------------------------------------------------------------
+
+describe("Session results (Feature A)", () => {
+  async function setupThreeTermSession() {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const session = await createCurrentAcademicSession("2026/2027");
+    const term1 = await createTerm(session.id, "First Term", 1);
+    const term2 = await createTerm(session.id, "Second Term", 2);
+    const term3 = await createTerm(session.id, "Third Term", 3);
+    const klass = await createClass("JSS1", "A");
+
+    const maths = await createSubject("Mathematics", "MTH");
+    const english = await createSubject("English", "ENG");
+    const component = await createAssessmentComponent(session.id, "TOTAL", "EXAM", 100, 1);
+
+    const { staff: mathsTeacher, token: mathsToken } = await createTeacher("maths-teacher@test.local");
+    const { staff: englishTeacher, token: englishToken } = await createTeacher("english-teacher@test.local");
+    const mathsAssignment = await createAssignment(klass.id, maths.id, mathsTeacher.id, session.id);
+    const englishAssignment = await createAssignment(klass.id, english.id, englishTeacher.id, session.id);
+
+    const student = await createBareStudent("ADM-001");
+    await enrollStudent(student.id, klass.id, session.id);
+
+    return {
+      adminToken,
+      session,
+      term1,
+      term2,
+      term3,
+      klass,
+      maths,
+      english,
+      component,
+      mathsAssignment,
+      englishAssignment,
+      mathsToken,
+      englishToken,
+      student,
+    };
+  }
+
+  /// Enters+submits a single-component score for both subjects, computes,
+  /// and finalizes the term's Result for `student` — mirroring
+  /// enterAndSubmit above but parameterized over which term/scores.
+  async function finalizeTermWithScores(
+    world: Awaited<ReturnType<typeof setupThreeTermSession>>,
+    term: { id: string },
+    mathsScore: number,
+    englishScore: number,
+  ) {
+    await enterAndSubmit(world.mathsToken, world.mathsAssignment.id, term.id, [
+      { studentId: world.student.id, assessmentComponentId: world.component.id, rawScore: mathsScore },
+    ]);
+    await enterAndSubmit(world.englishToken, world.englishAssignment.id, term.id, [
+      { studentId: world.student.id, assessmentComponentId: world.component.id, rawScore: englishScore },
+    ]);
+    const computeRes = await request(app)
+      .post("/api/results/compute")
+      .set("Authorization", `Bearer ${world.adminToken}`)
+      .send({ classId: world.klass.id, termId: term.id });
+    const result = (computeRes.body as Array<{ id: string; studentId: string }>).find(
+      (r) => r.studentId === world.student.id,
+    );
+    await request(app)
+      .post(`/api/results/${result?.id}/finalize`)
+      .set("Authorization", `Bearer ${world.adminToken}`);
+  }
+
+  /// Computes (but never finalizes) a term's Result — for proving a
+  /// SUBMITTED-but-not-FINALIZED term is excluded from the session average.
+  async function computeWithoutFinalizing(
+    world: Awaited<ReturnType<typeof setupThreeTermSession>>,
+    term: { id: string },
+    mathsScore: number,
+  ) {
+    await enterAndSubmit(world.mathsToken, world.mathsAssignment.id, term.id, [
+      { studentId: world.student.id, assessmentComponentId: world.component.id, rawScore: mathsScore },
+    ]);
+    await request(app)
+      .post("/api/results/compute")
+      .set("Authorization", `Bearer ${world.adminToken}`)
+      .send({ classId: world.klass.id, termId: term.id });
+  }
+
+  it("averages three FINALIZED terms per subject, and derives the overall average from those subject averages", async () => {
+    const world = await setupThreeTermSession();
+    await finalizeTermWithScores(world, world.term1, 60, 50);
+    await finalizeTermWithScores(world, world.term2, 80, 70);
+    await finalizeTermWithScores(world, world.term3, 100, 90);
+
+    const computeRes = await request(app)
+      .post("/api/session-results/compute")
+      .set("Authorization", `Bearer ${world.adminToken}`)
+      .send({ classId: world.klass.id, academicSessionId: world.session.id });
+    expect(computeRes.status).toBe(200);
+
+    const sessionResult = (
+      computeRes.body as Array<{ studentId: string; averageScore: string; subjectAverages: unknown[] }>
+    ).find((r) => r.studentId === world.student.id);
+    expect(sessionResult).toBeDefined();
+    expect(Number(sessionResult?.averageScore)).toBe(75); // mean(80, 70)
+
+    type SubjectAvg = { subjectId: string; averageScore: string; termsCounted: number };
+    const subjectAverages = sessionResult?.subjectAverages as SubjectAvg[];
+    const mathsAvg = subjectAverages.find((s) => s.subjectId === world.maths.id);
+    const englishAvg = subjectAverages.find((s) => s.subjectId === world.english.id);
+    expect(Number(mathsAvg?.averageScore)).toBe(80); // mean(60, 80, 100)
+    expect(mathsAvg?.termsCounted).toBe(3);
+    expect(Number(englishAvg?.averageScore)).toBe(70); // mean(50, 70, 90)
+    expect(englishAvg?.termsCounted).toBe(3);
+  });
+
+  it("averages only over the terms actually FINALIZED — a missing term isn't zero, and a DRAFT term (even with a submitted subject result) is excluded", async () => {
+    const world = await setupThreeTermSession();
+    await finalizeTermWithScores(world, world.term1, 60, 60);
+    await finalizeTermWithScores(world, world.term2, 80, 80);
+    // term3: submitted and computed, but deliberately never finalized — a
+    // real SubjectResult/Result exist for it, proving the exclusion is
+    // driven by Result.status, not by absence of data.
+    await computeWithoutFinalizing(world, world.term3, 0);
+
+    const computeRes = await request(app)
+      .post("/api/session-results/compute")
+      .set("Authorization", `Bearer ${world.adminToken}`)
+      .send({ classId: world.klass.id, academicSessionId: world.session.id });
+
+    const sessionResult = (
+      computeRes.body as Array<{ studentId: string; averageScore: string; subjectAverages: unknown[] }>
+    ).find((r) => r.studentId === world.student.id);
+    type SubjectAvg = { subjectId: string; averageScore: string; termsCounted: number };
+    const subjectAverages = sessionResult?.subjectAverages as SubjectAvg[];
+    const mathsAvg = subjectAverages.find((s) => s.subjectId === world.maths.id);
+
+    // (60 + 80) / 2 = 70 — never (60 + 80 + 0) / 3 = 46.67.
+    expect(Number(mathsAvg?.averageScore)).toBe(70);
+    expect(mathsAvg?.termsCounted).toBe(2);
+  });
+
+  it("uses the latest FINALIZED term's value, not an average, when sessionAverageMethod is FINAL_TERM_CARRIES", async () => {
+    const world = await setupThreeTermSession();
+    await request(app)
+      .post(`/api/academic-sessions/${world.session.id}/grading-scale`)
+      .set("Authorization", `Bearer ${world.adminToken}`)
+      .send({ sessionAverageMethod: "FINAL_TERM_CARRIES" });
+
+    await finalizeTermWithScores(world, world.term1, 60, 55);
+    await finalizeTermWithScores(world, world.term2, 80, 65);
+    await finalizeTermWithScores(world, world.term3, 100, 95);
+
+    const computeRes = await request(app)
+      .post("/api/session-results/compute")
+      .set("Authorization", `Bearer ${world.adminToken}`)
+      .send({ classId: world.klass.id, academicSessionId: world.session.id });
+
+    const sessionResult = (
+      computeRes.body as Array<{ studentId: string; averageScore: string; subjectAverages: unknown[] }>
+    ).find((r) => r.studentId === world.student.id);
+    type SubjectAvg = { subjectId: string; averageScore: string; termsCounted: number };
+    const subjectAverages = sessionResult?.subjectAverages as SubjectAvg[];
+    const mathsAvg = subjectAverages.find((s) => s.subjectId === world.maths.id);
+    const englishAvg = subjectAverages.find((s) => s.subjectId === world.english.id);
+
+    // term3's values carried forward directly — not mean(60,80,100)=80.
+    expect(Number(mathsAvg?.averageScore)).toBe(100);
+    expect(mathsAvg?.termsCounted).toBe(1);
+    expect(Number(englishAvg?.averageScore)).toBe(95);
+    expect(Number(sessionResult?.averageScore)).toBe(97.5); // mean(100, 95)
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature B — report card snapshot fields + class-relative position
+// ---------------------------------------------------------------------------
+
+describe("Report card snapshots and class-relative position (Feature B)", () => {
+  async function createClosedAttendanceSession(classId: string, academicSessionId: string, termId: string, date: Date, openedByUserId: string) {
+    return prisma.attendanceSession.create({
+      data: { classId, academicSessionId, termId, date, status: "CLOSED", openedByUserId },
+    });
+  }
+
+  it("snapshots daysPresent/daysSchoolOpened at finalize time, and later attendance changes never touch the finalized result", async () => {
+    const { token: adminToken, user: adminUser } = await createAdmin("admin@test.local");
+    const session = await createCurrentAcademicSession("2026/2027");
+    const term = await createTermForSession(session.id, "First Term", 1);
+    const klass = await createClass("JSS1", "A");
+    const student = await createBareStudent("ADM-001");
+    const enrollment = await enrollStudent(student.id, klass.id, session.id);
+
+    const day1 = await createClosedAttendanceSession(klass.id, session.id, term.id, new Date("2026-09-01"), adminUser.id);
+    const day2 = await createClosedAttendanceSession(klass.id, session.id, term.id, new Date("2026-09-02"), adminUser.id);
+    await prisma.attendanceRecord.create({
+      data: { attendanceSessionId: day1.id, studentId: student.id, status: "PRESENT", recordedByUserId: adminUser.id },
+    });
+    await prisma.attendanceRecord.create({
+      data: { attendanceSessionId: day2.id, studentId: student.id, status: "LATE", recordedByUserId: adminUser.id },
+    });
+
+    const result = await prisma.result.create({
+      data: { studentId: student.id, enrollmentId: enrollment.id, termId: term.id, status: "DRAFT", averageScore: 80 },
+    });
+
+    const finalizeRes = await request(app)
+      .post(`/api/results/${result.id}/finalize`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(finalizeRes.status).toBe(200);
+    expect(finalizeRes.body.daysPresent).toBe(2); // PRESENT + LATE both count
+    expect(finalizeRes.body.daysSchoolOpened).toBe(2);
+
+    // A new CLOSED session, with the student PRESENT, added AFTER finalize —
+    // if daysPresent/daysSchoolOpened were recomputed on read, this would
+    // change them to 3.
+    const day3 = await createClosedAttendanceSession(klass.id, session.id, term.id, new Date("2026-09-03"), adminUser.id);
+    await prisma.attendanceRecord.create({
+      data: { attendanceSessionId: day3.id, studentId: student.id, status: "PRESENT", recordedByUserId: adminUser.id },
+    });
+
+    const refreshed = await prisma.result.findUniqueOrThrow({ where: { id: result.id } });
+    expect(refreshed.daysPresent).toBe(2);
+    expect(refreshed.daysSchoolOpened).toBe(2);
+  });
+
+  it("ranks strictly among FINALIZED peers once the whole class is finalized — ties share a position, the next position skips", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const session = await createCurrentAcademicSession("2026/2027");
+    const term = await createTermForSession(session.id, "First Term", 1);
+    const klass = await createClass("JSS1", "A");
+
+    async function studentWithResult(admissionNumber: string, averageScore: number) {
+      const student = await createBareStudent(admissionNumber);
+      const enrollment = await enrollStudent(student.id, klass.id, session.id);
+      const result = await prisma.result.create({
+        data: { studentId: student.id, enrollmentId: enrollment.id, termId: term.id, status: "DRAFT", averageScore },
+      });
+      return { student, result };
+    }
+
+    const top = await studentWithResult("ADM-001", 90);
+    const tiedA = await studentWithResult("ADM-002", 80);
+    const tiedB = await studentWithResult("ADM-003", 80);
+    const last = await studentWithResult("ADM-004", 70);
+
+    // Finalize three of the four first — the class isn't complete yet, so
+    // no position-fill should fire.
+    for (const { result } of [top, tiedA, tiedB]) {
+      await request(app).post(`/api/results/${result.id}/finalize`).set("Authorization", `Bearer ${adminToken}`);
+    }
+    const stillIncomplete = await prisma.result.findUniqueOrThrow({ where: { id: top.result.id } });
+    expect(stillIncomplete.position).toBeNull();
+
+    // The last student finalizes — this is the one that completes the class
+    // and triggers the automatic class-wide ranking pass.
+    const lastFinalizeRes = await request(app)
+      .post(`/api/results/${last.result.id}/finalize`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(lastFinalizeRes.status).toBe(200);
+
+    const [topResult, tiedAResult, tiedBResult, lastResult] = await Promise.all([
+      prisma.result.findUniqueOrThrow({ where: { id: top.result.id } }),
+      prisma.result.findUniqueOrThrow({ where: { id: tiedA.result.id } }),
+      prisma.result.findUniqueOrThrow({ where: { id: tiedB.result.id } }),
+      prisma.result.findUniqueOrThrow({ where: { id: last.result.id } }),
+    ]);
+    expect(topResult.position).toBe(1);
+    expect(tiedAResult.position).toBe(2);
+    expect(tiedBResult.position).toBe(2);
+    expect(lastResult.position).toBe(4); // 3 skipped, not 3
+    expect(topResult.outOf).toBe(4);
+  });
+
+  it("admin escape hatch (POST /classes/:id/results/:termId/rank) ranks whatever's FINALIZED even when the class never completes", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const session = await createCurrentAcademicSession("2026/2027");
+    const term = await createTermForSession(session.id, "First Term", 1);
+    const klass = await createClass("JSS1", "A");
+
+    const finalized = await createBareStudent("ADM-001");
+    const finalizedEnrollment = await enrollStudent(finalized.id, klass.id, session.id);
+    const finalizedResult = await prisma.result.create({
+      data: {
+        studentId: finalized.id,
+        enrollmentId: finalizedEnrollment.id,
+        termId: term.id,
+        status: "DRAFT",
+        averageScore: 65,
+      },
+    });
+
+    // A second, permanently-incomplete student — e.g. withdrew mid-term.
+    // Never finalized, so the class never reaches 100%.
+    const incomplete = await createBareStudent("ADM-002");
+    const incompleteEnrollment = await enrollStudent(incomplete.id, klass.id, session.id);
+    await prisma.result.create({
+      data: {
+        studentId: incomplete.id,
+        enrollmentId: incompleteEnrollment.id,
+        termId: term.id,
+        status: "DRAFT",
+        averageScore: 50,
+      },
+    });
+
+    await request(app)
+      .post(`/api/results/${finalizedResult.id}/finalize`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    const stillNull = await prisma.result.findUniqueOrThrow({ where: { id: finalizedResult.id } });
+    expect(stillNull.position).toBeNull();
+
+    const rankRes = await request(app)
+      .post(`/api/classes/${klass.id}/results/${term.id}/rank`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(rankRes.status).toBe(200);
+
+    const ranked = await prisma.result.findUniqueOrThrow({ where: { id: finalizedResult.id } });
+    expect(ranked.position).toBe(1);
+    expect(ranked.outOf).toBe(1); // only the FINALIZED one is ranked, not the incomplete one
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature D — fee withholding
+// ---------------------------------------------------------------------------
+
+describe("Fee withholding (Feature D)", () => {
+  async function setupWithholdingWorld() {
+    const { token: adminToken, user: adminUser } = await createAdmin("admin@test.local");
+    const session = await createCurrentAcademicSession("2026/2027");
+    const term = await createTermForSession(session.id, "First Term", 1);
+    const klass = await createClass("JSS1", "A");
+    const { student, token: studentToken } = await createStudentWithLogin("student@test.local", "ADM-001");
+    const enrollment = await enrollStudent(student.id, klass.id, session.id);
+    const { parent, token: parentToken } = await createParent("parent@test.local");
+    await prisma.studentParent.create({
+      data: { studentId: student.id, parentId: parent.id, relationship: "MOTHER" },
+    });
+
+    const result = await prisma.result.create({
+      data: {
+        studentId: student.id,
+        enrollmentId: enrollment.id,
+        termId: term.id,
+        status: "FINALIZED",
+        averageScore: 75,
+        finalizedByUserId: adminUser.id,
+        finalizedAt: new Date(),
+      },
+    });
+
+    const feeStructure = await prisma.feeStructure.create({
+      data: { name: "Tuition", category: "TUITION", classId: klass.id, academicSessionId: session.id, amountKobo: 100_000 },
+    });
+    const obligation = await prisma.feeObligation.create({
+      data: {
+        studentId: student.id,
+        feeStructureId: feeStructure.id,
+        academicSessionId: session.id,
+        termId: term.id,
+        amountDueKobo: 100_000,
+        status: "PENDING",
+        createdByUserId: adminUser.id,
+      },
+    });
+
+    return { adminToken, parentToken, studentToken, session, term, klass, result, obligation };
+  }
+
+  async function confirmPayment(obligationId: string, amountKobo: number, adminToken: string) {
+    const payment = await request(app)
+      .post(`/api/fee-obligations/${obligationId}/payments`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ amountKobo, paymentDate: "2026-09-10" });
+    await request(app).post(`/api/payments/${payment.body.id}/confirm`).set("Authorization", `Bearer ${adminToken}`);
+  }
+
+  it("withholds a FINALIZED result from PARENT/STUDENT with a 402 while any balance is outstanding — even a partial payment", async () => {
+    const world = await setupWithholdingWorld();
+
+    const asParentUnpaid = await request(app)
+      .get(`/api/results/${world.result.studentId}/${world.term.id}`)
+      .set("Authorization", `Bearer ${world.parentToken}`);
+    expect(asParentUnpaid.status).toBe(402);
+    expect(asParentUnpaid.body.error.code).toBe("PAYMENT_REQUIRED");
+    expect(asParentUnpaid.body.error.details.outstandingKobo).toBe(100_000);
+
+    await confirmPayment(world.obligation.id, 40_000, world.adminToken);
+    const asParentPartial = await request(app)
+      .get(`/api/results/${world.result.studentId}/${world.term.id}`)
+      .set("Authorization", `Bearer ${world.parentToken}`);
+    expect(asParentPartial.status).toBe(402);
+    expect(asParentPartial.body.error.details.outstandingKobo).toBe(60_000);
+
+    const asStudentPartial = await request(app)
+      .get(`/api/results/${world.result.studentId}/${world.term.id}`)
+      .set("Authorization", `Bearer ${world.studentToken}`);
+    expect(asStudentPartial.status).toBe(402);
+
+    await confirmPayment(world.obligation.id, 60_000, world.adminToken);
+    const asParentPaid = await request(app)
+      .get(`/api/results/${world.result.studentId}/${world.term.id}`)
+      .set("Authorization", `Bearer ${world.parentToken}`);
+    expect(asParentPaid.status).toBe(200);
+  });
+
+  // ADMIN, per the batch spec's "ADMIN, BURSAR and TEACHER always see it
+  // regardless of fee status." BURSAR is NOT asserted "allowed" here: this
+  // route's authorization gate is canReadStudent (unchanged by this batch),
+  // which has never had a BURSAR branch — a bursar has always gotten 403 on
+  // GET /api/results/:studentId/:termId, before withholding logic is ever
+  // reached, independent of any fee-related concern. The spec's "BURSAR
+  // always sees it" describes withholding's own exemption list, not a claim
+  // that BURSAR already holds read access to results at all — flagged in
+  // the report rather than silently widening canReadStudent to add BURSAR,
+  // which would be a real, undiscussed authorization-scope change.
+  it("ADMIN always sees the result regardless of fee status — withholding is parent-facing, not an authorization rule", async () => {
+    const world = await setupWithholdingWorld();
+
+    const asAdmin = await request(app)
+      .get(`/api/results/${world.result.studentId}/${world.term.id}`)
+      .set("Authorization", `Bearer ${world.adminToken}`);
+    expect(asAdmin.status).toBe(200);
+  });
+
+  it("ADMIN release makes it visible to the parent again, with the balance still outstanding — audited with a required reason, and idempotent on a second release", async () => {
+    const world = await setupWithholdingWorld();
+
+    const releaseRes = await request(app)
+      .post(`/api/results/${world.result.id}/release-withholding`)
+      .set("Authorization", `Bearer ${world.adminToken}`)
+      .send({ reason: "Bursar approved a payment plan for this family" });
+    expect(releaseRes.status).toBe(200);
+    expect(releaseRes.body.feeWithholdingReleased).toBe(true);
+
+    const asParent = await request(app)
+      .get(`/api/results/${world.result.studentId}/${world.term.id}`)
+      .set("Authorization", `Bearer ${world.parentToken}`);
+    expect(asParent.status).toBe(200);
+
+    const obligationAfter = await prisma.feeObligation.findUniqueOrThrow({ where: { id: world.obligation.id } });
+    expect(obligationAfter.status).toBe("PENDING"); // release doesn't touch the debt itself
+
+    const overrideRows = await prisma.resultOverride.findMany({ where: { resultId: world.result.id } });
+    expect(overrideRows).toHaveLength(1);
+    expect(overrideRows[0]?.fieldName).toBe("feeWithholdingReleased");
+    expect(overrideRows[0]?.reason).toBe("Bursar approved a payment plan for this family");
+
+    // Releasing an already-released result is idempotent — 200, not 409,
+    // and no second audit row.
+    const secondReleaseRes = await request(app)
+      .post(`/api/results/${world.result.id}/release-withholding`)
+      .set("Authorization", `Bearer ${world.adminToken}`)
+      .send({ reason: "Confirming the release again" });
+    expect(secondReleaseRes.status).toBe(200);
+    const overrideRowsAfterSecond = await prisma.resultOverride.findMany({ where: { resultId: world.result.id } });
+    expect(overrideRowsAfterSecond).toHaveLength(1);
+  });
+
+  it("holds on all three withholding-checked read paths: the per-term read, the cross-term list, and the session-result read", async () => {
+    const world = await setupWithholdingWorld();
+
+    const perTerm = await request(app)
+      .get(`/api/results/${world.result.studentId}/${world.term.id}`)
+      .set("Authorization", `Bearer ${world.parentToken}`);
+    expect(perTerm.status).toBe(402);
+
+    const crossTermList = await request(app)
+      .get(`/api/students/${world.result.studentId}/results`)
+      .set("Authorization", `Bearer ${world.parentToken}`);
+    expect(crossTermList.status).toBe(200);
+    expect(crossTermList.body).toHaveLength(1);
+    expect(crossTermList.body[0].status).toBe("WITHHELD");
+    expect(crossTermList.body[0].outstandingKobo).toBe(100_000);
+    expect(crossTermList.body[0].totalScore).toBeUndefined(); // reduced shape, not the full Result
+
+    await request(app)
+      .post("/api/session-results/compute")
+      .set("Authorization", `Bearer ${world.adminToken}`)
+      .send({ classId: world.klass.id, academicSessionId: world.session.id });
+
+    const sessionResultRead = await request(app)
+      .get(`/api/session-results/${world.result.studentId}/${world.session.id}`)
+      .set("Authorization", `Bearer ${world.parentToken}`);
+    expect(sessionResultRead.status).toBe(402);
   });
 });

@@ -1,16 +1,25 @@
 import { Router } from "express";
 import { requireAuth, requireRole, requireScope } from "../../authorization/middleware.js";
-import { canReadStudent, canWriteClassTeacherComment } from "../../authorization/scopeResolvers.js";
+import {
+  canReadClassResults,
+  canReadStudent,
+  canWriteClassTeacherComment,
+} from "../../authorization/scopeResolvers.js";
 import { auditMutation } from "../../http/middleware/auditMutation.js";
 import { validate } from "../../http/middleware/validate.js";
 import * as controller from "./results.controller.js";
 import {
+  type ClassTermParams,
   classTermParamsSchema,
   computeResultsSchema,
+  computeSessionResultsSchema,
   idParamsSchema,
   type IdParams,
   listResultsForStudentQuerySchema,
   overrideResultSchema,
+  releaseWithholdingSchema,
+  studentSessionParamsSchema,
+  type StudentSessionParams,
   studentTermParamsSchema,
   type StudentTermParams,
   writeCommentSchema,
@@ -42,8 +51,12 @@ resultsRouter.get(
 );
 resultsRouter.get(
   "/classes/:id/results/:termId",
-  requireRole("ADMIN"),
+  requireRole("ADMIN", "TEACHER"),
   validate({ params: classTermParamsSchema }),
+  requireScope((principal, req) => {
+    const { id, termId } = req.params as unknown as ClassTermParams;
+    return canReadClassResults(principal, id, termId);
+  }),
   controller.listResultsForClass,
 );
 resultsRouter.post(
@@ -53,12 +66,44 @@ resultsRouter.post(
   auditMutation("Result", "RESULT_FINALIZED"),
   controller.finalizeResult,
 );
+// Admin escape hatch: a class that never reaches 100% finalized (a student
+// withdrew mid-term, say) never gets the automatic class-wide position pass
+// finalizeResult triggers on its own — this ranks whatever's currently
+// FINALIZED unconditionally so report cards aren't stuck without a position.
+resultsRouter.post(
+  "/classes/:id/results/:termId/rank",
+  requireRole("ADMIN"),
+  validate({ params: classTermParamsSchema }),
+  auditMutation("Result", "RESULT_RANKED"),
+  controller.rankClassResults,
+);
 resultsRouter.post(
   "/results/:id/override",
   requireRole("ADMIN"),
   validate({ params: idParamsSchema, body: overrideResultSchema }),
   auditMutation("Result", "RESULT_OVERRIDDEN"),
   controller.overrideResult,
+);
+resultsRouter.post(
+  "/results/:id/release-withholding",
+  requireRole("ADMIN"),
+  validate({ params: idParamsSchema, body: releaseWithholdingSchema }),
+  auditMutation("Result", "RESULT_WITHHOLDING_RELEASED"),
+  controller.releaseWithholding,
+);
+resultsRouter.post(
+  "/session-results/compute",
+  requireRole("ADMIN"),
+  validate({ body: computeSessionResultsSchema }),
+  controller.computeSessionResults,
+);
+resultsRouter.get(
+  "/session-results/:studentId/:academicSessionId",
+  validate({ params: studentSessionParamsSchema }),
+  requireScope((principal, req) =>
+    canReadStudent(principal, (req.params as unknown as StudentSessionParams).studentId),
+  ),
+  controller.getSessionResultForStudent,
 );
 // Routine (non-override) comment writes — only valid while the Result is
 // DRAFT (enforced in the service as a 400, not here: WHO may write is an

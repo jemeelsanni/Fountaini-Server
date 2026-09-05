@@ -1,7 +1,12 @@
 import type { Request, Response } from "express";
 import { AppError } from "../../errors/AppError.js";
 import * as service from "./scores.service.js";
-import type { BulkUpsertScoresBody, IdParams, SubmitScoresBody } from "./scores.schemas.js";
+import type {
+  BulkUpsertScoresBody,
+  IdParams,
+  ScoresForAssignmentQuery,
+  SubmitScoresBody,
+} from "./scores.schemas.js";
 
 export async function getRoster(req: Request, res: Response): Promise<void> {
   const { id } = req.params as unknown as IdParams;
@@ -25,6 +30,12 @@ export async function submitScores(req: Request, res: Response): Promise<void> {
   const { termId } = req.body as SubmitScoresBody;
   const results = await service.submitScores(id, req.principal.userId, termId);
   res.status(200).json(results);
+}
+
+export async function getScoresForAssignment(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as unknown as IdParams;
+  const { termId } = req.query as unknown as ScoresForAssignmentQuery;
+  res.status(200).json(await service.getScoresForAssignment(id, termId));
 }
 
 export async function getScoresForStudent(req: Request, res: Response): Promise<void> {

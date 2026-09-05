@@ -85,6 +85,31 @@ describe("QR code issuance and rotation", () => {
     });
     expect(activeCodes).toHaveLength(1);
   });
+
+  it("lets a student rotate and read their own QR code, but not another student's", async () => {
+    const { student: self, token: selfToken } = await createStudentWithLogin("self@test.local", "ADM-SELF");
+    const { student: other } = await createStudentWithLogin("other@test.local", "ADM-OTHER");
+
+    const rotateOwn = await request(app)
+      .post(`/api/students/${self.id}/qr-code/rotate`)
+      .set("Authorization", `Bearer ${selfToken}`);
+    expect(rotateOwn.status).toBe(201);
+
+    const readOwn = await request(app)
+      .get(`/api/students/${self.id}/qr-code`)
+      .set("Authorization", `Bearer ${selfToken}`);
+    expect(readOwn.status).toBe(200);
+
+    const rotateOther = await request(app)
+      .post(`/api/students/${other.id}/qr-code/rotate`)
+      .set("Authorization", `Bearer ${selfToken}`);
+    expect(rotateOther.status).toBe(403);
+
+    const readOther = await request(app)
+      .get(`/api/students/${other.id}/qr-code`)
+      .set("Authorization", `Bearer ${selfToken}`);
+    expect(readOther.status).toBe(403);
+  });
 });
 
 describe("opening attendance sessions", () => {

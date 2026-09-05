@@ -8,6 +8,9 @@ import {
   createBursar,
   createClass,
   createCurrentAcademicSession,
+  createParent,
+  createStudentWithLogin,
+  createTermForSession,
   enrollStudent,
 } from "../../test/factories.js";
 import { resetDb } from "../../test/resetDb.js";
@@ -205,3 +208,160 @@ describe("payment recording, confirmation, and balance math", () => {
 // student allowed; assigned teacher, unlinked parent, and other students
 // denied — deliberately narrower than academic-data scoping) is covered by
 // the auth matrix (src/authorization/authMatrix.data.ts).
+
+describe("BURSAR has a working portal end to end", () => {
+  it("can create a structure, generate obligations, record/confirm a payment, read the obligation and receipt, and edit/delete a structure", async () => {
+    const { token: bursarToken } = await createBursar("bursar-portal@test.local");
+    const session = await createCurrentAcademicSession("2026/2027");
+    const klass = await createClass("JSS1", "A");
+    const student = await createBareStudent("ADM-001");
+    await enrollStudent(student.id, klass.id, session.id);
+
+    const structureRes = await request(app)
+      .post("/api/fee-structures")
+      .set("Authorization", `Bearer ${bursarToken}`)
+      .send({ name: "Tuition", category: "TUITION", classId: klass.id, academicSessionId: session.id, amountKobo: 5_000_000 });
+    expect(structureRes.status).toBe(201);
+
+    const generateRes = await request(app)
+      .post(`/api/fee-structures/${structureRes.body.id}/generate-obligations`)
+      .set("Authorization", `Bearer ${bursarToken}`);
+    expect(generateRes.status).toBe(201);
+    const obligationId = generateRes.body[0].id as string;
+
+    const getObligation = await request(app)
+      .get(`/api/fee-obligations/${obligationId}`)
+      .set("Authorization", `Bearer ${bursarToken}`);
+    expect(getObligation.status).toBe(200);
+    expect(getObligation.body.outstandingKobo).toBe(5_000_000);
+
+    const paymentRes = await request(app)
+      .post(`/api/fee-obligations/${obligationId}/payments`)
+      .set("Authorization", `Bearer ${bursarToken}`)
+      .send({ amountKobo: 5_000_000, paymentDate: "2026-09-10" });
+    expect(paymentRes.status).toBe(201);
+
+    const confirmRes = await request(app)
+      .post(`/api/payments/${paymentRes.body.id}/confirm`)
+      .set("Authorization", `Bearer ${bursarToken}`);
+    expect(confirmRes.status).toBe(200);
+
+    const receiptRes = await request(app)
+      .get(`/api/payments/${paymentRes.body.id}/receipt`)
+      .set("Authorization", `Bearer ${bursarToken}`);
+    expect(receiptRes.status).toBe(200);
+
+    const patchStructureRes = await request(app)
+      .patch(`/api/fee-structures/${structureRes.body.id}`)
+      .set("Authorization", `Bearer ${bursarToken}`)
+      .send({ name: "Tuition (revised)" });
+    expect(patchStructureRes.status).toBe(200);
+    expect(patchStructureRes.body.name).toBe("Tuition (revised)");
+
+    // This structure has a generated obligation — delete must refuse.
+    const deleteWithObligations = await request(app)
+      .delete(`/api/fee-structures/${structureRes.body.id}`)
+      .set("Authorization", `Bearer ${bursarToken}`);
+    expect(deleteWithObligations.status).toBe(409);
+
+    // A second, untouched structure has none — delete succeeds.
+    const secondStructureRes = await request(app)
+      .post("/api/fee-structures")
+      .set("Authorization", `Bearer ${bursarToken}`)
+      .send({ name: "Uniform", category: "UNIFORM", academicSessionId: session.id, amountKobo: 1_000_000 });
+    const deleteWithoutObligations = await request(app)
+      .delete(`/api/fee-structures/${secondStructureRes.body.id}`)
+      .set("Authorization", `Bearer ${bursarToken}`);
+    expect(deleteWithoutObligations.status).toBe(204);
+  });
+
+  // Confirms BURSAR's access is exactly as scoped — finance only. The auth
+  // matrix already proves this exhaustively for every route; this is a
+  // direct, readable smoke check on a couple of representative
+  // non-finance routes, matching what was explicitly asked for here.
+  it("is denied on results and scores routes", async () => {
+    const { token: bursarToken } = await createBursar("bursar-denied@test.local");
+    const session = await createCurrentAcademicSession("2026/2027");
+    const term = await createTermForSession(session.id, "First Term", 1);
+    const student = await createBareStudent("ADM-002");
+
+    const resultsRes = await request(app)
+      .get(`/api/results/${student.id}/${term.id}`)
+      .set("Authorization", `Bearer ${bursarToken}`);
+    expect(resultsRes.status).toBe(403);
+
+    const scoresRes = await request(app)
+      .get(`/api/students/${student.id}/scores`)
+      .set("Authorization", `Bearer ${bursarToken}`);
+    expect(scoresRes.status).toBe(403);
+  });
+});
+
+describe("PATCH /api/fee-structures/:id", () => {
+  it("does not retroactively alter an obligation already generated at the old amount", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const session = await createCurrentAcademicSession("2026/2027");
+    const klass = await createClass("JSS1", "A");
+    const student = await createBareStudent("ADM-001");
+    await enrollStudent(student.id, klass.id, session.id);
+
+    const structureRes = await request(app)
+      .post("/api/fee-structures")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ name: "Tuition", category: "TUITION", classId: klass.id, academicSessionId: session.id, amountKobo: 5_000_000 });
+    await request(app)
+      .post(`/api/fee-structures/${structureRes.body.id}/generate-obligations`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    const obligation = await prisma.feeObligation.findFirstOrThrow({ where: { studentId: student.id } });
+    expect(obligation.amountDueKobo).toBe(5_000_000);
+
+    const patchRes = await request(app)
+      .patch(`/api/fee-structures/${structureRes.body.id}`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ amountKobo: 8_000_000 });
+    expect(patchRes.status).toBe(200);
+    expect(patchRes.body.amountKobo).toBe(8_000_000);
+
+    const unchangedObligation = await prisma.feeObligation.findUniqueOrThrow({ where: { id: obligation.id } });
+    expect(unchangedObligation.amountDueKobo).toBe(5_000_000);
+  });
+});
+
+describe("GET /api/fee-obligations/:id", () => {
+  it("is readable by the linked parent and the student themself, not an unrelated parent", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const session = await createCurrentAcademicSession("2026/2027");
+    const klass = await createClass("JSS1", "A");
+    const { student, token: studentToken } = await createStudentWithLogin("student@test.local", "ADM-001");
+    await enrollStudent(student.id, klass.id, session.id);
+    const { parent, token: parentToken } = await createParent("parent@test.local");
+    await prisma.studentParent.create({
+      data: { parentId: parent.id, studentId: student.id, relationship: "MOTHER" },
+    });
+    const { token: unrelatedParentToken } = await createParent("unrelated-parent@test.local");
+
+    const structureRes = await request(app)
+      .post("/api/fee-structures")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ name: "Tuition", category: "TUITION", classId: klass.id, academicSessionId: session.id, amountKobo: 5_000_000 });
+    const generateRes = await request(app)
+      .post(`/api/fee-structures/${structureRes.body.id}/generate-obligations`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    const obligationId = generateRes.body[0].id as string;
+
+    const asParent = await request(app)
+      .get(`/api/fee-obligations/${obligationId}`)
+      .set("Authorization", `Bearer ${parentToken}`);
+    expect(asParent.status).toBe(200);
+
+    const asStudent = await request(app)
+      .get(`/api/fee-obligations/${obligationId}`)
+      .set("Authorization", `Bearer ${studentToken}`);
+    expect(asStudent.status).toBe(200);
+
+    const asUnrelatedParent = await request(app)
+      .get(`/api/fee-obligations/${obligationId}`)
+      .set("Authorization", `Bearer ${unrelatedParentToken}`);
+    expect(asUnrelatedParent.status).toBe(403);
+  });
+});

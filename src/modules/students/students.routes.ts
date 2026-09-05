@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { requireAuth, requireRole, requireScope } from "../../authorization/middleware.js";
-import { canReadStudent } from "../../authorization/scopeResolvers.js";
+import { canReadStudent, canReadStudentParents } from "../../authorization/scopeResolvers.js";
 import { auditMutation } from "../../http/middleware/auditMutation.js";
 import { validate } from "../../http/middleware/validate.js";
 import * as controller from "./students.controller.js";
@@ -53,4 +53,10 @@ studentsRouter.get(
   validate({ params: idParamsSchema }),
   scopeToStudentParam,
   controller.listEnrollments,
+);
+studentsRouter.get(
+  "/:id/parents",
+  validate({ params: idParamsSchema }),
+  requireScope((principal, req) => canReadStudentParents(principal, (req.params as unknown as IdParams).id)),
+  controller.listParents,
 );

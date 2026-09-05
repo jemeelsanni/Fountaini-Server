@@ -39,4 +39,14 @@ export class AppError extends Error {
   static conflict(message: string, details?: unknown): AppError {
     return new AppError(409, "CONFLICT", message, details);
   }
+
+  /// Distinct from forbidden(): withholding a result for an outstanding
+  /// balance is a parent-facing visibility rule, not an authorization
+  /// failure — the caller IS permitted to read this student's results, the
+  /// resource just isn't released yet. 402's literal meaning ("payment is
+  /// required to access this") fits without overloading 403/404, both of
+  /// which already carry other meanings in this API.
+  static paymentRequired(message: string, details?: unknown): AppError {
+    return new AppError(402, "PAYMENT_REQUIRED", message, details);
+  }
 }

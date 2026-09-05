@@ -186,14 +186,23 @@ export const BESPOKE_ROUTE_KEYS: readonly string[] = [
   "GET /api/students/:id/fee-obligations",
   "GET /api/students/:id/payments",
   "GET /api/payments/:id/receipt",
+  "GET /api/fee-obligations/:id",
   "GET /api/class-subject-assignments/:id/students",
+  "GET /api/class-subject-assignments/:id/scores",
   "PUT /api/class-subject-assignments/:id/scores",
   "POST /api/class-subject-assignments/:id/scores/submit",
   "GET /api/staff/:id",
   "GET /api/staff/:id/timetable",
   "GET /api/classes/:id/timetable",
+  "GET /api/classes/:id/results/:termId",
   "PATCH /api/results/:id/class-teacher-comment",
   "GET /api/parents/:id/children",
+  "GET /api/students/:id/parents",
+  "POST /api/students/:id/qr-code/rotate",
+  "GET /api/students/:id/qr-code",
+  "PATCH /api/notifications/:id/read",
+  "GET /api/session-results/:studentId/:academicSessionId",
+  "PUT /api/classes/:id/results/:termId/ratings",
 ];
 
 let uniqueCounter = 0;
@@ -251,7 +260,14 @@ async function buildSharedWorld(generics: GenericActors) {
     },
   });
 
-  const { parent: linkedParentRow, token: linkedParentToken } = await createParent(
+  // A real Trait for the ratings-write row — canWriteClassRatings shares
+  // canReadClassResults' exact form-teacher-only shape, so its fixture (a
+  // DRAFT targetResult, in `klass`, for `term`) can be reused directly.
+  const trait = await prisma.trait.create({
+    data: { academicSessionId: session.id, category: "AFFECTIVE", name: unique("Matrix Trait"), order: 1 },
+  });
+
+  const { user: linkedParentUser, parent: linkedParentRow, token: linkedParentToken } = await createParent(
     `${unique("matrix-linked-parent")}@test.local`,
   );
   await prisma.studentParent.create({
@@ -331,6 +347,19 @@ async function buildSharedWorld(generics: GenericActors) {
     data: { paymentId: payment.id, receiptNumber: generateReceiptNumber(), issuedByUserId: generics.admin.user.id },
   });
 
+  // A notification belonging to a real, specific user (the linked parent) —
+  // canManageOwnNotification has no role-based path at all, only "is this
+  // the recipient," so the fixture just needs one concrete owner to prove
+  // that against.
+  const notification = await prisma.notificationEvent.create({
+    data: {
+      type: "ADMIN_GENERAL",
+      recipientUserId: linkedParentUser.id,
+      subject: "Matrix test notification",
+      body: "Matrix test notification body",
+    },
+  });
+
   // Real (not 404-shaped) fee/payment/receipt fixtures for disjointStudent
   // too — the receipt route resolves canReadPayment -> canReadStudentFinancials
   // by first looking up a real payment row. Without a real payment here, a
@@ -397,6 +426,9 @@ async function buildSharedWorld(generics: GenericActors) {
     formTeacherToken,
     targetResult,
     linkedParentId: linkedParentRow.id,
+    feeObligationId: feeObligation.id,
+    notificationId: notification.id,
+    traitId: trait.id,
   };
 }
 
@@ -499,6 +531,38 @@ const PARENT_SCOPE_CASES: MatrixCase[] = [
   { actor: "otherStudent", expectedStatus: 403 },
 ];
 
+/// canManageStudentQrCode: ADMIN or self (studentId match) only — the
+/// Student-record analog of STAFF_SCOPE_CASES/PARENT_SCOPE_CASES. No
+/// teacher or parent path at all, unlike canReadStudent — a student's own
+/// QR code isn't something even their linked parent or assigned teacher
+/// can rotate/read through this route.
+const QR_CODE_SCOPE_CASES: MatrixCase[] = [
+  { actor: "unauthenticated", expectedStatus: 401 },
+  { actor: "admin", expectedStatus: "allowed" },
+  { actor: "ownStudent", expectedStatus: "allowed" }, // self
+  { actor: "otherStudent", expectedStatus: 403 },
+  { actor: "assignedTeacher", expectedStatus: 403 },
+  { actor: "bursar", expectedStatus: 403 },
+  { actor: "unlinkedParent", expectedStatus: 403 },
+];
+
+/// canReadStudentParents: ADMIN, the assigned teacher, or the student
+/// themself — deliberately NOT a linked parent. linkedParent here is the
+/// one negative case that actually distinguishes this from
+/// STUDENT_SCOPE_CASES: proving a parent genuinely linked to this exact
+/// student is still denied, not just an unrelated one.
+const STUDENT_PARENTS_SCOPE_CASES: MatrixCase[] = [
+  { actor: "unauthenticated", expectedStatus: 401 },
+  { actor: "admin", expectedStatus: "allowed" },
+  { actor: "assignedTeacher", expectedStatus: "allowed" },
+  { actor: "unassignedTeacher", expectedStatus: 403 },
+  { actor: "ownStudent", expectedStatus: "allowed" },
+  { actor: "otherStudent", expectedStatus: 403 },
+  { actor: "bursar", expectedStatus: 403 },
+  { actor: "linkedParent", expectedStatus: 403 },
+  { actor: "unlinkedParent", expectedStatus: 403 },
+];
+
 /// canReadClassTimetable: ADMIN and ANY teacher (assigned or not — timetable
 /// data isn't treated as sensitive), students/parents scoped to actual
 /// enrollment/linkage, BURSAR denied. unassignedTeacher is "allowed" here —
@@ -513,6 +577,21 @@ const TIMETABLE_SCOPE_CASES: MatrixCase[] = [
   { actor: "linkedParent", expectedStatus: "allowed" },
   { actor: "unlinkedParent", expectedStatus: 403 },
   { actor: "ownStudent", expectedStatus: "allowed" },
+  { actor: "otherStudent", expectedStatus: 403 },
+];
+
+/// canManageOwnNotification: ADMIN, or exactly the notification's own
+/// recipient — no role-based path at all, so unlike every other case list
+/// here this isn't "role X passes, role Y doesn't," it's "this specific
+/// user, or not." linkedParent is the recipient of the fixture notification
+/// (see buildSharedWorld); unlinkedParent is a real, different user, not
+/// standing in for anything about parent-child linkage here.
+const NOTIFICATION_SCOPE_CASES: MatrixCase[] = [
+  { actor: "unauthenticated", expectedStatus: 401 },
+  { actor: "admin", expectedStatus: "allowed" },
+  { actor: "linkedParent", expectedStatus: "allowed" }, // the actual recipient
+  { actor: "unlinkedParent", expectedStatus: 403 },
+  { actor: "bursar", expectedStatus: 403 },
   { actor: "otherStudent", expectedStatus: 403 },
 ];
 
@@ -598,6 +677,43 @@ export async function buildBespokeRows(generics: GenericActors): Promise<MatrixR
     // separate, non-authorization concern tested directly against
     // results.service.ts (see results.test.ts), not here.
     studentScopeRow("GET /api/students/:id/results", `/api/students/${world.targetStudent.id}/results`),
+    // Same canReadStudent gate, same "allowed includes 404" reasoning as the
+    // per-term result row above — no SessionResult row needs to actually
+    // exist for this to prove who gets past authorization.
+    studentScopeRow(
+      "GET /api/session-results/:studentId/:academicSessionId",
+      `/api/session-results/${world.targetStudent.id}/${world.session.id}`,
+    ),
+    {
+      name: "GET /api/students/:id/parents",
+      method: "get",
+      cases: STUDENT_PARENTS_SCOPE_CASES,
+      setup: () =>
+        Promise.resolve({
+          url: `/api/students/${world.targetStudent.id}/parents`,
+          tokens: world.studentScopeTokens,
+        }),
+    },
+    {
+      name: "POST /api/students/:id/qr-code/rotate",
+      method: "post",
+      cases: QR_CODE_SCOPE_CASES,
+      setup: () =>
+        Promise.resolve({
+          url: `/api/students/${world.targetStudent.id}/qr-code/rotate`,
+          tokens: world.studentScopeTokens,
+        }),
+    },
+    {
+      name: "GET /api/students/:id/qr-code",
+      method: "get",
+      cases: QR_CODE_SCOPE_CASES,
+      setup: () =>
+        Promise.resolve({
+          url: `/api/students/${world.targetStudent.id}/qr-code`,
+          tokens: world.studentScopeTokens,
+        }),
+    },
     {
       name: "GET /api/parents/:id/children",
       method: "get",
@@ -617,6 +733,17 @@ export async function buildBespokeRows(generics: GenericActors): Promise<MatrixR
       `/api/students/${world.targetStudent.id}/payments`,
     ),
     financialsScopeRow("GET /api/payments/:id/receipt", `/api/payments/${world.payment.id}/receipt`),
+    financialsScopeRow("GET /api/fee-obligations/:id", `/api/fee-obligations/${world.feeObligationId}`),
+    {
+      name: "GET /api/class-subject-assignments/:id/scores",
+      method: "get",
+      cases: ASSIGNMENT_SCOPE_CASES,
+      setup: () =>
+        Promise.resolve({
+          url: `/api/class-subject-assignments/${world.assignment.id}/scores?termId=${world.term.id}`,
+          tokens: assignmentScopeTokens,
+        }),
+    },
     {
       name: "GET /api/class-subject-assignments/:id/students",
       method: "get",
@@ -712,6 +839,50 @@ export async function buildBespokeRows(generics: GenericActors): Promise<MatrixR
           url: `/api/results/${world.targetResult.id}/class-teacher-comment`,
           body: { comment: "Matrix test comment" },
           tokens: classTeacherCommentTokens,
+        }),
+    },
+    // canReadClassResults is the same "form teacher, not any subject
+    // teacher" shape as canWriteClassTeacherComment just above — reusing
+    // CLASS_TEACHER_COMMENT_CASES/classTeacherCommentTokens directly rather
+    // than duplicating an identical case list under a new name.
+    {
+      name: "GET /api/classes/:id/results/:termId",
+      method: "get",
+      cases: CLASS_TEACHER_COMMENT_CASES,
+      setup: () =>
+        Promise.resolve({
+          url: `/api/classes/${world.class.id}/results/${world.term.id}`,
+          tokens: classTeacherCommentTokens,
+        }),
+    },
+    // canWriteClassRatings delegates directly to canReadClassResults — same
+    // shape, same shared case list/tokens. targetResult is DRAFT, so this is
+    // also exercising the "only while DRAFT" write path for real.
+    {
+      name: "PUT /api/classes/:id/results/:termId/ratings",
+      method: "put",
+      cases: CLASS_TEACHER_COMMENT_CASES,
+      setup: () =>
+        Promise.resolve({
+          url: `/api/classes/${world.class.id}/results/${world.term.id}/ratings`,
+          body: { entries: [{ studentId: world.targetStudent.id, traitId: world.traitId, value: 5 }] },
+          tokens: classTeacherCommentTokens,
+        }),
+    },
+    {
+      name: "PATCH /api/notifications/:id/read",
+      method: "patch",
+      cases: NOTIFICATION_SCOPE_CASES,
+      setup: () =>
+        Promise.resolve({
+          url: `/api/notifications/${world.notificationId}/read`,
+          tokens: {
+            admin: generics.admin.token,
+            linkedParent: world.studentScopeTokens.linkedParent,
+            unlinkedParent: generics.parent.token,
+            bursar: generics.bursar.token,
+            otherStudent: generics.student.token,
+          },
         }),
     },
 

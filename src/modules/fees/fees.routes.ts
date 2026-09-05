@@ -1,6 +1,10 @@
 import { Router } from "express";
 import { requireAuth, requireRole, requireScope } from "../../authorization/middleware.js";
-import { canReadPayment, canReadStudentFinancials } from "../../authorization/scopeResolvers.js";
+import {
+  canReadFeeObligation,
+  canReadPayment,
+  canReadStudentFinancials,
+} from "../../authorization/scopeResolvers.js";
 import { auditMutation } from "../../http/middleware/auditMutation.js";
 import { validate } from "../../http/middleware/validate.js";
 import * as controller from "./fees.controller.js";
@@ -10,6 +14,7 @@ import {
   type IdParams,
   recordPaymentSchema,
   updateFeeObligationSchema,
+  updateFeeStructureSchema,
 } from "./fees.schemas.js";
 
 export const feesRouter = Router();
@@ -24,6 +29,20 @@ feesRouter.post(
   controller.createFeeStructure,
 );
 feesRouter.get("/fee-structures", requireRole("ADMIN", "BURSAR"), controller.listFeeStructures);
+feesRouter.patch(
+  "/fee-structures/:id",
+  requireRole("ADMIN", "BURSAR"),
+  validate({ params: idParamsSchema, body: updateFeeStructureSchema }),
+  auditMutation("FeeStructure", "FEE_STRUCTURE_UPDATED"),
+  controller.updateFeeStructure,
+);
+feesRouter.delete(
+  "/fee-structures/:id",
+  requireRole("ADMIN", "BURSAR"),
+  validate({ params: idParamsSchema }),
+  auditMutation("FeeStructure", "FEE_STRUCTURE_DELETED"),
+  controller.deleteFeeStructure,
+);
 feesRouter.post(
   "/fee-structures/:id/generate-obligations",
   requireRole("ADMIN", "BURSAR"),
@@ -39,6 +58,12 @@ feesRouter.get(
     canReadStudentFinancials(principal, (req.params as unknown as IdParams).id),
   ),
   controller.listObligationsForStudent,
+);
+feesRouter.get(
+  "/fee-obligations/:id",
+  validate({ params: idParamsSchema }),
+  requireScope((principal, req) => canReadFeeObligation(principal, (req.params as unknown as IdParams).id)),
+  controller.getFeeObligationById,
 );
 feesRouter.patch(
   "/fee-obligations/:id",

@@ -21,3 +21,8 @@ export const submitScoresSchema = z.object({
   termId: z.string().min(1),
 });
 export type SubmitScoresBody = z.infer<typeof submitScoresSchema>;
+
+export const scoresForAssignmentQuerySchema = z.object({
+  termId: z.string().min(1),
+});
+export type ScoresForAssignmentQuery = z.infer<typeof scoresForAssignmentQuerySchema>;

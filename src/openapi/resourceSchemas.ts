@@ -41,6 +41,8 @@ const EnrollmentStatusSchema = z
 const AssessmentTypeSchema = z.enum(["CA", "EXAM"]).openapi("AssessmentType");
 const ScoreStatusSchema = z.enum(["DRAFT", "SUBMITTED"]).openapi("ScoreStatus");
 const ResultStatusSchema = z.enum(["DRAFT", "SUBMITTED", "FINALIZED"]).openapi("ResultStatus");
+const SessionAverageMethodSchema = z.enum(["SESSION_AVERAGE", "FINAL_TERM_CARRIES"]).openapi("SessionAverageMethod");
+const TraitCategorySchema = z.enum(["AFFECTIVE", "PSYCHOMOTOR"]).openapi("TraitCategory");
 const MadrassahProgressTypeSchema = z
   .enum(["MEMORIZATION", "REVISION", "TAJWEED_ASSESSMENT"])
   .openapi("MadrassahProgressType");
@@ -165,6 +167,13 @@ export const StudentParentSchema = z
 export const StudentParentWithStudentSchema = StudentParentSchema.extend({
   student: StudentSchema,
 }).openapi("StudentParentWithStudent");
+
+/// GET /api/students/:id/parents — the mirror of GET /api/parents/:id/children
+/// (StudentParentWithStudentSchema above), nesting the parent side instead
+/// of the student side.
+export const StudentParentWithParentSchema = StudentParentSchema.extend({
+  parent: ParentSchema,
+}).openapi("StudentParentWithParent");
 
 // ---------------------------------------------------------------------------
 // Academic structure
@@ -299,6 +308,38 @@ export const ScoreSchema = z
   })
   .openapi("Score");
 
+/// GET /api/class-subject-assignments/:id/scores's per-student, per-
+/// component shape — rawScore is null wherever nothing's been entered yet,
+/// which is the whole point of this endpoint (it's how the entry sheet UI
+/// knows which cells are still blank).
+export const ScoreSheetEntrySchema = z
+  .object({
+    assessmentComponentId: id(),
+    code: z.string(),
+    maxScore: decimalString(),
+    rawScore: decimalString().nullable(),
+  })
+  .openapi("ScoreSheetEntry");
+
+export const ScoreSheetStudentSchema = z
+  .object({
+    studentId: id(),
+    firstName: z.string(),
+    lastName: z.string(),
+    admissionNumber: z.string(),
+    scores: z.array(ScoreSheetEntrySchema),
+  })
+  .openapi("ScoreSheetStudent");
+
+export const ScoreSheetSchema = z
+  .object({
+    status: ScoreStatusSchema.openapi({
+      description: "SUBMITTED once any score in this sheet has been submitted — submission is all-or-nothing",
+    }),
+    students: z.array(ScoreSheetStudentSchema),
+  })
+  .openapi("ScoreSheet");
+
 export const GradeBandSchema = z
   .object({
     id: id(),
@@ -315,6 +356,7 @@ export const GradingScaleSchema = z
   .object({
     id: id(),
     academicSessionId: id(),
+    sessionAverageMethod: SessionAverageMethodSchema,
     createdAt: isoDateTime(),
   })
   .openapi("GradingScale");
@@ -354,14 +396,29 @@ export const ResultSchema = z
     status: ResultStatusSchema,
     totalScore: decimalString().nullable(),
     averageScore: decimalString().nullable(),
-    position: z.number().int().nullable(),
+    position: z.number().int().nullable().openapi({
+      description:
+        "Class-relative rank, snapshotted once every actively-enrolled student in this class+term is " +
+        "FINALIZED (ties share a position, the next position skips: 1, 2, 2, 4). Null until then — a " +
+        "class that never reaches 100% finalized stays null for everyone in it unless an admin runs " +
+        "POST /classes/:id/results/:termId/rank.",
+    }),
     outOf: z.number().int().nullable(),
+    daysPresent: z.number().int().nullable().openapi({
+      description: "Snapshotted at finalize time — PRESENT+LATE, CLOSED sessions only. Never recomputed.",
+    }),
+    daysSchoolOpened: z.number().int().nullable().openapi({
+      description: "Snapshotted at finalize time — count of CLOSED AttendanceSessions. Never recomputed.",
+    }),
     classTeacherComment: z.string().nullable(),
     principalComment: z.string().nullable(),
     submittedByUserId: id().nullable(),
     submittedAt: isoDateTime().nullable(),
     finalizedByUserId: id().nullable(),
     finalizedAt: isoDateTime().nullable(),
+    feeWithholdingReleased: z.boolean().openapi({
+      description: "Set by POST /results/:id/release-withholding — an ADMIN override, per term.",
+    }),
     createdAt: isoDateTime(),
     updatedAt: isoDateTime(),
   })
@@ -370,6 +427,48 @@ export const ResultSchema = z
 export const ResultWithStudentSchema = ResultSchema.extend({
   student: StudentSchema,
 }).openapi("ResultWithStudent");
+
+export const TraitSchema = z
+  .object({
+    id: id(),
+    academicSessionId: id(),
+    category: TraitCategorySchema,
+    name: z.string(),
+    order: z.number().int(),
+    createdAt: isoDateTime(),
+  })
+  .openapi("Trait");
+
+export const RatingScaleLevelSchema = z
+  .object({ value: z.number().int(), label: z.string() })
+  .openapi("RatingScaleLevel");
+
+export const RatingSchema = z
+  .object({
+    id: id(),
+    studentId: id(),
+    termId: id(),
+    traitId: id(),
+    value: z.number().int(),
+    enteredByUserId: id(),
+    enteredAt: isoDateTime(),
+    updatedByUserId: id().nullable(),
+    updatedAt: isoDateTime(),
+  })
+  .openapi("Rating");
+
+export const RatingWithTraitSchema = RatingSchema.omit({ traitId: true })
+  .extend({
+    trait: z.object({ id: id(), category: TraitCategorySchema, name: z.string(), order: z.number().int() }),
+  })
+  .openapi("RatingWithTrait");
+
+/// GET /api/results/:studentId/:termId's actual shape — a plain Result plus
+/// this term's affective/psychomotor ratings, ordered category then order
+/// (so a client can render the two blocks directly without re-sorting).
+export const ResultWithRatingsSchema = ResultSchema.extend({
+  ratings: z.array(RatingWithTraitSchema),
+}).openapi("ResultWithRatings");
 
 /// GET /api/students/:id/results — a cross-term list, so each entry needs
 /// enough of its term/session to be identified without a second round-trip
@@ -383,6 +482,68 @@ export const ResultWithTermSchema = ResultSchema.extend({
   term: z.object({ id: id(), name: z.string(), order: z.number().int() }),
   session: z.object({ id: id(), name: z.string() }),
 }).openapi("ResultWithTerm");
+
+/// The withheld-marker shape a PARENT/STUDENT caller sees in place of a
+/// normal ResultWithTerm row in the cross-term list, for a FINALIZED term
+/// they'd otherwise see but whose fee balance is outstanding — see
+/// PaymentRequiredError for the single-result-read equivalent (a 402
+/// instead, since there's only one row to withhold there). Distinguishable
+/// from a normal row by `status: "WITHHELD"`, a value ResultStatusSchema
+/// never produces.
+export const WithheldResultListItemSchema = z
+  .object({
+    termId: id(),
+    term: z.object({ id: id(), name: z.string(), order: z.number().int() }),
+    session: z.object({ id: id(), name: z.string() }),
+    status: z.literal("WITHHELD"),
+    outstandingKobo: z.number().int(),
+    feeObligationIds: z.array(id()),
+  })
+  .openapi("WithheldResultListItem");
+
+export const ResultListItemSchema = z
+  .union([ResultWithTermSchema, WithheldResultListItemSchema])
+  .openapi("ResultListItem");
+
+export const SessionSubjectAverageSchema = z
+  .object({
+    id: id(),
+    sessionResultId: id(),
+    subjectId: id(),
+    averageScore: decimalString(),
+    termsCounted: z.number().int().openapi({
+      description:
+        "How many of the session's terms actually fed this subject's average (display-only — under " +
+        "FINAL_TERM_CARRIES this is always 1, the carried-forward term).",
+    }),
+  })
+  .openapi("SessionSubjectAverage");
+
+export const SessionSubjectAverageWithSubjectSchema = SessionSubjectAverageSchema.extend({
+  subject: SubjectSchema,
+}).openapi("SessionSubjectAverageWithSubject");
+
+export const SessionResultSchema = z
+  .object({
+    id: id(),
+    studentId: id(),
+    enrollmentId: id(),
+    academicSessionId: id(),
+    status: ResultStatusSchema,
+    averageScore: decimalString().nullable().openapi({
+      description: "Mean of subjectAverages' per-subject averages — never computed independently of them.",
+    }),
+    position: z.number().int().nullable(),
+    outOf: z.number().int().nullable(),
+    finalizedByUserId: id().nullable(),
+    finalizedAt: isoDateTime().nullable(),
+    createdAt: isoDateTime(),
+  })
+  .openapi("SessionResult");
+
+export const SessionResultWithSubjectAveragesSchema = SessionResultSchema.extend({
+  subjectAverages: z.array(SessionSubjectAverageWithSubjectSchema),
+}).openapi("SessionResultWithSubjectAverages");
 
 // ---------------------------------------------------------------------------
 // Madrassah / Qur'an progress
@@ -684,6 +845,7 @@ export const NotificationEventSchema = z
     relatedEntityType: z.string().nullable(),
     relatedEntityId: z.string().nullable(),
     createdAt: isoDateTime(),
+    readAt: isoDateTime().nullable().openapi({ description: "null = unread" }),
   })
   .openapi("NotificationEvent");
 
@@ -705,6 +867,10 @@ export const NotificationDeliverySchema = z
 export const NotificationEventWithDeliveriesSchema = NotificationEventSchema.extend({
   deliveries: z.array(NotificationDeliverySchema),
 }).openapi("NotificationEventWithDeliveries");
+
+export const MarkAllNotificationsReadResultSchema = z
+  .object({ markedCount: z.number().int().nonnegative() })
+  .openapi("MarkAllNotificationsReadResult");
 
 // ---------------------------------------------------------------------------
 // Audit log

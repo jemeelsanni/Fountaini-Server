@@ -13,22 +13,34 @@ import {
 } from "../modules/auth/auth.schemas.js";
 import { classAttendanceQuerySchema, correctAttendanceSchema, idParamsSchema as attendanceIdParamsSchema, openSessionSchema, scanSchema } from "../modules/attendance/attendance.schemas.js";
 import { listAuditLogQuerySchema } from "../modules/audit/audit.schemas.js";
-import { createFeeStructureSchema, idParamsSchema as feesIdParamsSchema, recordPaymentSchema, updateFeeObligationSchema } from "../modules/fees/fees.schemas.js";
-import { createAssessmentComponentSchema, createGradeBandSchema, idParamsSchema as gradingIdParamsSchema } from "../modules/grading/grading.schemas.js";
+import { createFeeStructureSchema, idParamsSchema as feesIdParamsSchema, recordPaymentSchema, updateFeeObligationSchema, updateFeeStructureSchema } from "../modules/fees/fees.schemas.js";
+import { createAssessmentComponentSchema, createGradeBandSchema, createGradingScaleSchema, idParamsSchema as gradingIdParamsSchema } from "../modules/grading/grading.schemas.js";
 import { createProgressSchema, idParamsSchema as madrassahIdParamsSchema } from "../modules/madrassah/madrassah.schemas.js";
-import { triggerFeeRemindersSchema } from "../modules/notifications/notifications.schemas.js";
+import {
+  idParamsSchema as notificationsIdParamsSchema,
+  triggerFeeRemindersSchema,
+} from "../modules/notifications/notifications.schemas.js";
 import { createParentSchema, idParamsSchema as parentsIdParamsSchema, linkChildSchema, parentChildParamsSchema } from "../modules/parents/parents.schemas.js";
+import {
+  bulkUpsertRatingsSchema,
+  classTermParamsSchema as ratingsClassTermParamsSchema,
+  createTraitSchema,
+  idParamsSchema as ratingsIdParamsSchema,
+} from "../modules/ratings/ratings.schemas.js";
 import {
   classTermParamsSchema,
   computeResultsSchema,
+  computeSessionResultsSchema,
   idParamsSchema as resultsIdParamsSchema,
   listResultsForStudentQuerySchema,
   overrideResultSchema,
+  releaseWithholdingSchema,
+  studentSessionParamsSchema,
   studentTermParamsSchema,
   writeCommentSchema,
 } from "../modules/results/results.schemas.js";
 import { createSchoolSchema, updateSchoolSchema } from "../modules/school/school.schemas.js";
-import { bulkUpsertScoresSchema, idParamsSchema as scoresIdParamsSchema, submitScoresSchema } from "../modules/scores/scores.schemas.js";
+import { bulkUpsertScoresSchema, idParamsSchema as scoresIdParamsSchema, scoresForAssignmentQuerySchema, submitScoresSchema } from "../modules/scores/scores.schemas.js";
 import { createStaffSchema, idParamsSchema as staffIdParamsSchema, updateStaffSchema } from "../modules/staff/staff.schemas.js";
 import { createEnrollmentSchema, createStudentSchema, idParamsSchema as studentsIdParamsSchema, updateStudentSchema } from "../modules/students/students.schemas.js";
 import { createTimeSlotSchema, createTimetableEntrySchema, idParamsSchema as timetableIdParamsSchema } from "../modules/timetable/timetable.schemas.js";
@@ -60,22 +72,29 @@ import {
   GradingScaleWithBandsSchema,
   MadrassahProgressSchema,
   MadrassahProgressWithRelationsSchema,
+  MarkAllNotificationsReadResultSchema,
   MeResponseSchema,
   NotificationEventSchema,
   NotificationEventWithDeliveriesSchema,
   ParentSchema,
   PaymentSchema,
   PaymentWithRelationsSchema,
+  RatingScaleLevelSchema,
+  RatingWithTraitSchema,
   ReceiptSchema,
+  ResultListItemSchema,
   ResultSchema,
+  ResultWithRatingsSchema,
   ResultWithStudentSchema,
-  ResultWithTermSchema,
   ScanResultSchema,
   SchoolSchema,
   ScoreSchema,
+  ScoreSheetSchema,
+  SessionResultWithSubjectAveragesSchema,
   StaffSchema,
   StaffWithUserSchema,
   StudentParentSchema,
+  StudentParentWithParentSchema,
   StudentParentWithStudentSchema,
   StudentQrCodeSchema,
   StudentSchema,
@@ -84,6 +103,7 @@ import {
   SubjectSchema,
   SurahSchema,
   TermSchema,
+  TraitSchema,
   TimeSlotSchema,
   TimetableEntryForClassViewSchema,
   TimetableEntryForStaffViewSchema,
@@ -103,6 +123,15 @@ export interface RouteSpec {
   requestParams?: RouteParameter;
   /// Keyed by HTTP status code.
   responses: Record<number, ResponseSpec>;
+  /// Hand-written only for routes a requireScope resolver narrows beyond
+  /// what the role tag alone says (or, for scope-only routes with no role
+  /// tag at all, beyond "any authenticated role") — e.g. "the assigned
+  /// teacher, or ADMIN" is more useful than the bare role list "TEACHER,
+  /// ADMIN", which doesn't capture that an unassigned teacher is denied.
+  /// generateSpec.ts appends this to the operation description it builds
+  /// mechanically from route.allowedRoles; nothing here duplicates the role
+  /// list itself; see that file's buildAccessDescription().
+  scopeNote?: string;
 }
 
 const noContent: ResponseSpec = { description: "No Content" };
@@ -122,6 +151,27 @@ const classFormTeachersQuerySchema = z.object({
 const feeStructuresQuerySchema = z.object({
   academicSessionId: z.string().optional(),
 });
+
+// Reused verbatim across every route gated by the same resolver — one
+// string per resolver, not one per route, so the wording can't drift
+// between two routes that are actually governed by the identical check.
+const SCOPE_NOTES = {
+  canReadStudent:
+    "ADMIN, the student's linked parent, the student themself, or a teacher currently assigned to their class.",
+  canReadStudentFinancials: "ADMIN, BURSAR, the student's linked parent, or the student themself.",
+  canManageStudentQrCode: "ADMIN, or the student themself, acting on their own code.",
+  canReadParent: "ADMIN, or that parent themself.",
+  canReadStudentParents:
+    "ADMIN, the student's assigned teacher, or the student themself — not a linked parent.",
+  canReadClassResults: "ADMIN, or that class's form teacher — not a subject teacher assigned to the class.",
+  canActOnAssignment: "ADMIN, or the teacher assigned to this specific class-subject assignment.",
+  canReadStaff: "ADMIN, or that staff member themself.",
+  canReadClassTimetable:
+    "Any TEACHER (assigned or not — timetable data isn't treated as sensitive) or ADMIN; a STUDENT or " +
+    "linked PARENT scoped to a class they, or their child, are actually and currently enrolled in.",
+  canManageOwnNotification: "ADMIN, or the notification's own recipient.",
+  canWriteClassRatings: "ADMIN, or that class's form teacher — not a subject teacher assigned to the class.",
+} as const;
 
 /// One entry per route in the live route inventory ("METHOD /path", exactly
 /// as buildRouteInventory()/the auth matrix key it) — openapi.test.ts
@@ -267,6 +317,7 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     summary: "Get a student's attendance history",
     requestParams: attendanceIdParamsSchema,
     responses: { 200: { description: "OK", schema: z.array(AttendanceRecordWithSessionClassSchema) } },
+    scopeNote: SCOPE_NOTES.canReadStudent,
   },
   "GET /api/classes/:id/attendance": {
     summary: "List a class's attendance sessions (optionally filtered to one date)",
@@ -278,11 +329,13 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     summary: "Issue a new active QR code for a student, deactivating any previous one",
     requestParams: attendanceIdParamsSchema,
     responses: { 201: { description: "Created", schema: StudentQrCodeSchema } },
+    scopeNote: SCOPE_NOTES.canManageStudentQrCode,
   },
   "GET /api/students/:id/qr-code": {
     summary: "Get a student's current active QR code",
     requestParams: attendanceIdParamsSchema,
     responses: { 200: { description: "OK", schema: StudentQrCodeSchema } },
+    scopeNote: SCOPE_NOTES.canManageStudentQrCode,
   },
 
   // --- audit ------------------------------------------------------------------
@@ -343,6 +396,21 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     requestQuery: feeStructuresQuerySchema,
     responses: { 200: { description: "OK", schema: z.array(FeeStructureSchema) } },
   },
+  "PATCH /api/fee-structures/:id": {
+    summary:
+      "Edit a fee structure's name or amount. Never retroactively alters obligations already generated " +
+      "from it — only the next generate-obligations run sees the new amount.",
+    requestParams: feesIdParamsSchema,
+    requestBody: updateFeeStructureSchema,
+    responses: { 200: { description: "OK", schema: FeeStructureSchema } },
+  },
+  "DELETE /api/fee-structures/:id": {
+    summary:
+      "Delete a fee structure. Refuses (409) if it already has generated obligations — deleting it would " +
+      "orphan the payment records against them.",
+    requestParams: feesIdParamsSchema,
+    responses: { 204: noContent },
+  },
   "POST /api/fee-structures/:id/generate-obligations": {
     summary: "Generate a fee obligation for every actively-enrolled student against this fee structure",
     requestParams: feesIdParamsSchema,
@@ -352,6 +420,13 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     summary: "List a student's fee obligations, with computed paid/outstanding balances",
     requestParams: feesIdParamsSchema,
     responses: { 200: { description: "OK", schema: z.array(FeeObligationWithBalanceSchema) } },
+    scopeNote: SCOPE_NOTES.canReadStudentFinancials,
+  },
+  "GET /api/fee-obligations/:id": {
+    summary: "Get one fee obligation, with computed paid/outstanding balances",
+    requestParams: feesIdParamsSchema,
+    responses: { 200: { description: "OK", schema: FeeObligationWithBalanceSchema } },
+    scopeNote: SCOPE_NOTES.canReadStudentFinancials,
   },
   "PATCH /api/fee-obligations/:id": {
     summary: "Update a fee obligation",
@@ -379,11 +454,13 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     summary: "Get the receipt for a confirmed payment",
     requestParams: feesIdParamsSchema,
     responses: { 200: { description: "OK", schema: ReceiptSchema } },
+    scopeNote: SCOPE_NOTES.canReadStudentFinancials,
   },
   "GET /api/students/:id/payments": {
     summary: "List a student's payments",
     requestParams: feesIdParamsSchema,
     responses: { 200: { description: "OK", schema: z.array(PaymentWithRelationsSchema) } },
+    scopeNote: SCOPE_NOTES.canReadStudentFinancials,
   },
 
   // --- grading ----------------------------------------------------------------
@@ -399,8 +476,11 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     responses: { 200: { description: "OK", schema: z.array(AssessmentComponentSchema) } },
   },
   "POST /api/academic-sessions/:id/grading-scale": {
-    summary: "Create the grading scale for an academic session",
+    summary:
+      "Create the grading scale for an academic session, optionally choosing how SessionResult figures " +
+      "are derived (sessionAverageMethod — defaults to SESSION_AVERAGE if omitted)",
     requestParams: gradingIdParamsSchema,
+    requestBody: createGradingScaleSchema,
     responses: { 201: { description: "Created", schema: GradingScaleSchema } },
   },
   "GET /api/academic-sessions/:id/grading-scale": {
@@ -425,6 +505,7 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     summary: "List a student's Qur'an/Madrassah progress entries",
     requestParams: madrassahIdParamsSchema,
     responses: { 200: { description: "OK", schema: z.array(MadrassahProgressWithRelationsSchema) } },
+    scopeNote: SCOPE_NOTES.canReadStudent,
   },
   "GET /api/surahs": {
     summary: "List the 114 surahs (static reference data)",
@@ -435,6 +516,18 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
   "GET /api/notifications": {
     summary: "List the authenticated caller's own notifications, with delivery attempts",
     responses: { 200: { description: "OK", schema: z.array(NotificationEventWithDeliveriesSchema) } },
+  },
+  "PATCH /api/notifications/:id/read": {
+    summary:
+      "Mark one of the caller's own notifications as read. Idempotent — marking an already-read " +
+      "notification again is still a 200, and its original readAt is preserved.",
+    requestParams: notificationsIdParamsSchema,
+    responses: { 200: { description: "OK", schema: NotificationEventSchema } },
+    scopeNote: SCOPE_NOTES.canManageOwnNotification,
+  },
+  "POST /api/notifications/read-all": {
+    summary: "Mark every one of the caller's own currently-unread notifications as read",
+    responses: { 200: { description: "OK", schema: MarkAllNotificationsReadResultSchema } },
   },
   "POST /api/notifications/fee-reminders/trigger": {
     summary: "Trigger fee-reminder notifications for every student with an outstanding balance",
@@ -462,9 +555,10 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     responses: { 200: { description: "OK", schema: ParentSchema } },
   },
   "GET /api/parents/:id/children": {
-    summary: "List a parent's linked children — ADMIN, or that parent themself",
+    summary: "List a parent's linked children",
     requestParams: parentsIdParamsSchema,
     responses: { 200: { description: "OK", schema: z.array(StudentParentWithStudentSchema) } },
+    scopeNote: SCOPE_NOTES.canReadParent,
   },
   "POST /api/parents/:id/children": {
     summary: "Link a student to a parent",
@@ -478,6 +572,33 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     responses: { 204: noContent },
   },
 
+  // --- ratings ------------------------------------------------------------
+  "POST /api/academic-sessions/:id/traits": {
+    summary: "Create an affective or psychomotor trait (e.g. Punctuality, Handwriting) for an academic session",
+    requestParams: ratingsIdParamsSchema,
+    requestBody: createTraitSchema,
+    responses: { 201: { description: "Created", schema: TraitSchema } },
+  },
+  "GET /api/academic-sessions/:id/traits": {
+    summary: "List affective/psychomotor traits for an academic session, both categories together",
+    requestParams: ratingsIdParamsSchema,
+    responses: { 200: { description: "OK", schema: z.array(TraitSchema) } },
+  },
+  "GET /api/rating-scale": {
+    summary: "List the fixed 5-point rating scale shared by both trait categories (static reference data)",
+    responses: { 200: { description: "OK", schema: z.array(RatingScaleLevelSchema) } },
+  },
+  "PUT /api/classes/:id/results/:termId/ratings": {
+    summary:
+      "Bulk upsert affective/psychomotor ratings for a class+term. Only while the targeted student's " +
+      "Result for this term is DRAFT — same rule as the class-teacher comment; rejects (409) the whole " +
+      "batch if any targeted student's result is no longer DRAFT. Appear on the result read once written.",
+    requestParams: ratingsClassTermParamsSchema,
+    requestBody: bulkUpsertRatingsSchema,
+    responses: { 200: { description: "OK", schema: z.array(RatingWithTraitSchema) } },
+    scopeNote: SCOPE_NOTES.canWriteClassRatings,
+  },
+
   // --- results ----------------------------------------------------------------
   "POST /api/results/compute": {
     summary: "Compute/refresh DRAFT report-card results for a class/term from submitted subject results",
@@ -485,25 +606,52 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     responses: { 200: { description: "OK", schema: z.array(ResultSchema) } },
   },
   "GET /api/results/:studentId/:termId": {
-    summary: "Get a student's report-card result for a term",
+    summary: "Get a student's report-card result for a term, with this term's affective/psychomotor ratings",
     requestParams: studentTermParamsSchema,
-    responses: { 200: { description: "OK", schema: ResultSchema } },
+    responses: { 200: { description: "OK", schema: ResultWithRatingsSchema } },
+    scopeNote:
+      `${SCOPE_NOTES.canReadStudent} A PARENT or STUDENT caller only ever sees a FINALIZED result — ` +
+      "DRAFT/SUBMITTED reads as 404 for them, the same as if compute had never run. IMPORTANT: for a " +
+      "PARENT/STUDENT caller, a FINALIZED result with an outstanding fee balance for this term (or a " +
+      "session-wide, not-term-specific fee) is withheld — see the 402 response below, not returned here " +
+      "as 200. Released via POST /results/:id/release-withholding.",
   },
   "GET /api/students/:id/results": {
     summary: "List a student's report-card results across terms, newest first",
     requestParams: resultsIdParamsSchema,
     requestQuery: listResultsForStudentQuerySchema,
-    responses: { 200: { description: "OK", schema: z.array(ResultWithTermSchema) } },
+    responses: { 200: { description: "OK", schema: z.array(ResultListItemSchema) } },
+    scopeNote:
+      `${SCOPE_NOTES.canReadStudent} A PARENT or STUDENT caller only ever sees FINALIZED results — ` +
+      "non-finalized ones are simply omitted from the list, not an error. A FINALIZED term withheld for " +
+      "an outstanding fee balance (see GET /results/:studentId/:termId) is NOT omitted here — it's still " +
+      "present, but as a reduced WithheldResultListItem (status: \"WITHHELD\" plus the amount owed) in " +
+      "place of the normal result fields, distinguishable by that status value.",
   },
   "GET /api/classes/:id/results/:termId": {
     summary: "List a class's report-card results for a term",
     requestParams: classTermParamsSchema,
     responses: { 200: { description: "OK", schema: z.array(ResultWithStudentSchema) } },
+    scopeNote: SCOPE_NOTES.canReadClassResults,
   },
   "POST /api/results/:id/finalize": {
-    summary: "Finalize a report-card result, locking it except via override",
+    summary:
+      "Finalize a report-card result, locking it except via override. Snapshots daysPresent/" +
+      "daysSchoolOpened at this moment (never recomputed later). Once every actively-enrolled student " +
+      "in this class+term is FINALIZED, this call also triggers the class-wide position/outOf pass " +
+      "(ranked strictly among FINALIZED peers, ties sharing a position) — see " +
+      "POST /classes/:id/results/:termId/rank for the admin escape hatch if a class never completes.",
     requestParams: resultsIdParamsSchema,
     responses: { 200: { description: "OK", schema: ResultSchema } },
+  },
+  "POST /api/classes/:id/results/:termId/rank": {
+    summary:
+      "Admin escape hatch: rank whatever's currently FINALIZED for this class+term, unconditionally — " +
+      "for a class that never reaches 100% finalized (e.g. a student withdrew mid-term with incomplete " +
+      "data), so report cards aren't permanently stuck without a position. Ties share a position, the " +
+      "next position skips (1, 2, 2, 4).",
+    requestParams: classTermParamsSchema,
+    responses: { 200: { description: "OK", schema: z.array(ResultSchema) } },
   },
   "POST /api/results/:id/override": {
     summary: "Override a field on a FINALIZED result, with a mandatory reason, recorded as an audited ResultOverride",
@@ -511,14 +659,44 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     requestBody: overrideResultSchema,
     responses: { 200: { description: "OK", schema: ResultSchema } },
   },
+  "POST /api/results/:id/release-withholding": {
+    summary:
+      "ADMIN release of fee withholding for one FINALIZED result, per term — not per session. A required " +
+      "reason is recorded as an audited ResultOverride (fieldName \"feeWithholdingReleased\"), the same " +
+      "pattern as /override. Idempotent: releasing an already-released result is still 200, with no " +
+      "duplicate audit row.",
+    requestParams: resultsIdParamsSchema,
+    requestBody: releaseWithholdingSchema,
+    responses: { 200: { description: "OK", schema: ResultSchema } },
+  },
+  "POST /api/session-results/compute": {
+    summary:
+      "Roll up a class's students' FINALIZED term results into per-session results, per subject then " +
+      "overall — averaged or carried-forward per GradingScale.sessionAverageMethod. A student with only " +
+      "some terms FINALIZED is averaged over those, never counting a missing term as zero. Purely " +
+      "derived, so every row this produces is immediately FINALIZED — there's no separate finalize step.",
+    requestBody: computeSessionResultsSchema,
+    responses: { 200: { description: "OK", schema: z.array(SessionResultWithSubjectAveragesSchema) } },
+  },
+  "GET /api/session-results/:studentId/:academicSessionId": {
+    summary: "Get a student's session-level rollup result, with its per-subject averages",
+    requestParams: studentSessionParamsSchema,
+    responses: { 200: { description: "OK", schema: SessionResultWithSubjectAveragesSchema } },
+    scopeNote:
+      `${SCOPE_NOTES.canReadStudent} Same finalized-only visibility and fee-withholding rules as ` +
+      "GET /results/:studentId/:termId, checked session-wide (any outstanding obligation anywhere in " +
+      "the session withholds this) rather than against one term — see the 402 response below. Release " +
+      "is per-term only; a term's release does not affect this session-wide check.",
+  },
   "PATCH /api/results/:id/class-teacher-comment": {
-    summary: "Write the class/form teacher's comment on a DRAFT result (the class's form teacher, or an admin) — not an override, no ResultOverride row",
+    summary: "Write the class/form teacher's comment on a DRAFT result — not an override, no ResultOverride row",
     requestParams: resultsIdParamsSchema,
     requestBody: writeCommentSchema,
     responses: { 200: { description: "OK", schema: ResultSchema } },
+    scopeNote: SCOPE_NOTES.canReadClassResults,
   },
   "PATCH /api/results/:id/principal-comment": {
-    summary: "Write the principal's comment on a DRAFT result (admin only) — not an override, no ResultOverride row",
+    summary: "Write the principal's comment on a DRAFT result — not an override, no ResultOverride row",
     requestParams: resultsIdParamsSchema,
     requestBody: writeCommentSchema,
     responses: { 200: { description: "OK", schema: ResultSchema } },
@@ -526,42 +704,56 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
 
   // --- school -----------------------------------------------------------------
   "GET /api/school": {
-    summary: "Get the school's singleton record (admin only)",
+    summary: "Get the school's singleton record",
     responses: { 200: { description: "OK", schema: SchoolSchema } },
   },
   "POST /api/school": {
-    summary: "Create the school's singleton record (admin only) — fails once one already exists",
+    summary: "Create the school's singleton record — fails once one already exists",
     requestBody: createSchoolSchema,
     responses: { 201: { description: "Created", schema: SchoolSchema } },
   },
   "PATCH /api/school": {
-    summary: "Update the school's singleton record (admin only)",
+    summary: "Update the school's singleton record",
     requestBody: updateSchoolSchema,
     responses: { 200: { description: "OK", schema: SchoolSchema } },
   },
 
   // --- scores -----------------------------------------------------------------
   "GET /api/class-subject-assignments/:id/students": {
-    summary: "Get the class roster for a class-subject assignment (the assigned teacher, or an admin)",
+    summary: "Get the class roster for a class-subject assignment",
     requestParams: scoresIdParamsSchema,
     responses: { 200: { description: "OK", schema: z.array(StudentSchema) } },
+    scopeNote: SCOPE_NOTES.canActOnAssignment,
+  },
+  "GET /api/class-subject-assignments/:id/scores": {
+    summary:
+      "Repopulate the entry sheet for a class-subject assignment/term — every enrolled student, every " +
+      "assessment component, null where nothing's entered yet. Returns DRAFT scores; not subject to the " +
+      "finalized-only filter that governs the parent/student path.",
+    requestParams: scoresIdParamsSchema,
+    requestQuery: scoresForAssignmentQuerySchema,
+    responses: { 200: { description: "OK", schema: ScoreSheetSchema } },
+    scopeNote: SCOPE_NOTES.canActOnAssignment,
   },
   "PUT /api/class-subject-assignments/:id/scores": {
     summary: "Bulk upsert DRAFT scores for a class-subject assignment/term",
     requestParams: scoresIdParamsSchema,
     requestBody: bulkUpsertScoresSchema,
     responses: { 200: { description: "OK", schema: z.array(ScoreSchema) } },
+    scopeNote: SCOPE_NOTES.canActOnAssignment,
   },
   "POST /api/class-subject-assignments/:id/scores/submit": {
     summary: "Submit a class-subject assignment's scores for a term, computing SubjectResults",
     requestParams: scoresIdParamsSchema,
     requestBody: submitScoresSchema,
     responses: { 200: { description: "OK", schema: z.array(SubjectResultSchema) } },
+    scopeNote: SCOPE_NOTES.canActOnAssignment,
   },
   "GET /api/students/:id/scores": {
     summary: "Get a student's subject results",
     requestParams: scoresIdParamsSchema,
     responses: { 200: { description: "OK", schema: z.array(SubjectResultWithRelationsSchema) } },
+    scopeNote: SCOPE_NOTES.canReadStudent,
   },
 
   // --- staff --------------------------------------------------------------
@@ -575,9 +767,10 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     responses: { 200: { description: "OK", schema: z.array(StaffWithUserSchema) } },
   },
   "GET /api/staff/:id": {
-    summary: "Get one staff member (self, or admin)",
+    summary: "Get one staff member",
     requestParams: staffIdParamsSchema,
     responses: { 200: { description: "OK", schema: StaffWithUserSchema } },
+    scopeNote: SCOPE_NOTES.canReadStaff,
   },
   "PATCH /api/staff/:id": {
     summary: "Update a staff member",
@@ -597,15 +790,24 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     responses: { 200: { description: "OK", schema: z.array(StudentSchema) } },
   },
   "GET /api/students/:id": {
-    summary: "Get one student (admin; the student themself; a linked parent; or a teacher assigned to their currently-enrolled class)",
+    summary: "Get one student",
     requestParams: studentsIdParamsSchema,
     responses: { 200: { description: "OK", schema: StudentSchema } },
+    scopeNote: SCOPE_NOTES.canReadStudent,
   },
   "PATCH /api/students/:id": {
-    summary: "Update a student",
+    summary:
+      "Update a student. userId may only be set once, while it's still null — 409 if the student " +
+      "already has one, or if the target user is already linked to a different student.",
     requestParams: studentsIdParamsSchema,
     requestBody: updateStudentSchema,
     responses: { 200: { description: "OK", schema: StudentSchema } },
+  },
+  "GET /api/students/:id/parents": {
+    summary: "List a student's linked parents, with relationship and primary-contact flag",
+    requestParams: studentsIdParamsSchema,
+    responses: { 200: { description: "OK", schema: z.array(StudentParentWithParentSchema) } },
+    scopeNote: SCOPE_NOTES.canReadStudentParents,
   },
   "POST /api/students/:id/enrollments": {
     summary: "Enroll a student in a class for an academic session",
@@ -617,6 +819,7 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     summary: "List a student's enrollments",
     requestParams: studentsIdParamsSchema,
     responses: { 200: { description: "OK", schema: z.array(EnrollmentWithRelationsSchema) } },
+    scopeNote: SCOPE_NOTES.canReadStudent,
   },
 
   // --- timetable --------------------------------------------------------------
@@ -640,14 +843,16 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     responses: { 204: noContent },
   },
   "GET /api/classes/:id/timetable": {
-    summary: "Get a class's weekly timetable (any staff member; students/parents scoped to their own/linked enrollment)",
+    summary: "Get a class's weekly timetable",
     requestParams: timetableIdParamsSchema,
     responses: { 200: { description: "OK", schema: z.array(TimetableEntryForClassViewSchema) } },
+    scopeNote: SCOPE_NOTES.canReadClassTimetable,
   },
   "GET /api/staff/:id/timetable": {
-    summary: "Get a staff member's weekly teaching timetable (self, or admin)",
+    summary: "Get a staff member's weekly teaching timetable",
     requestParams: timetableIdParamsSchema,
     responses: { 200: { description: "OK", schema: z.array(TimetableEntryForStaffViewSchema) } },
+    scopeNote: SCOPE_NOTES.canReadStaff,
   },
 
   // --- users --------------------------------------------------------------

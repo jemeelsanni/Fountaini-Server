@@ -3,6 +3,7 @@ import * as service from "./grading.service.js";
 import type {
   CreateAssessmentComponentBody,
   CreateGradeBandBody,
+  CreateGradingScaleBody,
   IdParams,
 } from "./grading.schemas.js";
 
@@ -19,7 +20,7 @@ export async function listAssessmentComponents(req: Request, res: Response): Pro
 
 export async function createGradingScale(req: Request, res: Response): Promise<void> {
   const { id } = req.params as unknown as IdParams;
-  res.status(201).json(await service.createGradingScale(id));
+  res.status(201).json(await service.createGradingScale(id, req.body as CreateGradingScaleBody));
 }
 
 export async function getGradingScaleForSession(req: Request, res: Response): Promise<void> {

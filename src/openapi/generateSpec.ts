@@ -58,6 +58,27 @@ function routeKey(route: DiscoveredRoute): string {
   return `${route.method} ${route.path}`;
 }
 
+/// The systemic fix: every route's access is discoverable from the spec
+/// itself, not just by hitting a 403. route.allowedRoles is the same field
+/// authMatrix.data.ts reads — sourced live from the running app's
+/// requireRole(...) tags, so the role list here can't drift from what's
+/// actually enforced the way a hand-written sentence could. A requireScope
+/// resolver's narrowing isn't mechanically derivable (it's arbitrary code),
+/// so that part stays hand-written — spec.scopeNote — appended to, not
+/// replacing, the derived role list.
+function buildAccessDescription(
+  isPublic: boolean,
+  allowedRoles: ReadonlySet<string> | undefined,
+  scopeNote?: string,
+): string | undefined {
+  if (isPublic) {
+    return ["Public — no authentication required.", scopeNote].filter(Boolean).join(" ");
+  }
+  const roleList = allowedRoles ? [...allowedRoles].sort().join(", ") : undefined;
+  const parts = [roleList ? `Roles: ${roleList}.` : undefined, scopeNote].filter(Boolean);
+  return parts.length > 0 ? parts.join(" ") : undefined;
+}
+
 /// Every route this generator could not find a ROUTE_SPECS (or the
 /// hardcoded /health) entry for — openapi.test.ts asserts this is empty on
 /// the real, live route inventory. Exported so the test can report exactly
@@ -96,10 +117,13 @@ function registerRoute(route: DiscoveredRoute, spec: RouteSpec): void {
     ...buildResponses(spec.responses),
   };
 
+  const description = buildAccessDescription(isPublic, route.allowedRoles, spec.scopeNote);
+
   registry.registerPath({
     method: route.method.toLowerCase() as "get" | "post" | "put" | "patch" | "delete",
     path: expressPathToOpenApi(route.path),
     summary: spec.summary,
+    ...(description ? { description } : {}),
     // route.allowedRoles is the exact same field the auth matrix reads
     // (src/authorization/authMatrix.data.ts) — sourced live from the
     // running app's requireRole(...) tags, not hand-duplicated here.

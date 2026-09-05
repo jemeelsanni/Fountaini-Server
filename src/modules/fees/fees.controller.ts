@@ -6,6 +6,7 @@ import type {
   IdParams,
   RecordPaymentBody,
   UpdateFeeObligationBody,
+  UpdateFeeStructureBody,
 } from "./fees.schemas.js";
 
 export async function createFeeStructure(req: Request, res: Response): Promise<void> {
@@ -17,6 +18,22 @@ export async function listFeeStructures(req: Request, res: Response): Promise<vo
   const academicSessionId =
     typeof req.query.academicSessionId === "string" ? req.query.academicSessionId : undefined;
   res.status(200).json(await service.listFeeStructures({ academicSessionId }));
+}
+
+export async function updateFeeStructure(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as unknown as IdParams;
+  res.status(200).json(await service.updateFeeStructure(id, req.body as UpdateFeeStructureBody));
+}
+
+export async function deleteFeeStructure(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as unknown as IdParams;
+  await service.deleteFeeStructure(id);
+  res.status(204).send();
+}
+
+export async function getFeeObligationById(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as unknown as IdParams;
+  res.status(200).json(await service.getFeeObligationById(id));
 }
 
 export async function generateObligations(req: Request, res: Response): Promise<void> {

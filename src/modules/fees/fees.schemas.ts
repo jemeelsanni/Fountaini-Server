@@ -13,6 +13,15 @@ export const createFeeStructureSchema = z.object({
 });
 export type CreateFeeStructureBody = z.infer<typeof createFeeStructureSchema>;
 
+// dueDate is deliberately not here: FeeStructure has no dueDate field in
+// the schema (it lives per-obligation, on FeeObligation, set at
+// generation time) — only name/amountKobo are real, editable columns.
+export const updateFeeStructureSchema = z.object({
+  name: z.string().min(1).optional(),
+  amountKobo: z.coerce.number().int().positive().optional(),
+});
+export type UpdateFeeStructureBody = z.infer<typeof updateFeeStructureSchema>;
+
 export const updateFeeObligationSchema = z.object({
   amountDueKobo: z.coerce.number().int().nonnegative().optional(),
   dueDate: z.coerce.date().optional(),

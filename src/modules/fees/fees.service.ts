@@ -8,6 +8,7 @@ import type {
   CreateFeeStructureBody,
   RecordPaymentBody,
   UpdateFeeObligationBody,
+  UpdateFeeStructureBody,
 } from "./fees.schemas.js";
 
 // ---------------------------------------------------------------------------
@@ -40,6 +41,35 @@ export function listFeeStructures(filter: { academicSessionId?: string }) {
     where: { academicSessionId: filter.academicSessionId },
     orderBy: { createdAt: "desc" },
   });
+}
+
+/// Deliberately never touches already-generated FeeObligation rows: an
+/// obligation's amountDueKobo is set once, at generateObligations() time,
+/// from whatever amountKobo the structure had then — that's a real,
+/// already-billed amount, not a live reference to the structure's current
+/// price. Editing name/amountKobo here only changes what's used the NEXT
+/// time generateObligations() runs (e.g. for students who enroll later).
+export async function updateFeeStructure(id: string, input: UpdateFeeStructureBody) {
+  const structure = await prisma.feeStructure.findUnique({ where: { id } });
+  if (!structure) {
+    throw AppError.notFound("Fee structure not found");
+  }
+  return prisma.feeStructure.update({ where: { id }, data: input });
+}
+
+export async function deleteFeeStructure(id: string) {
+  const structure = await prisma.feeStructure.findUnique({ where: { id } });
+  if (!structure) {
+    throw AppError.notFound("Fee structure not found");
+  }
+  const obligationCount = await prisma.feeObligation.count({ where: { feeStructureId: id } });
+  if (obligationCount > 0) {
+    throw AppError.conflict(
+      "This fee structure already has generated obligations and cannot be deleted — " +
+        "deleting it would orphan the payment records against those obligations.",
+    );
+  }
+  await prisma.feeStructure.delete({ where: { id } });
 }
 
 // ---------------------------------------------------------------------------
@@ -98,7 +128,11 @@ export async function generateObligations(feeStructureId: string, actorUserId: s
   return prisma.feeObligation.findMany({ where: { feeStructureId, studentId: { in: studentIds } } });
 }
 
-function withBalance<T extends { amountDueKobo: number; payments: { amountKobo: number }[] }>(obligation: T) {
+/// Exported for results.service.ts's fee-withholding check (Feature D) —
+/// the authoritative "how much is actually still owed" math lives in
+/// exactly one place, used both for the obligation-list/read responses and
+/// for deciding whether a result should be withheld.
+export function withBalance<T extends { amountDueKobo: number; payments: { amountKobo: number }[] }>(obligation: T) {
   const totalPaidKobo = obligation.payments.reduce((sum, p) => sum + p.amountKobo, 0);
   return { ...obligation, totalPaidKobo, outstandingKobo: obligation.amountDueKobo - totalPaidKobo };
 }
@@ -110,6 +144,17 @@ export async function listObligationsForStudent(studentId: string) {
     orderBy: { createdAt: "desc" },
   });
   return obligations.map(withBalance);
+}
+
+export async function getFeeObligationById(id: string) {
+  const obligation = await prisma.feeObligation.findUnique({
+    where: { id },
+    include: { feeStructure: true, payments: { where: { status: "CONFIRMED" } } },
+  });
+  if (!obligation) {
+    throw AppError.notFound("Fee obligation not found");
+  }
+  return withBalance(obligation);
 }
 
 export async function updateObligation(id: string, input: UpdateFeeObligationBody) {

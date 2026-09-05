@@ -571,7 +571,7 @@
           "updatedAt"
         ]
       },
-      "StudentParentWithStudent": {
+      "StudentParentWithParent": {
         "allOf": [
           {
             "$ref": "#/components/schemas/StudentParent"
@@ -579,12 +579,12 @@
           {
             "type": "object",
             "properties": {
-              "student": {
-                "$ref": "#/components/schemas/Student"
+              "parent": {
+                "$ref": "#/components/schemas/Parent"
               }
             },
             "required": [
-              "student"
+              "parent"
             ]
           }
         ]
@@ -596,41 +596,6 @@
           "MOTHER",
           "GUARDIAN",
           "OTHER"
-        ]
-      },
-      "StudentParent": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "description": "cuid"
-          },
-          "studentId": {
-            "type": "string",
-            "description": "cuid"
-          },
-          "parentId": {
-            "type": "string",
-            "description": "cuid"
-          },
-          "relationship": {
-            "$ref": "#/components/schemas/FamilyRelationship"
-          },
-          "isPrimaryContact": {
-            "type": "boolean"
-          },
-          "createdAt": {
-            "type": "string",
-            "format": "date-time"
-          }
-        },
-        "required": [
-          "id",
-          "studentId",
-          "parentId",
-          "relationship",
-          "isPrimaryContact",
-          "createdAt"
         ]
       },
       "Parent": {
@@ -687,6 +652,59 @@
           "address",
           "createdAt",
           "updatedAt"
+        ]
+      },
+      "StudentParent": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "studentId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "parentId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "relationship": {
+            "$ref": "#/components/schemas/FamilyRelationship"
+          },
+          "isPrimaryContact": {
+            "type": "boolean"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "studentId",
+          "parentId",
+          "relationship",
+          "isPrimaryContact",
+          "createdAt"
+        ]
+      },
+      "StudentParentWithStudent": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/StudentParent"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "student": {
+                "$ref": "#/components/schemas/Student"
+              }
+            },
+            "required": [
+              "student"
+            ]
+          }
         ]
       },
       "Staff": {
@@ -1294,6 +1312,9 @@
             "type": "string",
             "description": "cuid"
           },
+          "sessionAverageMethod": {
+            "$ref": "#/components/schemas/SessionAverageMethod"
+          },
           "createdAt": {
             "type": "string",
             "format": "date-time"
@@ -1302,7 +1323,15 @@
         "required": [
           "id",
           "academicSessionId",
+          "sessionAverageMethod",
           "createdAt"
+        ]
+      },
+      "SessionAverageMethod": {
+        "type": "string",
+        "enum": [
+          "SESSION_AVERAGE",
+          "FINAL_TERM_CARRIES"
         ]
       },
       "GradingScaleWithBands": {
@@ -1372,6 +1401,92 @@
           "gradePoint"
         ]
       },
+      "ScoreSheet": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/ScoreStatus"
+          },
+          "students": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ScoreSheetStudent"
+            }
+          }
+        },
+        "required": [
+          "status",
+          "students"
+        ]
+      },
+      "ScoreStatus": {
+        "type": "string",
+        "enum": [
+          "DRAFT",
+          "SUBMITTED"
+        ],
+        "description": "SUBMITTED once any score in this sheet has been submitted — submission is all-or-nothing"
+      },
+      "ScoreSheetStudent": {
+        "type": "object",
+        "properties": {
+          "studentId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "firstName": {
+            "type": "string"
+          },
+          "lastName": {
+            "type": "string"
+          },
+          "admissionNumber": {
+            "type": "string"
+          },
+          "scores": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ScoreSheetEntry"
+            }
+          }
+        },
+        "required": [
+          "studentId",
+          "firstName",
+          "lastName",
+          "admissionNumber",
+          "scores"
+        ]
+      },
+      "ScoreSheetEntry": {
+        "type": "object",
+        "properties": {
+          "assessmentComponentId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "code": {
+            "type": "string"
+          },
+          "maxScore": {
+            "type": "string",
+            "description": "Decimal value, serialized as a string"
+          },
+          "rawScore": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Decimal value, serialized as a string"
+          }
+        },
+        "required": [
+          "assessmentComponentId",
+          "code",
+          "maxScore",
+          "rawScore"
+        ]
+      },
       "Score": {
         "type": "object",
         "properties": {
@@ -1434,13 +1549,6 @@
           "enteredAt",
           "updatedByUserId",
           "updatedAt"
-        ]
-      },
-      "ScoreStatus": {
-        "type": "string",
-        "enum": [
-          "DRAFT",
-          "SUBMITTED"
         ]
       },
       "SubjectResult": {
@@ -1599,13 +1707,28 @@
             "type": [
               "integer",
               "null"
-            ]
+            ],
+            "description": "Class-relative rank, snapshotted once every actively-enrolled student in this class+term is FINALIZED (ties share a position, the next position skips: 1, 2, 2, 4). Null until then — a class that never reaches 100% finalized stays null for everyone in it unless an admin runs POST /classes/:id/results/:termId/rank."
           },
           "outOf": {
             "type": [
               "integer",
               "null"
             ]
+          },
+          "daysPresent": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Snapshotted at finalize time — PRESENT+LATE, CLOSED sessions only. Never recomputed."
+          },
+          "daysSchoolOpened": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Snapshotted at finalize time — count of CLOSED AttendanceSessions. Never recomputed."
           },
           "classTeacherComment": {
             "type": [
@@ -1647,6 +1770,10 @@
             ],
             "format": "date-time"
           },
+          "feeWithholdingReleased": {
+            "type": "boolean",
+            "description": "Set by POST /results/:id/release-withholding — an ADMIN override, per term."
+          },
           "createdAt": {
             "type": "string",
             "format": "date-time"
@@ -1666,12 +1793,15 @@
           "averageScore",
           "position",
           "outOf",
+          "daysPresent",
+          "daysSchoolOpened",
           "classTeacherComment",
           "principalComment",
           "submittedByUserId",
           "submittedAt",
           "finalizedByUserId",
           "finalizedAt",
+          "feeWithholdingReleased",
           "createdAt",
           "updatedAt"
         ]
@@ -1682,6 +1812,164 @@
           "DRAFT",
           "SUBMITTED",
           "FINALIZED"
+        ]
+      },
+      "ResultWithRatings": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Result"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "ratings": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/RatingWithTrait"
+                }
+              }
+            },
+            "required": [
+              "ratings"
+            ]
+          }
+        ]
+      },
+      "RatingWithTrait": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "studentId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "termId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "value": {
+            "type": "integer"
+          },
+          "enteredByUserId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "enteredAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedByUserId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "cuid"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "trait": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "cuid"
+              },
+              "category": {
+                "$ref": "#/components/schemas/TraitCategory"
+              },
+              "name": {
+                "type": "string"
+              },
+              "order": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "category",
+              "name",
+              "order"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "studentId",
+          "termId",
+          "value",
+          "enteredByUserId",
+          "enteredAt",
+          "updatedByUserId",
+          "updatedAt",
+          "trait"
+        ]
+      },
+      "TraitCategory": {
+        "type": "string",
+        "enum": [
+          "AFFECTIVE",
+          "PSYCHOMOTOR"
+        ]
+      },
+      "PaymentRequiredError": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "PAYMENT_REQUIRED"
+                ]
+              },
+              "message": {
+                "type": "string"
+              },
+              "details": {
+                "type": "object",
+                "properties": {
+                  "outstandingKobo": {
+                    "type": "integer"
+                  },
+                  "feeObligationIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "outstandingKobo",
+                  "feeObligationIds"
+                ]
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "details"
+            ]
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "description": "IMPORTANT — handle this status explicitly; an unhandled 402 renders as a generic error and defeats the point of this response. The result exists and is FINALIZED, but is withheld because the student has an outstanding fee balance for this term (or a session-wide, not-term-specific fee) — partial payment does not release it. Distinct from 404 (not published yet): a 404 here means check back later, a 402 means the parent has an action to take now. `details.outstandingKobo` and `details.feeObligationIds` are always present, so a client can render a \"pay outstanding balance\" call-to-action directly from this response, without a follow-up request."
+      },
+      "ResultListItem": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/ResultWithTerm"
+          },
+          {
+            "$ref": "#/components/schemas/WithheldResultListItem"
+          }
         ]
       },
       "ResultWithTerm": {
@@ -1736,6 +2024,75 @@
           }
         ]
       },
+      "WithheldResultListItem": {
+        "type": "object",
+        "properties": {
+          "termId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "term": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "cuid"
+              },
+              "name": {
+                "type": "string"
+              },
+              "order": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "order"
+            ]
+          },
+          "session": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "cuid"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "WITHHELD"
+            ]
+          },
+          "outstandingKobo": {
+            "type": "integer"
+          },
+          "feeObligationIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "description": "cuid"
+            }
+          }
+        },
+        "required": [
+          "termId",
+          "term",
+          "session",
+          "status",
+          "outstandingKobo",
+          "feeObligationIds"
+        ]
+      },
       "ResultWithStudent": {
         "allOf": [
           {
@@ -1752,6 +2109,200 @@
               "student"
             ]
           }
+        ]
+      },
+      "SessionResultWithSubjectAverages": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/SessionResult"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "subjectAverages": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/SessionSubjectAverageWithSubject"
+                }
+              }
+            },
+            "required": [
+              "subjectAverages"
+            ]
+          }
+        ]
+      },
+      "SessionSubjectAverageWithSubject": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/SessionSubjectAverage"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "subject": {
+                "$ref": "#/components/schemas/Subject"
+              }
+            },
+            "required": [
+              "subject"
+            ]
+          }
+        ]
+      },
+      "SessionSubjectAverage": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "sessionResultId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "subjectId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "averageScore": {
+            "type": "string",
+            "description": "Decimal value, serialized as a string"
+          },
+          "termsCounted": {
+            "type": "integer",
+            "description": "How many of the session's terms actually fed this subject's average (display-only — under FINAL_TERM_CARRIES this is always 1, the carried-forward term)."
+          }
+        },
+        "required": [
+          "id",
+          "sessionResultId",
+          "subjectId",
+          "averageScore",
+          "termsCounted"
+        ]
+      },
+      "SessionResult": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "studentId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "enrollmentId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "academicSessionId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ResultStatus"
+          },
+          "averageScore": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Mean of subjectAverages' per-subject averages — never computed independently of them."
+          },
+          "position": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "outOf": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "finalizedByUserId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "cuid"
+          },
+          "finalizedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "studentId",
+          "enrollmentId",
+          "academicSessionId",
+          "status",
+          "averageScore",
+          "position",
+          "outOf",
+          "finalizedByUserId",
+          "finalizedAt",
+          "createdAt"
+        ]
+      },
+      "Trait": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "academicSessionId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "category": {
+            "$ref": "#/components/schemas/TraitCategory"
+          },
+          "name": {
+            "type": "string"
+          },
+          "order": {
+            "type": "integer"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "academicSessionId",
+          "category",
+          "name",
+          "order",
+          "createdAt"
+        ]
+      },
+      "RatingScaleLevel": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "integer"
+          },
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "label"
         ]
       },
       "AttendanceSession": {
@@ -2611,6 +3162,14 @@
           "createdAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "readAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "null = unread"
           }
         },
         "required": [
@@ -2621,7 +3180,20 @@
           "body",
           "relatedEntityType",
           "relatedEntityId",
-          "createdAt"
+          "createdAt",
+          "readAt"
+        ]
+      },
+      "MarkAllNotificationsReadResult": {
+        "type": "object",
+        "properties": {
+          "markedCount": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "markedCount"
         ]
       },
       "MadrassahProgress": {
@@ -2976,6 +3548,7 @@
     "/health": {
       "get": {
         "summary": "Liveness check — does a trivial DB round-trip (SELECT 1), Railway's healthcheck target",
+        "description": "Public — no authentication required.",
         "responses": {
           "200": {
             "description": "OK",
@@ -3003,6 +3576,7 @@
     "/api/openapi.json": {
       "get": {
         "summary": "This OpenAPI 3.1 document",
+        "description": "Public — no authentication required.",
         "responses": {
           "200": {
             "description": "OK"
@@ -3013,6 +3587,7 @@
     "/api/auth/login": {
       "post": {
         "summary": "Log in with email and password (public)",
+        "description": "Public — no authentication required.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -3083,6 +3658,7 @@
     "/api/auth/refresh": {
       "post": {
         "summary": "Exchange a refresh token for a new access/refresh token pair (public)",
+        "description": "Public — no authentication required.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -3148,6 +3724,7 @@
     "/api/auth/logout": {
       "post": {
         "summary": "Revoke a refresh token (public)",
+        "description": "Public — no authentication required.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -3186,6 +3763,7 @@
     "/api/auth/forgot-password": {
       "post": {
         "summary": "Request a password reset email (public). Always responds 204 regardless of whether the email belongs to an account — the response never reveals whether an address is registered.",
+        "description": "Public — no authentication required.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -3224,6 +3802,7 @@
     "/api/auth/reset-password": {
       "post": {
         "summary": "Complete a password reset using the token emailed by the forgot-password request (public). Single-use, short-lived, and revokes every existing refresh token for the account on success.",
+        "description": "Public — no authentication required.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -3267,6 +3846,7 @@
     "/api/auth/me": {
       "get": {
         "summary": "Get the authenticated caller's own principal",
+        "description": "Roles: ADMIN, BURSAR, PARENT, STUDENT, TEACHER.",
         "x-roles": [
           "ADMIN",
           "BURSAR",
@@ -3316,6 +3896,7 @@
     "/api/auth/change-password": {
       "post": {
         "summary": "Change the authenticated caller's own password, revoking existing sessions",
+        "description": "Roles: ADMIN, BURSAR, PARENT, STUDENT, TEACHER.",
         "x-roles": [
           "ADMIN",
           "BURSAR",
@@ -3391,6 +3972,7 @@
     "/api/users": {
       "post": {
         "summary": "Create a user account with one role",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -3488,6 +4070,7 @@
       },
       "get": {
         "summary": "List user accounts",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -3536,6 +4119,7 @@
     "/api/users/{id}": {
       "get": {
         "summary": "Get one user account",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -3612,6 +4196,7 @@
     "/api/users/{id}/activate": {
       "post": {
         "summary": "Reactivate a deactivated user account",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -3688,6 +4273,7 @@
     "/api/users/{id}/deactivate": {
       "post": {
         "summary": "Deactivate a user account and revoke its live sessions",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -3764,6 +4350,7 @@
     "/api/students": {
       "post": {
         "summary": "Create a student",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -3884,6 +4471,7 @@
       },
       "get": {
         "summary": "List students",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -3931,7 +4519,8 @@
     },
     "/api/students/{id}": {
       "get": {
-        "summary": "Get one student (admin; the student themself; a linked parent; or a teacher assigned to their currently-enrolled class)",
+        "summary": "Get one student",
+        "description": "ADMIN, the student's linked parent, the student themself, or a teacher currently assigned to their class.",
         "security": [
           {
             "bearerAuth": []
@@ -4002,7 +4591,8 @@
         }
       },
       "patch": {
-        "summary": "Update a student",
+        "summary": "Update a student. userId may only be set once, while it's still null — 409 if the student already has one, or if the target user is already linked to a different student.",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -4066,6 +4656,10 @@
                       "WITHDRAWN",
                       "INACTIVE"
                     ]
+                  },
+                  "userId": {
+                    "type": "string",
+                    "minLength": 1
                   }
                 }
               }
@@ -4139,6 +4733,7 @@
     "/api/students/{id}/enrollments": {
       "post": {
         "summary": "Enroll a student in a class for an academic session",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -4246,6 +4841,7 @@
       },
       "get": {
         "summary": "List a student's enrollments",
+        "description": "ADMIN, the student's linked parent, the student themself, or a teacher currently assigned to their class.",
         "security": [
           {
             "bearerAuth": []
@@ -4319,9 +4915,87 @@
         }
       }
     },
+    "/api/students/{id}/parents": {
+      "get": {
+        "summary": "List a student's linked parents, with relationship and primary-contact flag",
+        "description": "ADMIN, the student's assigned teacher, or the student themself — not a linked parent.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/StudentParentWithParent"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/parents/me/children": {
       "get": {
         "summary": "List the authenticated parent's own linked children",
+        "description": "Roles: PARENT.",
         "x-roles": [
           "PARENT"
         ],
@@ -4370,6 +5044,7 @@
     "/api/parents": {
       "post": {
         "summary": "Create a parent profile linked to a PARENT-role user",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -4473,6 +5148,7 @@
       },
       "get": {
         "summary": "List parents",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -4521,6 +5197,7 @@
     "/api/parents/{id}": {
       "get": {
         "summary": "Get one parent",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -4596,7 +5273,8 @@
     },
     "/api/parents/{id}/children": {
       "get": {
-        "summary": "List a parent's linked children — ADMIN, or that parent themself",
+        "summary": "List a parent's linked children",
+        "description": "Roles: ADMIN, PARENT. ADMIN, or that parent themself.",
         "x-roles": [
           "ADMIN",
           "PARENT"
@@ -4675,6 +5353,7 @@
       },
       "post": {
         "summary": "Link a student to a parent",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -4792,6 +5471,7 @@
     "/api/parents/{id}/children/{studentId}": {
       "delete": {
         "summary": "Unlink a student from a parent",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -4870,6 +5550,7 @@
     "/api/staff": {
       "post": {
         "summary": "Create a staff profile for a TEACHER/ADMIN/BURSAR user",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -4981,6 +5662,7 @@
       },
       "get": {
         "summary": "List staff",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -5028,7 +5710,8 @@
     },
     "/api/staff/{id}": {
       "get": {
-        "summary": "Get one staff member (self, or admin)",
+        "summary": "Get one staff member",
+        "description": "ADMIN, or that staff member themself.",
         "security": [
           {
             "bearerAuth": []
@@ -5100,6 +5783,7 @@
       },
       "patch": {
         "summary": "Update a staff member",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -5227,6 +5911,7 @@
     "/api/audit-log": {
       "get": {
         "summary": "List audit log entries",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -5324,7 +6009,8 @@
     },
     "/api/school": {
       "get": {
-        "summary": "Get the school's singleton record (admin only)",
+        "summary": "Get the school's singleton record",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -5367,7 +6053,8 @@
         }
       },
       "post": {
-        "summary": "Create the school's singleton record (admin only) — fails once one already exists",
+        "summary": "Create the school's singleton record — fails once one already exists",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -5460,7 +6147,8 @@
         }
       },
       "patch": {
-        "summary": "Update the school's singleton record (admin only)",
+        "summary": "Update the school's singleton record",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -5543,6 +6231,7 @@
     "/api/admission-enquiries": {
       "post": {
         "summary": "Submit an admission enquiry (public)",
+        "description": "Public — no authentication required.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -5631,6 +6320,7 @@
       },
       "get": {
         "summary": "List admission enquiries",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -5705,6 +6395,7 @@
     "/api/admission-enquiries/{id}": {
       "get": {
         "summary": "Get one admission enquiry",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -5779,6 +6470,7 @@
       },
       "patch": {
         "summary": "Update an admission enquiry's status/notes",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -5880,6 +6572,7 @@
     "/api/admission-enquiries/{id}/convert": {
       "post": {
         "summary": "Convert an enquiry into an enrolled Student record",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -5984,6 +6677,7 @@
     "/api/academic-sessions": {
       "post": {
         "summary": "Create an academic session",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -6081,6 +6775,7 @@
       },
       "get": {
         "summary": "List academic sessions",
+        "description": "Roles: ADMIN, BURSAR, PARENT, STUDENT, TEACHER.",
         "x-roles": [
           "ADMIN",
           "BURSAR",
@@ -6133,6 +6828,7 @@
     "/api/academic-sessions/{id}/set-current": {
       "patch": {
         "summary": "Mark an academic session as current, clearing any other current session",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -6209,6 +6905,7 @@
     "/api/academic-sessions/{id}/terms": {
       "post": {
         "summary": "Create a term within an academic session",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -6332,6 +7029,7 @@
       },
       "get": {
         "summary": "List terms for an academic session",
+        "description": "Roles: ADMIN, BURSAR, PARENT, STUDENT, TEACHER.",
         "x-roles": [
           "ADMIN",
           "BURSAR",
@@ -6415,6 +7113,7 @@
     "/api/terms/{id}/set-current": {
       "patch": {
         "summary": "Mark a term as current within its academic session",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -6491,6 +7190,7 @@
     "/api/classes": {
       "post": {
         "summary": "Create a class",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -6584,6 +7284,7 @@
       },
       "get": {
         "summary": "List classes",
+        "description": "Roles: ADMIN, BURSAR, PARENT, STUDENT, TEACHER.",
         "x-roles": [
           "ADMIN",
           "BURSAR",
@@ -6636,6 +7337,7 @@
     "/api/subjects": {
       "post": {
         "summary": "Create a subject",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -6730,6 +7432,7 @@
       },
       "get": {
         "summary": "List subjects",
+        "description": "Roles: ADMIN, BURSAR, PARENT, STUDENT, TEACHER.",
         "x-roles": [
           "ADMIN",
           "BURSAR",
@@ -6782,6 +7485,7 @@
     "/api/class-subject-assignments": {
       "post": {
         "summary": "Assign a teacher to a class/subject for an academic session",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -6878,6 +7582,7 @@
       },
       "get": {
         "summary": "List class-subject-teacher assignments (a TEACHER caller is always scoped to their own, regardless of the query params)",
+        "description": "Roles: ADMIN, TEACHER.",
         "x-roles": [
           "ADMIN",
           "TEACHER"
@@ -6955,6 +7660,7 @@
     "/api/class-subject-assignments/{id}": {
       "delete": {
         "summary": "Remove a class-subject-teacher assignment",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -7024,6 +7730,7 @@
     "/api/class-form-teachers": {
       "post": {
         "summary": "Designate a class's form/class teacher for an academic session",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -7115,6 +7822,7 @@
       },
       "get": {
         "summary": "List form-teacher assignments (a TEACHER caller is always scoped to their own, regardless of the query params)",
+        "description": "Roles: ADMIN, TEACHER.",
         "x-roles": [
           "ADMIN",
           "TEACHER"
@@ -7192,6 +7900,7 @@
     "/api/class-form-teachers/{id}": {
       "delete": {
         "summary": "Remove a form-teacher assignment",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -7261,6 +7970,7 @@
     "/api/academic-sessions/{id}/assessment-components": {
       "post": {
         "summary": "Create an assessment component (e.g. CA1, Exam) for an academic session",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -7389,6 +8099,7 @@
       },
       "get": {
         "summary": "List assessment components for an academic session",
+        "description": "Roles: ADMIN, BURSAR, PARENT, STUDENT, TEACHER.",
         "x-roles": [
           "ADMIN",
           "BURSAR",
@@ -7471,7 +8182,8 @@
     },
     "/api/academic-sessions/{id}/grading-scale": {
       "post": {
-        "summary": "Create the grading scale for an academic session",
+        "summary": "Create the grading scale for an academic session, optionally choosing how SessionResult figures are derived (sessionAverageMethod — defaults to SESSION_AVERAGE if omitted)",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -7491,6 +8203,25 @@
             "in": "path"
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "sessionAverageMethod": {
+                    "type": "string",
+                    "enum": [
+                      "SESSION_AVERAGE",
+                      "FINAL_TERM_CARRIES"
+                    ]
+                  }
+                },
+                "default": {}
+              }
+            }
+          }
+        },
         "responses": {
           "201": {
             "description": "Created",
@@ -7556,6 +8287,7 @@
       },
       "get": {
         "summary": "Get an academic session's grading scale with its grade bands",
+        "description": "Roles: ADMIN, BURSAR, PARENT, STUDENT, TEACHER.",
         "x-roles": [
           "ADMIN",
           "BURSAR",
@@ -7636,6 +8368,7 @@
     "/api/grading-scales/{id}/bands": {
       "post": {
         "summary": "Add a grade band to a grading scale",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -7762,7 +8495,8 @@
     },
     "/api/class-subject-assignments/{id}/students": {
       "get": {
-        "summary": "Get the class roster for a class-subject assignment (the assigned teacher, or an admin)",
+        "summary": "Get the class roster for a class-subject assignment",
+        "description": "Roles: ADMIN, TEACHER. ADMIN, or the teacher assigned to this specific class-subject assignment.",
         "x-roles": [
           "ADMIN",
           "TEACHER"
@@ -7841,8 +8575,94 @@
       }
     },
     "/api/class-subject-assignments/{id}/scores": {
+      "get": {
+        "summary": "Repopulate the entry sheet for a class-subject assignment/term — every enrolled student, every assessment component, null where nothing's entered yet. Returns DRAFT scores; not subject to the finalized-only filter that governs the parent/student path.",
+        "description": "Roles: ADMIN, TEACHER. ADMIN, or the teacher assigned to this specific class-subject assignment.",
+        "x-roles": [
+          "ADMIN",
+          "TEACHER"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "termId",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScoreSheet"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        }
+      },
       "put": {
         "summary": "Bulk upsert DRAFT scores for a class-subject assignment/term",
+        "description": "Roles: ADMIN, TEACHER. ADMIN, or the teacher assigned to this specific class-subject assignment.",
         "x-roles": [
           "ADMIN",
           "TEACHER"
@@ -7981,6 +8801,7 @@
     "/api/class-subject-assignments/{id}/scores/submit": {
       "post": {
         "summary": "Submit a class-subject assignment's scores for a term, computing SubjectResults",
+        "description": "Roles: ADMIN, TEACHER. ADMIN, or the teacher assigned to this specific class-subject assignment.",
         "x-roles": [
           "ADMIN",
           "TEACHER"
@@ -8079,6 +8900,7 @@
     "/api/students/{id}/scores": {
       "get": {
         "summary": "Get a student's subject results",
+        "description": "ADMIN, the student's linked parent, the student themself, or a teacher currently assigned to their class.",
         "security": [
           {
             "bearerAuth": []
@@ -8155,6 +8977,7 @@
     "/api/results/compute": {
       "post": {
         "summary": "Compute/refresh DRAFT report-card results for a class/term from submitted subject results",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -8235,7 +9058,8 @@
     },
     "/api/results/{studentId}/{termId}": {
       "get": {
-        "summary": "Get a student's report-card result for a term",
+        "summary": "Get a student's report-card result for a term, with this term's affective/psychomotor ratings",
+        "description": "ADMIN, the student's linked parent, the student themself, or a teacher currently assigned to their class. A PARENT or STUDENT caller only ever sees a FINALIZED result — DRAFT/SUBMITTED reads as 404 for them, the same as if compute had never run. IMPORTANT: for a PARENT/STUDENT caller, a FINALIZED result with an outstanding fee balance for this term (or a session-wide, not-term-specific fee) is withheld — see the 402 response below, not returned here as 200. Released via POST /results/:id/release-withholding.",
         "security": [
           {
             "bearerAuth": []
@@ -8267,7 +9091,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Result"
+                  "$ref": "#/components/schemas/ResultWithRatings"
                 }
               }
             }
@@ -8288,6 +9112,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Withheld pending payment of an outstanding fee balance — see schema for details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentRequiredError"
                 }
               }
             }
@@ -8318,6 +9152,7 @@
     "/api/students/{id}/results": {
       "get": {
         "summary": "List a student's report-card results across terms, newest first",
+        "description": "ADMIN, the student's linked parent, the student themself, or a teacher currently assigned to their class. A PARENT or STUDENT caller only ever sees FINALIZED results — non-finalized ones are simply omitted from the list, not an error. A FINALIZED term withheld for an outstanding fee balance (see GET /results/:studentId/:termId) is NOT omitted here — it's still present, but as a reduced WithheldResultListItem (status: \"WITHHELD\" plus the amount owed) in place of the normal result fields, distinguishable by that status value.",
         "security": [
           {
             "bearerAuth": []
@@ -8351,7 +9186,7 @@
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/ResultWithTerm"
+                    "$ref": "#/components/schemas/ResultListItem"
                   }
                 }
               }
@@ -8403,8 +9238,10 @@
     "/api/classes/{id}/results/{termId}": {
       "get": {
         "summary": "List a class's report-card results for a term",
+        "description": "Roles: ADMIN, TEACHER. ADMIN, or that class's form teacher — not a subject teacher assigned to the class.",
         "x-roles": [
-          "ADMIN"
+          "ADMIN",
+          "TEACHER"
         ],
         "security": [
           {
@@ -8490,7 +9327,8 @@
     },
     "/api/results/{id}/finalize": {
       "post": {
-        "summary": "Finalize a report-card result, locking it except via override",
+        "summary": "Finalize a report-card result, locking it except via override. Snapshots daysPresent/daysSchoolOpened at this moment (never recomputed later). Once every actively-enrolled student in this class+term is FINALIZED, this call also triggers the class-wide position/outOf pass (ranked strictly among FINALIZED peers, ties sharing a position) — see POST /classes/:id/results/:termId/rank for the admin escape hatch if a class never completes.",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -8574,9 +9412,99 @@
         }
       }
     },
+    "/api/classes/{id}/results/{termId}/rank": {
+      "post": {
+        "summary": "Admin escape hatch: rank whatever's currently FINALIZED for this class+term, unconditionally — for a class that never reaches 100% finalized (e.g. a student withdrew mid-term with incomplete data), so report cards aren't permanently stuck without a position. Ties share a position, the next position skips (1, 2, 2, 4).",
+        "description": "Roles: ADMIN.",
+        "x-roles": [
+          "ADMIN"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "termId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Result"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/results/{id}/override": {
       "post": {
         "summary": "Override a field on a FINALIZED result, with a mandatory reason, recorded as an audited ResultOverride",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -8685,9 +9613,280 @@
         }
       }
     },
+    "/api/results/{id}/release-withholding": {
+      "post": {
+        "summary": "ADMIN release of fee withholding for one FINALIZED result, per term — not per session. A required reason is recorded as an audited ResultOverride (fieldName \"feeWithholdingReleased\"), the same pattern as /override. Idempotent: releasing an already-released result is still 200, with no duplicate audit row.",
+        "description": "Roles: ADMIN.",
+        "x-roles": [
+          "ADMIN"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "minLength": 10
+                  }
+                },
+                "required": [
+                  "reason"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Result"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/session-results/compute": {
+      "post": {
+        "summary": "Roll up a class's students' FINALIZED term results into per-session results, per subject then overall — averaged or carried-forward per GradingScale.sessionAverageMethod. A student with only some terms FINALIZED is averaged over those, never counting a missing term as zero. Purely derived, so every row this produces is immediately FINALIZED — there's no separate finalize step.",
+        "description": "Roles: ADMIN.",
+        "x-roles": [
+          "ADMIN"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "classId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "academicSessionId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "classId",
+                  "academicSessionId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SessionResultWithSubjectAverages"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/session-results/{studentId}/{academicSessionId}": {
+      "get": {
+        "summary": "Get a student's session-level rollup result, with its per-subject averages",
+        "description": "ADMIN, the student's linked parent, the student themself, or a teacher currently assigned to their class. Same finalized-only visibility and fee-withholding rules as GET /results/:studentId/:termId, checked session-wide (any outstanding obligation anywhere in the session withholds this) rather than against one term — see the 402 response below. Release is per-term only; a term's release does not affect this session-wide check.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "studentId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "academicSessionId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionResultWithSubjectAverages"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Withheld pending payment of an outstanding fee balance — see schema for details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentRequiredError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/results/{id}/class-teacher-comment": {
       "patch": {
-        "summary": "Write the class/form teacher's comment on a DRAFT result (the class's form teacher, or an admin) — not an override, no ResultOverride row",
+        "summary": "Write the class/form teacher's comment on a DRAFT result — not an override, no ResultOverride row",
+        "description": "Roles: ADMIN, TEACHER. ADMIN, or that class's form teacher — not a subject teacher assigned to the class.",
         "x-roles": [
           "ADMIN",
           "TEACHER"
@@ -8782,7 +9981,8 @@
     },
     "/api/results/{id}/principal-comment": {
       "patch": {
-        "summary": "Write the principal's comment on a DRAFT result (admin only) — not an override, no ResultOverride row",
+        "summary": "Write the principal's comment on a DRAFT result — not an override, no ResultOverride row",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -8874,9 +10074,407 @@
         }
       }
     },
+    "/api/academic-sessions/{id}/traits": {
+      "post": {
+        "summary": "Create an affective or psychomotor trait (e.g. Punctuality, Handwriting) for an academic session",
+        "description": "Roles: ADMIN.",
+        "x-roles": [
+          "ADMIN"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "category": {
+                    "type": "string",
+                    "enum": [
+                      "AFFECTIVE",
+                      "PSYCHOMOTOR"
+                    ]
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "order": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "category",
+                  "name",
+                  "order"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Trait"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with the resource's current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "List affective/psychomotor traits for an academic session, both categories together",
+        "description": "Roles: ADMIN, BURSAR, PARENT, STUDENT, TEACHER.",
+        "x-roles": [
+          "ADMIN",
+          "BURSAR",
+          "PARENT",
+          "STUDENT",
+          "TEACHER"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Trait"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/rating-scale": {
+      "get": {
+        "summary": "List the fixed 5-point rating scale shared by both trait categories (static reference data)",
+        "description": "Roles: ADMIN, BURSAR, PARENT, STUDENT, TEACHER.",
+        "x-roles": [
+          "ADMIN",
+          "BURSAR",
+          "PARENT",
+          "STUDENT",
+          "TEACHER"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RatingScaleLevel"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/classes/{id}/results/{termId}/ratings": {
+      "put": {
+        "summary": "Bulk upsert affective/psychomotor ratings for a class+term. Only while the targeted student's Result for this term is DRAFT — same rule as the class-teacher comment; rejects (409) the whole batch if any targeted student's result is no longer DRAFT. Appear on the result read once written.",
+        "description": "Roles: ADMIN, TEACHER. ADMIN, or that class's form teacher — not a subject teacher assigned to the class.",
+        "x-roles": [
+          "ADMIN",
+          "TEACHER"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "termId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "entries": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "studentId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "traitId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "value": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 5
+                        }
+                      },
+                      "required": [
+                        "studentId",
+                        "traitId",
+                        "value"
+                      ]
+                    },
+                    "minItems": 1
+                  }
+                },
+                "required": [
+                  "entries"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RatingWithTrait"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with the resource's current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/attendance-sessions": {
       "post": {
         "summary": "Open an attendance session for a class",
+        "description": "Roles: ADMIN, TEACHER.",
         "x-roles": [
           "ADMIN",
           "TEACHER"
@@ -8978,6 +10576,7 @@
     "/api/attendance-sessions/{id}/scan": {
       "post": {
         "summary": "Scan a student's QR code into an open attendance session",
+        "description": "Roles: ADMIN, TEACHER.",
         "x-roles": [
           "ADMIN",
           "TEACHER"
@@ -9086,6 +10685,7 @@
     "/api/attendance-sessions/{id}/close": {
       "post": {
         "summary": "Close an attendance session, marking every un-scanned enrolled student ABSENT",
+        "description": "Roles: ADMIN, TEACHER.",
         "x-roles": [
           "ADMIN",
           "TEACHER"
@@ -9173,6 +10773,7 @@
     "/api/attendance-records/{id}": {
       "patch": {
         "summary": "Manually correct an attendance record",
+        "description": "Roles: ADMIN, TEACHER.",
         "x-roles": [
           "ADMIN",
           "TEACHER"
@@ -9277,6 +10878,7 @@
     "/api/students/{id}/attendance": {
       "get": {
         "summary": "Get a student's attendance history",
+        "description": "ADMIN, the student's linked parent, the student themself, or a teacher currently assigned to their class.",
         "security": [
           {
             "bearerAuth": []
@@ -9353,6 +10955,7 @@
     "/api/classes/{id}/attendance": {
       "get": {
         "summary": "List a class's attendance sessions (optionally filtered to one date)",
+        "description": "Roles: ADMIN, TEACHER.",
         "x-roles": [
           "ADMIN",
           "TEACHER"
@@ -9445,8 +11048,10 @@
     "/api/students/{id}/qr-code/rotate": {
       "post": {
         "summary": "Issue a new active QR code for a student, deactivating any previous one",
+        "description": "Roles: ADMIN, STUDENT. ADMIN, or the student themself, acting on their own code.",
         "x-roles": [
-          "ADMIN"
+          "ADMIN",
+          "STUDENT"
         ],
         "security": [
           {
@@ -9521,8 +11126,10 @@
     "/api/students/{id}/qr-code": {
       "get": {
         "summary": "Get a student's current active QR code",
+        "description": "Roles: ADMIN, STUDENT. ADMIN, or the student themself, acting on their own code.",
         "x-roles": [
-          "ADMIN"
+          "ADMIN",
+          "STUDENT"
         ],
         "security": [
           {
@@ -9597,6 +11204,7 @@
     "/api/fee-structures": {
       "post": {
         "summary": "Create a fee structure",
+        "description": "Roles: ADMIN, BURSAR.",
         "x-roles": [
           "ADMIN",
           "BURSAR"
@@ -9698,6 +11306,7 @@
       },
       "get": {
         "summary": "List fee structures",
+        "description": "Roles: ADMIN, BURSAR.",
         "x-roles": [
           "ADMIN",
           "BURSAR"
@@ -9764,9 +11373,186 @@
         }
       }
     },
+    "/api/fee-structures/{id}": {
+      "patch": {
+        "summary": "Edit a fee structure's name or amount. Never retroactively alters obligations already generated from it — only the next generate-obligations run sees the new amount.",
+        "description": "Roles: ADMIN, BURSAR.",
+        "x-roles": [
+          "ADMIN",
+          "BURSAR"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "amountKobo": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeeStructure"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete a fee structure. Refuses (409) if it already has generated obligations — deleting it would orphan the payment records against them.",
+        "description": "Roles: ADMIN, BURSAR.",
+        "x-roles": [
+          "ADMIN",
+          "BURSAR"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with the resource's current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/fee-structures/{id}/generate-obligations": {
       "post": {
         "summary": "Generate a fee obligation for every actively-enrolled student against this fee structure",
+        "description": "Roles: ADMIN, BURSAR.",
         "x-roles": [
           "ADMIN",
           "BURSAR"
@@ -9847,6 +11633,7 @@
     "/api/students/{id}/fee-obligations": {
       "get": {
         "summary": "List a student's fee obligations, with computed paid/outstanding balances",
+        "description": "ADMIN, BURSAR, the student's linked parent, or the student themself.",
         "security": [
           {
             "bearerAuth": []
@@ -9921,8 +11708,81 @@
       }
     },
     "/api/fee-obligations/{id}": {
+      "get": {
+        "summary": "Get one fee obligation, with computed paid/outstanding balances",
+        "description": "ADMIN, BURSAR, the student's linked parent, or the student themself.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeeObligationWithBalance"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        }
+      },
       "patch": {
         "summary": "Update a fee obligation",
+        "description": "Roles: ADMIN, BURSAR.",
         "x-roles": [
           "ADMIN",
           "BURSAR"
@@ -10034,6 +11894,7 @@
     "/api/fee-obligations/{id}/payments": {
       "post": {
         "summary": "Record a payment against a fee obligation",
+        "description": "Roles: ADMIN, BURSAR.",
         "x-roles": [
           "ADMIN",
           "BURSAR"
@@ -10145,6 +12006,7 @@
     "/api/payments/{id}/confirm": {
       "post": {
         "summary": "Confirm a pending payment",
+        "description": "Roles: ADMIN, BURSAR.",
         "x-roles": [
           "ADMIN",
           "BURSAR"
@@ -10232,6 +12094,7 @@
     "/api/payments/{id}/reject": {
       "post": {
         "summary": "Reject a pending payment",
+        "description": "Roles: ADMIN, BURSAR.",
         "x-roles": [
           "ADMIN",
           "BURSAR"
@@ -10319,6 +12182,7 @@
     "/api/payments/{id}/receipt": {
       "get": {
         "summary": "Get the receipt for a confirmed payment",
+        "description": "ADMIN, BURSAR, the student's linked parent, or the student themself.",
         "security": [
           {
             "bearerAuth": []
@@ -10392,6 +12256,7 @@
     "/api/students/{id}/payments": {
       "get": {
         "summary": "List a student's payments",
+        "description": "ADMIN, BURSAR, the student's linked parent, or the student themself.",
         "security": [
           {
             "bearerAuth": []
@@ -10468,6 +12333,7 @@
     "/api/notifications": {
       "get": {
         "summary": "List the authenticated caller's own notifications, with delivery attempts",
+        "description": "Roles: ADMIN, BURSAR, PARENT, STUDENT, TEACHER.",
         "x-roles": [
           "ADMIN",
           "BURSAR",
@@ -10517,9 +12383,134 @@
         }
       }
     },
+    "/api/notifications/{id}/read": {
+      "patch": {
+        "summary": "Mark one of the caller's own notifications as read. Idempotent — marking an already-read notification again is still a 200, and its original readAt is preserved.",
+        "description": "ADMIN, or the notification's own recipient.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationEvent"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/notifications/read-all": {
+      "post": {
+        "summary": "Mark every one of the caller's own currently-unread notifications as read",
+        "description": "Roles: ADMIN, BURSAR, PARENT, STUDENT, TEACHER.",
+        "x-roles": [
+          "ADMIN",
+          "BURSAR",
+          "PARENT",
+          "STUDENT",
+          "TEACHER"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarkAllNotificationsReadResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/notifications/fee-reminders/trigger": {
       "post": {
         "summary": "Trigger fee-reminder notifications for every student with an outstanding balance",
+        "description": "Roles: ADMIN, BURSAR.",
         "x-roles": [
           "ADMIN",
           "BURSAR"
@@ -10594,6 +12585,7 @@
     "/api/madrassah-progress": {
       "post": {
         "summary": "Record a Qur'an/Madrassah progress entry for a student",
+        "description": "Roles: TEACHER.",
         "x-roles": [
           "TEACHER"
         ],
@@ -10720,6 +12712,7 @@
     "/api/students/{id}/madrassah-progress": {
       "get": {
         "summary": "List a student's Qur'an/Madrassah progress entries",
+        "description": "ADMIN, the student's linked parent, the student themself, or a teacher currently assigned to their class.",
         "security": [
           {
             "bearerAuth": []
@@ -10796,6 +12789,7 @@
     "/api/surahs": {
       "get": {
         "summary": "List the 114 surahs (static reference data)",
+        "description": "Roles: ADMIN, BURSAR, PARENT, STUDENT, TEACHER.",
         "x-roles": [
           "ADMIN",
           "BURSAR",
@@ -10848,6 +12842,7 @@
     "/api/time-slots": {
       "post": {
         "summary": "Create a timetable time slot",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -10937,6 +12932,7 @@
       },
       "get": {
         "summary": "List timetable time slots",
+        "description": "Roles: ADMIN, BURSAR, PARENT, STUDENT, TEACHER.",
         "x-roles": [
           "ADMIN",
           "BURSAR",
@@ -10989,6 +12985,7 @@
     "/api/timetable-entries": {
       "post": {
         "summary": "Create a timetable entry, assigning a class-subject-assignment to a day/time slot",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -11089,6 +13086,7 @@
     "/api/timetable-entries/{id}": {
       "delete": {
         "summary": "Remove a timetable entry",
+        "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
         ],
@@ -11157,7 +13155,8 @@
     },
     "/api/classes/{id}/timetable": {
       "get": {
-        "summary": "Get a class's weekly timetable (any staff member; students/parents scoped to their own/linked enrollment)",
+        "summary": "Get a class's weekly timetable",
+        "description": "Any TEACHER (assigned or not — timetable data isn't treated as sensitive) or ADMIN; a STUDENT or linked PARENT scoped to a class they, or their child, are actually and currently enrolled in.",
         "security": [
           {
             "bearerAuth": []
@@ -11233,7 +13232,8 @@
     },
     "/api/staff/{id}/timetable": {
       "get": {
-        "summary": "Get a staff member's weekly teaching timetable (self, or admin)",
+        "summary": "Get a staff member's weekly teaching timetable",
+        "description": "ADMIN, or that staff member themself.",
         "security": [
           {
             "bearerAuth": []

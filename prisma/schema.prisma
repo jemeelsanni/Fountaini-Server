@@ -210,6 +210,7 @@ model Student {
   attendanceRecords      AttendanceRecord[]
   qrCodes                StudentQrCode[]
   convertedFromEnquiries AdmissionEnquiry[]
+  ratings                Rating[]
 
   @@index([lastName, firstName])
   @@index([status])
@@ -270,6 +271,7 @@ model AcademicSession {
   attendanceSessions      AttendanceSession[]
   madrassahProgress       MadrassahProgress[]
   sessionResults          SessionResult[]
+  traits                  Trait[]
 
   @@index([isCurrent])
 }
@@ -298,6 +300,7 @@ model Term {
   feeObligations     FeeObligation[]
   attendanceSessions AttendanceSession[]
   madrassahProgress  MadrassahProgress[]
+  ratings            Rating[]
 
   @@unique([academicSessionId, order])
   @@index([isCurrent])
@@ -336,6 +339,7 @@ model Subject {
   createdAt DateTime    @default(now())
 
   classSubjectAssignments ClassSubjectAssignment[]
+  sessionSubjectAverages  SessionSubjectAverage[]
 }
 
 /// The central authorization anchor: "a teacher may only write scores for
@@ -471,11 +475,27 @@ model Score {
   @@index([classSubjectAssignmentId, termId])
 }
 
+enum SessionAverageMethod {
+  /// Simple average of the FINALIZED terms a student actually has, per
+  /// subject and overall. A missing (never-finalized) term is never counted
+  /// as zero — it's excluded from the average, not treated as a 0.
+  SESSION_AVERAGE
+  /// The latest (highest Term.order) FINALIZED term's value is carried
+  /// forward as-is — no averaging.
+  FINAL_TERM_CARRIES
+}
+
 model GradingScale {
-  id                String          @id @default(cuid())
-  academicSessionId String          @unique
-  academicSession   AcademicSession @relation(fields: [academicSessionId], references: [id])
-  createdAt         DateTime        @default(now())
+  id                   String               @id @default(cuid())
+  academicSessionId    String               @unique
+  academicSession      AcademicSession      @relation(fields: [academicSessionId], references: [id])
+  /// Governs how SessionResult/SessionSubjectAverage derive a session's
+  /// figures from its terms. Configurable per session rather than a service
+  /// constant — schools change this. Defaults to SESSION_AVERAGE when no
+  /// GradingScale row exists yet for a session too (see
+  /// computeSessionResults in results.service.ts).
+  sessionAverageMethod SessionAverageMethod @default(SESSION_AVERAGE)
+  createdAt            DateTime             @default(now())
 
   bands GradeBand[]
 }
@@ -491,6 +511,64 @@ model GradeBand {
   gradePoint     Decimal?     @db.Decimal(4, 2)
 
   @@unique([gradingScaleId, grade])
+}
+
+enum TraitCategory {
+  AFFECTIVE
+  PSYCHOMOTOR
+}
+
+/// Configurable per session, one flat list per category — same pattern as
+/// AssessmentComponent (per-session config, ADMIN creates via
+/// POST /academic-sessions/:id/traits, everyone reads). `category`
+/// discriminates which block a trait prints in on the report card; entry
+/// endpoint, scale, permissions and lifecycle are otherwise identical
+/// between the two categories, so they share this one table rather than two
+/// near-duplicate ones.
+model Trait {
+  id                String          @id @default(cuid())
+  academicSessionId String
+  academicSession   AcademicSession @relation(fields: [academicSessionId], references: [id])
+  category          TraitCategory
+  name              String
+  order             Int
+  createdAt         DateTime        @default(now())
+
+  ratings Rating[]
+
+  @@unique([academicSessionId, category, name])
+}
+
+/// Static reference data (5 rows), seeded once — shared by both trait
+/// categories. `value` doubles as the sort/render order (renders as a 5-1
+/// grid): Excellent 5, Very Good 4, Good 3, Fair 2, Poor 1.
+model RatingScaleLevel {
+  value Int    @id
+  label String
+}
+
+/// One rating per (student, term, trait) — form-teacher-entered, bulk per
+/// class+term, mirroring bulkUpsertScores' shape. `value` is app-layer
+/// validated against RatingScaleLevel (1-5), the same "validated against a
+/// configured bound, not a DB FK" pattern as Score.rawScore vs
+/// AssessmentComponent.maxScore. Writable only while the student's Result
+/// for that term is DRAFT — same rule as the class-teacher comment.
+model Rating {
+  id              String   @id @default(cuid())
+  studentId       String
+  student         Student  @relation(fields: [studentId], references: [id])
+  termId          String
+  term            Term     @relation(fields: [termId], references: [id])
+  traitId         String
+  trait           Trait    @relation(fields: [traitId], references: [id])
+  value           Int
+  enteredByUserId String
+  enteredAt       DateTime @default(now())
+  updatedByUserId String?
+  updatedAt       DateTime @updatedAt
+
+  @@unique([studentId, termId, traitId])
+  @@index([termId, traitId])
 }
 
 enum ResultStatus {
@@ -526,27 +604,56 @@ model SubjectResult {
 /// student's SubjectResults. Finalization is a distinct admin action from
 /// subject-level submission (admin may finalize with partial subjects — see
 /// decision log) and, once FINALIZED, is immutable except via ResultOverride.
+///
+/// `position`/`outOf` are written by computeResultsForClass on every
+/// recompute (a live, provisional class rank among whatever's been submitted
+/// so far) right up until this row's own status becomes FINALIZED, at which
+/// point recomputes stop touching it — but that only freezes whatever
+/// provisional value happened to be current at that instant, ranked against
+/// classmates who may still have been DRAFT. The authoritative, class-relative
+/// rank is instead (re)computed by finalizeResult's own class-wide pass once
+/// every actively-enrolled student in this class+term is FINALIZED (or by the
+/// admin escape hatch at POST /classes/:id/results/:termId/rank for a class
+/// that never fully completes), which overwrites these same two columns with
+/// a rank computed strictly among FINALIZED peers — ties share a position,
+/// the next position skips (1, 2, 2, 4, ...).
+///
+/// `daysPresent`/`daysSchoolOpened`/`feeWithholdingReleased` are all
+/// snapshotted once, at finalize time, and are never touched by a later
+/// recompute or attendance change — printing the same report card in
+/// December and in March must show the same figures.
 model Result {
-  id                  String       @id @default(cuid())
-  studentId           String
-  student             Student      @relation(fields: [studentId], references: [id])
-  enrollmentId        String
-  enrollment          Enrollment   @relation(fields: [enrollmentId], references: [id])
-  termId              String
-  term                Term         @relation(fields: [termId], references: [id])
-  status              ResultStatus @default(DRAFT)
-  totalScore          Decimal?     @db.Decimal(7, 2)
-  averageScore        Decimal?     @db.Decimal(5, 2)
-  position            Int?
-  outOf               Int?
-  classTeacherComment String?
-  principalComment    String?
-  submittedByUserId   String?
-  submittedAt         DateTime?
-  finalizedByUserId   String?
-  finalizedAt         DateTime?
-  createdAt           DateTime     @default(now())
-  updatedAt           DateTime     @updatedAt
+  id                     String       @id @default(cuid())
+  studentId              String
+  student                Student      @relation(fields: [studentId], references: [id])
+  enrollmentId           String
+  enrollment             Enrollment   @relation(fields: [enrollmentId], references: [id])
+  termId                 String
+  term                   Term         @relation(fields: [termId], references: [id])
+  status                 ResultStatus @default(DRAFT)
+  totalScore             Decimal?     @db.Decimal(7, 2)
+  averageScore           Decimal?     @db.Decimal(5, 2)
+  position               Int?
+  outOf                  Int?
+  /// Snapshotted at finalize time — PRESENT + LATE records for this
+  /// student's class+term, per CLOSED AttendanceSessions only.
+  daysPresent            Int?
+  /// Snapshotted at finalize time — count of CLOSED AttendanceSessions for
+  /// this student's class+term (an unclosed session is an incomplete record).
+  daysSchoolOpened       Int?
+  classTeacherComment    String?
+  principalComment       String?
+  submittedByUserId      String?
+  submittedAt            DateTime?
+  finalizedByUserId      String?
+  finalizedAt            DateTime?
+  /// Admin override of fee withholding (see Feature D): flips false -> true
+  /// via releaseWithholding(), audited through a ResultOverride row
+  /// (fieldName "feeWithholdingReleased") exactly like any other override.
+  /// A second release call is a no-op — idempotent, no duplicate audit row.
+  feeWithholdingReleased Boolean      @default(false)
+  createdAt              DateTime     @default(now())
+  updatedAt              DateTime     @updatedAt
 
   overrides ResultOverride[]
 
@@ -554,9 +661,21 @@ model Result {
   @@index([enrollmentId])
 }
 
-/// Session-level rollup, computed once all of a session's terms are finalized
-/// for a student. averageScore = mean of the three Term.averageScore values
-/// (simple average of term averages, not a carry-forward of the final term).
+/// Session-level rollup, derived from whichever of a student's term Results
+/// are FINALIZED so far — a student finalized in only 2 of 3 terms still
+/// gets a session result, averaged over those 2; a missing term is never
+/// counted as zero. `averageScore` is derived from `subjectResults` (the
+/// mean of the per-subject session averages), not computed independently of
+/// them.
+///
+/// How each subject/overall average is derived is a config choice
+/// (GradingScale.sessionAverageMethod, one row per academic session):
+/// SESSION_AVERAGE takes the simple mean of the FINALIZED terms a student
+/// actually has; FINAL_TERM_CARRIES instead carries forward the latest
+/// (highest Term.order) FINALIZED term's value untouched. Purely derived,
+/// with no independent human review step of its own, so computeSessionResults
+/// marks a row FINALIZED the moment it has at least one contributing term —
+/// there's no separate finalize action for this model.
 model SessionResult {
   id                String          @id @default(cuid())
   studentId         String
@@ -573,7 +692,27 @@ model SessionResult {
   finalizedAt       DateTime?
   createdAt         DateTime        @default(now())
 
+  subjectAverages SessionSubjectAverage[]
+
   @@unique([studentId, academicSessionId])
+}
+
+/// Per-subject piece of a SessionResult — the simple average (or, under
+/// FINAL_TERM_CARRIES, the carried-forward value) of that subject's totals
+/// across whichever of the session's terms are FINALIZED. `termsCounted`
+/// records how many terms actually fed this row, purely for display/
+/// debugging ("averaged over 2 of 3 terms") — it plays no role in the math
+/// once the average itself is computed.
+model SessionSubjectAverage {
+  id              String        @id @default(cuid())
+  sessionResultId String
+  sessionResult   SessionResult @relation(fields: [sessionResultId], references: [id], onDelete: Cascade)
+  subjectId       String
+  subject         Subject       @relation(fields: [subjectId], references: [id])
+  averageScore    Decimal       @db.Decimal(5, 2)
+  termsCounted    Int
+
+  @@unique([sessionResultId, subjectId])
 }
 
 enum OverrideTargetType {
@@ -989,6 +1128,9 @@ model NotificationEvent {
   relatedEntityType String?
   relatedEntityId   String?
   createdAt         DateTime         @default(now())
+  /// Null = unread. Set once, on first PATCH .../:id/read; re-marking an
+  /// already-read notification is a no-op (idempotent), not an error.
+  readAt            DateTime?
 
   deliveries NotificationDelivery[]
 

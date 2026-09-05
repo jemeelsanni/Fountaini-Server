@@ -23,6 +23,10 @@ export const updateStudentSchema = z.object({
   dateOfBirth: z.coerce.date().optional(),
   gender: z.enum(["MALE", "FEMALE"]).optional(),
   status: z.enum(["ACTIVE", "GRADUATED", "WITHDRAWN", "INACTIVE"]).optional(),
+  // Only settable while currently null — see updateStudent()'s conditional
+  // claim. Attaching a login to a student who never got one at creation
+  // time (the common case for younger students).
+  userId: z.string().min(1).optional(),
 });
 export type UpdateStudentBody = z.infer<typeof updateStudentSchema>;
 

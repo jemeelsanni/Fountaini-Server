@@ -67,3 +67,32 @@ export const ConflictErrorSchema = errorSchema(
     "(unique field already in use) or an action that's already been taken (e.g. a payment " +
     "already confirmed, an enquiry already converted, a result already finalized).",
 );
+
+/// 402 is genuinely rare in this API — used ONLY for a result withheld
+/// pending an outstanding fee balance (Feature D). Given its own bespoke
+/// schema (not errorSchema()'s generic `details: unknown`) because
+/// `outstandingKobo`/`feeObligationIds` are always present, not merely
+/// possible — a client can build a "pay outstanding balance" CTA straight
+/// from this response.
+export const PaymentRequiredErrorSchema = z
+  .object({
+    error: z.object({
+      code: z.literal("PAYMENT_REQUIRED"),
+      message: z.string(),
+      details: z.object({
+        outstandingKobo: z.number().int(),
+        feeObligationIds: z.array(z.string()),
+      }),
+    }),
+  })
+  .openapi("PaymentRequiredError", {
+    description:
+      "IMPORTANT — handle this status explicitly; an unhandled 402 renders as a generic error " +
+      "and defeats the point of this response. The result exists and is FINALIZED, but is " +
+      "withheld because the student has an outstanding fee balance for this term (or a " +
+      "session-wide, not-term-specific fee) — partial payment does not release it. Distinct " +
+      "from 404 (not published yet): a 404 here means check back later, a 402 means the parent " +
+      "has an action to take now. `details.outstandingKobo` and `details.feeObligationIds` are " +
+      "always present, so a client can render a \"pay outstanding balance\" call-to-action " +
+      "directly from this response, without a follow-up request.",
+  });
