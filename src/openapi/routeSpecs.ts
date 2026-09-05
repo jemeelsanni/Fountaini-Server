@@ -14,7 +14,7 @@ import {
 import { classAttendanceQuerySchema, correctAttendanceSchema, idParamsSchema as attendanceIdParamsSchema, openSessionSchema, scanSchema } from "../modules/attendance/attendance.schemas.js";
 import { listAuditLogQuerySchema } from "../modules/audit/audit.schemas.js";
 import { createFeeStructureSchema, idParamsSchema as feesIdParamsSchema, recordPaymentSchema, updateFeeObligationSchema, updateFeeStructureSchema } from "../modules/fees/fees.schemas.js";
-import { createAssessmentComponentSchema, createGradeBandSchema, idParamsSchema as gradingIdParamsSchema } from "../modules/grading/grading.schemas.js";
+import { createAssessmentComponentSchema, createGradeBandSchema, createGradingScaleSchema, idParamsSchema as gradingIdParamsSchema } from "../modules/grading/grading.schemas.js";
 import { createProgressSchema, idParamsSchema as madrassahIdParamsSchema } from "../modules/madrassah/madrassah.schemas.js";
 import {
   idParamsSchema as notificationsIdParamsSchema,
@@ -22,11 +22,20 @@ import {
 } from "../modules/notifications/notifications.schemas.js";
 import { createParentSchema, idParamsSchema as parentsIdParamsSchema, linkChildSchema, parentChildParamsSchema } from "../modules/parents/parents.schemas.js";
 import {
+  bulkUpsertRatingsSchema,
+  classTermParamsSchema as ratingsClassTermParamsSchema,
+  createTraitSchema,
+  idParamsSchema as ratingsIdParamsSchema,
+} from "../modules/ratings/ratings.schemas.js";
+import {
   classTermParamsSchema,
   computeResultsSchema,
+  computeSessionResultsSchema,
   idParamsSchema as resultsIdParamsSchema,
   listResultsForStudentQuerySchema,
   overrideResultSchema,
+  releaseWithholdingSchema,
+  studentSessionParamsSchema,
   studentTermParamsSchema,
   writeCommentSchema,
 } from "../modules/results/results.schemas.js";
@@ -70,14 +79,18 @@ import {
   ParentSchema,
   PaymentSchema,
   PaymentWithRelationsSchema,
+  RatingScaleLevelSchema,
+  RatingWithTraitSchema,
   ReceiptSchema,
+  ResultListItemSchema,
   ResultSchema,
+  ResultWithRatingsSchema,
   ResultWithStudentSchema,
-  ResultWithTermSchema,
   ScanResultSchema,
   SchoolSchema,
   ScoreSchema,
   ScoreSheetSchema,
+  SessionResultWithSubjectAveragesSchema,
   StaffSchema,
   StaffWithUserSchema,
   StudentParentSchema,
@@ -90,6 +103,7 @@ import {
   SubjectSchema,
   SurahSchema,
   TermSchema,
+  TraitSchema,
   TimeSlotSchema,
   TimetableEntryForClassViewSchema,
   TimetableEntryForStaffViewSchema,
@@ -156,6 +170,7 @@ const SCOPE_NOTES = {
     "Any TEACHER (assigned or not — timetable data isn't treated as sensitive) or ADMIN; a STUDENT or " +
     "linked PARENT scoped to a class they, or their child, are actually and currently enrolled in.",
   canManageOwnNotification: "ADMIN, or the notification's own recipient.",
+  canWriteClassRatings: "ADMIN, or that class's form teacher — not a subject teacher assigned to the class.",
 } as const;
 
 /// One entry per route in the live route inventory ("METHOD /path", exactly
@@ -461,8 +476,11 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     responses: { 200: { description: "OK", schema: z.array(AssessmentComponentSchema) } },
   },
   "POST /api/academic-sessions/:id/grading-scale": {
-    summary: "Create the grading scale for an academic session",
+    summary:
+      "Create the grading scale for an academic session, optionally choosing how SessionResult figures " +
+      "are derived (sessionAverageMethod — defaults to SESSION_AVERAGE if omitted)",
     requestParams: gradingIdParamsSchema,
+    requestBody: createGradingScaleSchema,
     responses: { 201: { description: "Created", schema: GradingScaleSchema } },
   },
   "GET /api/academic-sessions/:id/grading-scale": {
@@ -554,6 +572,33 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     responses: { 204: noContent },
   },
 
+  // --- ratings ------------------------------------------------------------
+  "POST /api/academic-sessions/:id/traits": {
+    summary: "Create an affective or psychomotor trait (e.g. Punctuality, Handwriting) for an academic session",
+    requestParams: ratingsIdParamsSchema,
+    requestBody: createTraitSchema,
+    responses: { 201: { description: "Created", schema: TraitSchema } },
+  },
+  "GET /api/academic-sessions/:id/traits": {
+    summary: "List affective/psychomotor traits for an academic session, both categories together",
+    requestParams: ratingsIdParamsSchema,
+    responses: { 200: { description: "OK", schema: z.array(TraitSchema) } },
+  },
+  "GET /api/rating-scale": {
+    summary: "List the fixed 5-point rating scale shared by both trait categories (static reference data)",
+    responses: { 200: { description: "OK", schema: z.array(RatingScaleLevelSchema) } },
+  },
+  "PUT /api/classes/:id/results/:termId/ratings": {
+    summary:
+      "Bulk upsert affective/psychomotor ratings for a class+term. Only while the targeted student's " +
+      "Result for this term is DRAFT — same rule as the class-teacher comment; rejects (409) the whole " +
+      "batch if any targeted student's result is no longer DRAFT. Appear on the result read once written.",
+    requestParams: ratingsClassTermParamsSchema,
+    requestBody: bulkUpsertRatingsSchema,
+    responses: { 200: { description: "OK", schema: z.array(RatingWithTraitSchema) } },
+    scopeNote: SCOPE_NOTES.canWriteClassRatings,
+  },
+
   // --- results ----------------------------------------------------------------
   "POST /api/results/compute": {
     summary: "Compute/refresh DRAFT report-card results for a class/term from submitted subject results",
@@ -561,21 +606,27 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     responses: { 200: { description: "OK", schema: z.array(ResultSchema) } },
   },
   "GET /api/results/:studentId/:termId": {
-    summary: "Get a student's report-card result for a term",
+    summary: "Get a student's report-card result for a term, with this term's affective/psychomotor ratings",
     requestParams: studentTermParamsSchema,
-    responses: { 200: { description: "OK", schema: ResultSchema } },
+    responses: { 200: { description: "OK", schema: ResultWithRatingsSchema } },
     scopeNote:
       `${SCOPE_NOTES.canReadStudent} A PARENT or STUDENT caller only ever sees a FINALIZED result — ` +
-      "DRAFT/SUBMITTED reads as 404 for them, the same as if compute had never run.",
+      "DRAFT/SUBMITTED reads as 404 for them, the same as if compute had never run. IMPORTANT: for a " +
+      "PARENT/STUDENT caller, a FINALIZED result with an outstanding fee balance for this term (or a " +
+      "session-wide, not-term-specific fee) is withheld — see the 402 response below, not returned here " +
+      "as 200. Released via POST /results/:id/release-withholding.",
   },
   "GET /api/students/:id/results": {
     summary: "List a student's report-card results across terms, newest first",
     requestParams: resultsIdParamsSchema,
     requestQuery: listResultsForStudentQuerySchema,
-    responses: { 200: { description: "OK", schema: z.array(ResultWithTermSchema) } },
+    responses: { 200: { description: "OK", schema: z.array(ResultListItemSchema) } },
     scopeNote:
       `${SCOPE_NOTES.canReadStudent} A PARENT or STUDENT caller only ever sees FINALIZED results — ` +
-      "non-finalized ones are simply omitted from the list, not an error.",
+      "non-finalized ones are simply omitted from the list, not an error. A FINALIZED term withheld for " +
+      "an outstanding fee balance (see GET /results/:studentId/:termId) is NOT omitted here — it's still " +
+      "present, but as a reduced WithheldResultListItem (status: \"WITHHELD\" plus the amount owed) in " +
+      "place of the normal result fields, distinguishable by that status value.",
   },
   "GET /api/classes/:id/results/:termId": {
     summary: "List a class's report-card results for a term",
@@ -584,15 +635,58 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     scopeNote: SCOPE_NOTES.canReadClassResults,
   },
   "POST /api/results/:id/finalize": {
-    summary: "Finalize a report-card result, locking it except via override",
+    summary:
+      "Finalize a report-card result, locking it except via override. Snapshots daysPresent/" +
+      "daysSchoolOpened at this moment (never recomputed later). Once every actively-enrolled student " +
+      "in this class+term is FINALIZED, this call also triggers the class-wide position/outOf pass " +
+      "(ranked strictly among FINALIZED peers, ties sharing a position) — see " +
+      "POST /classes/:id/results/:termId/rank for the admin escape hatch if a class never completes.",
     requestParams: resultsIdParamsSchema,
     responses: { 200: { description: "OK", schema: ResultSchema } },
+  },
+  "POST /api/classes/:id/results/:termId/rank": {
+    summary:
+      "Admin escape hatch: rank whatever's currently FINALIZED for this class+term, unconditionally — " +
+      "for a class that never reaches 100% finalized (e.g. a student withdrew mid-term with incomplete " +
+      "data), so report cards aren't permanently stuck without a position. Ties share a position, the " +
+      "next position skips (1, 2, 2, 4).",
+    requestParams: classTermParamsSchema,
+    responses: { 200: { description: "OK", schema: z.array(ResultSchema) } },
   },
   "POST /api/results/:id/override": {
     summary: "Override a field on a FINALIZED result, with a mandatory reason, recorded as an audited ResultOverride",
     requestParams: resultsIdParamsSchema,
     requestBody: overrideResultSchema,
     responses: { 200: { description: "OK", schema: ResultSchema } },
+  },
+  "POST /api/results/:id/release-withholding": {
+    summary:
+      "ADMIN release of fee withholding for one FINALIZED result, per term — not per session. A required " +
+      "reason is recorded as an audited ResultOverride (fieldName \"feeWithholdingReleased\"), the same " +
+      "pattern as /override. Idempotent: releasing an already-released result is still 200, with no " +
+      "duplicate audit row.",
+    requestParams: resultsIdParamsSchema,
+    requestBody: releaseWithholdingSchema,
+    responses: { 200: { description: "OK", schema: ResultSchema } },
+  },
+  "POST /api/session-results/compute": {
+    summary:
+      "Roll up a class's students' FINALIZED term results into per-session results, per subject then " +
+      "overall — averaged or carried-forward per GradingScale.sessionAverageMethod. A student with only " +
+      "some terms FINALIZED is averaged over those, never counting a missing term as zero. Purely " +
+      "derived, so every row this produces is immediately FINALIZED — there's no separate finalize step.",
+    requestBody: computeSessionResultsSchema,
+    responses: { 200: { description: "OK", schema: z.array(SessionResultWithSubjectAveragesSchema) } },
+  },
+  "GET /api/session-results/:studentId/:academicSessionId": {
+    summary: "Get a student's session-level rollup result, with its per-subject averages",
+    requestParams: studentSessionParamsSchema,
+    responses: { 200: { description: "OK", schema: SessionResultWithSubjectAveragesSchema } },
+    scopeNote:
+      `${SCOPE_NOTES.canReadStudent} Same finalized-only visibility and fee-withholding rules as ` +
+      "GET /results/:studentId/:termId, checked session-wide (any outstanding obligation anywhere in " +
+      "the session withholds this) rather than against one term — see the 402 response below. Release " +
+      "is per-term only; a term's release does not affect this session-wide check.",
   },
   "PATCH /api/results/:id/class-teacher-comment": {
     summary: "Write the class/form teacher's comment on a DRAFT result — not an override, no ResultOverride row",

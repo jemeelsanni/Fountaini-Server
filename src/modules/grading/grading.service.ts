@@ -1,7 +1,11 @@
 import { Prisma } from "../../../generated/prisma/index.js";
 import { prisma } from "../../db/client.js";
 import { AppError } from "../../errors/AppError.js";
-import type { CreateAssessmentComponentBody, CreateGradeBandBody } from "./grading.schemas.js";
+import type {
+  CreateAssessmentComponentBody,
+  CreateGradeBandBody,
+  CreateGradingScaleBody,
+} from "./grading.schemas.js";
 
 function isUniqueConstraintError(err: unknown): boolean {
   return err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002";
@@ -33,14 +37,16 @@ export function listAssessmentComponents(academicSessionId: string) {
   });
 }
 
-export async function createGradingScale(academicSessionId: string) {
+export async function createGradingScale(academicSessionId: string, input: CreateGradingScaleBody) {
   const session = await prisma.academicSession.findUnique({ where: { id: academicSessionId } });
   if (!session) {
     throw AppError.notFound("Academic session not found");
   }
 
   try {
-    return await prisma.gradingScale.create({ data: { academicSessionId } });
+    return await prisma.gradingScale.create({
+      data: { academicSessionId, sessionAverageMethod: input.sessionAverageMethod },
+    });
   } catch (err) {
     if (isUniqueConstraintError(err)) {
       throw AppError.conflict("A grading scale already exists for this session");

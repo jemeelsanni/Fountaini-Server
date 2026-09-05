@@ -201,6 +201,8 @@ export const BESPOKE_ROUTE_KEYS: readonly string[] = [
   "POST /api/students/:id/qr-code/rotate",
   "GET /api/students/:id/qr-code",
   "PATCH /api/notifications/:id/read",
+  "GET /api/session-results/:studentId/:academicSessionId",
+  "PUT /api/classes/:id/results/:termId/ratings",
 ];
 
 let uniqueCounter = 0;
@@ -256,6 +258,13 @@ async function buildSharedWorld(generics: GenericActors) {
       termId: term.id,
       status: "DRAFT",
     },
+  });
+
+  // A real Trait for the ratings-write row — canWriteClassRatings shares
+  // canReadClassResults' exact form-teacher-only shape, so its fixture (a
+  // DRAFT targetResult, in `klass`, for `term`) can be reused directly.
+  const trait = await prisma.trait.create({
+    data: { academicSessionId: session.id, category: "AFFECTIVE", name: unique("Matrix Trait"), order: 1 },
   });
 
   const { user: linkedParentUser, parent: linkedParentRow, token: linkedParentToken } = await createParent(
@@ -419,6 +428,7 @@ async function buildSharedWorld(generics: GenericActors) {
     linkedParentId: linkedParentRow.id,
     feeObligationId: feeObligation.id,
     notificationId: notification.id,
+    traitId: trait.id,
   };
 }
 
@@ -667,6 +677,13 @@ export async function buildBespokeRows(generics: GenericActors): Promise<MatrixR
     // separate, non-authorization concern tested directly against
     // results.service.ts (see results.test.ts), not here.
     studentScopeRow("GET /api/students/:id/results", `/api/students/${world.targetStudent.id}/results`),
+    // Same canReadStudent gate, same "allowed includes 404" reasoning as the
+    // per-term result row above — no SessionResult row needs to actually
+    // exist for this to prove who gets past authorization.
+    studentScopeRow(
+      "GET /api/session-results/:studentId/:academicSessionId",
+      `/api/session-results/${world.targetStudent.id}/${world.session.id}`,
+    ),
     {
       name: "GET /api/students/:id/parents",
       method: "get",
@@ -835,6 +852,20 @@ export async function buildBespokeRows(generics: GenericActors): Promise<MatrixR
       setup: () =>
         Promise.resolve({
           url: `/api/classes/${world.class.id}/results/${world.term.id}`,
+          tokens: classTeacherCommentTokens,
+        }),
+    },
+    // canWriteClassRatings delegates directly to canReadClassResults — same
+    // shape, same shared case list/tokens. targetResult is DRAFT, so this is
+    // also exercising the "only while DRAFT" write path for real.
+    {
+      name: "PUT /api/classes/:id/results/:termId/ratings",
+      method: "put",
+      cases: CLASS_TEACHER_COMMENT_CASES,
+      setup: () =>
+        Promise.resolve({
+          url: `/api/classes/${world.class.id}/results/${world.term.id}/ratings`,
+          body: { entries: [{ studentId: world.targetStudent.id, traitId: world.traitId, value: 5 }] },
           tokens: classTeacherCommentTokens,
         }),
     },

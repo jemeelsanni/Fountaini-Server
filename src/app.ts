@@ -17,6 +17,7 @@ import { gradingRouter } from "./modules/grading/grading.routes.js";
 import { madrassahRouter } from "./modules/madrassah/madrassah.routes.js";
 import { notificationsRouter } from "./modules/notifications/notifications.routes.js";
 import { parentsRouter } from "./modules/parents/parents.routes.js";
+import { ratingsRouter } from "./modules/ratings/ratings.routes.js";
 import { resultsRouter } from "./modules/results/results.routes.js";
 import { schoolRouter } from "./modules/school/school.routes.js";
 import { scoresRouter } from "./modules/scores/scores.routes.js";
@@ -55,6 +56,7 @@ export const routeMounts: RouteMount[] = [
   { prefix: "/api", router: gradingRouter },
   { prefix: "/api", router: scoresRouter },
   { prefix: "/api", router: resultsRouter },
+  { prefix: "/api", router: ratingsRouter },
   { prefix: "/api", router: attendanceRouter },
   { prefix: "/api", router: feesRouter },
   { prefix: "/api", router: notificationsRouter },

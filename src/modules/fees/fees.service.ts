@@ -128,7 +128,11 @@ export async function generateObligations(feeStructureId: string, actorUserId: s
   return prisma.feeObligation.findMany({ where: { feeStructureId, studentId: { in: studentIds } } });
 }
 
-function withBalance<T extends { amountDueKobo: number; payments: { amountKobo: number }[] }>(obligation: T) {
+/// Exported for results.service.ts's fee-withholding check (Feature D) —
+/// the authoritative "how much is actually still owed" math lives in
+/// exactly one place, used both for the obligation-list/read responses and
+/// for deciding whether a result should be withheld.
+export function withBalance<T extends { amountDueKobo: number; payments: { amountKobo: number }[] }>(obligation: T) {
   const totalPaidKobo = obligation.payments.reduce((sum, p) => sum + p.amountKobo, 0);
   return { ...obligation, totalPaidKobo, outstandingKobo: obligation.amountDueKobo - totalPaidKobo };
 }

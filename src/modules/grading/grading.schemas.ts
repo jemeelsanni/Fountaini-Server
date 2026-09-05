@@ -12,6 +12,21 @@ export const createAssessmentComponentSchema = z.object({
 });
 export type CreateAssessmentComponentBody = z.infer<typeof createAssessmentComponentSchema>;
 
+/// A whole-body `.default({})`, not just an optional field: existing callers
+/// send no body at all for this route (it used to have no body schema), so
+/// req.body arrives as `undefined`, which a bare z.object(...) rejects
+/// regardless of its fields' own optionality — `.default({})` is what makes
+/// "no body sent" and "empty body sent" both valid, defaulting to
+/// SESSION_AVERAGE (matching GradingScale's own DB default) either way. See
+/// computeSessionResultsForClass in results.service.ts for the config flag
+/// this actually feeds.
+export const createGradingScaleSchema = z
+  .object({
+    sessionAverageMethod: z.enum(["SESSION_AVERAGE", "FINAL_TERM_CARRIES"]).optional(),
+  })
+  .default({});
+export type CreateGradingScaleBody = z.infer<typeof createGradingScaleSchema>;
+
 export const createGradeBandSchema = z
   .object({
     grade: z.string().min(1),
