@@ -4,6 +4,7 @@ import {
   ForbiddenErrorSchema,
   NoRolesAssignedErrorSchema,
   NotFoundErrorSchema,
+  PaymentRequiredErrorSchema,
   UnauthorizedErrorSchema,
   ValidationErrorSchema,
 } from "./errorSchemas.js";
@@ -45,6 +46,19 @@ export const CONFLICT_ROUTE_KEYS: ReadonlySet<string> = new Set([
   "POST /api/timetable-entries",
   "POST /api/school",
   "DELETE /api/fee-structures/:id",
+  "PUT /api/classes/:id/results/:termId/ratings",
+  "POST /api/academic-sessions/:id/traits",
+]);
+
+/// Routes whose service layer can throw AppError.paymentRequired(...) — see
+/// PaymentRequiredErrorSchema's own comment on why this status is worth
+/// documenting explicitly rather than leaving it to fall out of a generic
+/// error handler. Kept as its own explicit list for the same reason
+/// CONFLICT_ROUTE_KEYS is: "can this route 402" isn't a runtime-visible
+/// property of the route itself.
+export const PAYMENT_REQUIRED_ROUTE_KEYS: ReadonlySet<string> = new Set([
+  "GET /api/results/:studentId/:termId",
+  "GET /api/session-results/:studentId/:academicSessionId",
 ]);
 
 /// login/refresh are PUBLIC (no requireRole in front to ever produce an
@@ -115,6 +129,13 @@ export function commonErrorResponses(
 
   if (CONFLICT_ROUTE_KEYS.has(routeKey)) {
     out[409] = { description: "Conflicts with the resource's current state", schema: ConflictErrorSchema };
+  }
+
+  if (PAYMENT_REQUIRED_ROUTE_KEYS.has(routeKey)) {
+    out[402] = {
+      description: "Withheld pending payment of an outstanding fee balance — see schema for details",
+      schema: PaymentRequiredErrorSchema,
+    };
   }
 
   return out;

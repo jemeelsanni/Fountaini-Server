@@ -316,6 +316,22 @@ export async function canReadClassResults(
   return isFormTeacherOfClass(principal.staffId, classId, term.academicSessionId);
 }
 
+/// "The form teacher may write affective/psychomotor ratings for their own
+/// class's students, for a term" — same shape as canReadClassResults (ADMIN,
+/// or the form teacher of this class+term specifically, not any subject
+/// teacher), kept as its own named resolver rather than reusing
+/// canReadClassResults directly so a reader of authMatrix.data.ts or the
+/// route definition sees a write-shaped name, matching how
+/// canWriteClassTeacherComment is its own function even though it also
+/// ultimately calls isFormTeacherOfClass.
+export async function canWriteClassRatings(
+  principal: Principal,
+  classId: string,
+  termId: string,
+): Promise<boolean> {
+  return canReadClassResults(principal, classId, termId);
+}
+
 /// Self-access only (plus ADMIN) — the Student-record analog of
 /// canReadStaff/canReadParent. No DB lookup needed: Student.id is already
 /// carried on the Principal as studentId. Backs QR code self-rotation/read.

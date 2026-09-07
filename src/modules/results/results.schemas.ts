@@ -26,6 +26,26 @@ export const computeResultsSchema = z.object({
 });
 export type ComputeResultsBody = z.infer<typeof computeResultsSchema>;
 
+export const computeSessionResultsSchema = z.object({
+  classId: z.string().min(1),
+  academicSessionId: z.string().min(1),
+});
+export type ComputeSessionResultsBody = z.infer<typeof computeSessionResultsSchema>;
+
+export const studentSessionParamsSchema = z.object({
+  studentId: z.string().min(1),
+  academicSessionId: z.string().min(1),
+});
+export type StudentSessionParams = z.infer<typeof studentSessionParamsSchema>;
+
+/// Same validation as overrideResultSchema's reason — a release is an
+/// override of a computed rule and follows its exact pattern (see
+/// releaseWithholding in results.service.ts).
+export const releaseWithholdingSchema = z.object({
+  reason: z.string().min(10, "A meaningful reason is required to release a withheld result"),
+});
+export type ReleaseWithholdingBody = z.infer<typeof releaseWithholdingSchema>;
+
 export const OVERRIDABLE_FIELDS = [
   "totalScore",
   "averageScore",

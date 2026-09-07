@@ -1312,6 +1312,9 @@
             "type": "string",
             "description": "cuid"
           },
+          "sessionAverageMethod": {
+            "$ref": "#/components/schemas/SessionAverageMethod"
+          },
           "createdAt": {
             "type": "string",
             "format": "date-time"
@@ -1320,7 +1323,15 @@
         "required": [
           "id",
           "academicSessionId",
+          "sessionAverageMethod",
           "createdAt"
+        ]
+      },
+      "SessionAverageMethod": {
+        "type": "string",
+        "enum": [
+          "SESSION_AVERAGE",
+          "FINAL_TERM_CARRIES"
         ]
       },
       "GradingScaleWithBands": {
@@ -1696,13 +1707,28 @@
             "type": [
               "integer",
               "null"
-            ]
+            ],
+            "description": "Class-relative rank, snapshotted once every actively-enrolled student in this class+term is FINALIZED (ties share a position, the next position skips: 1, 2, 2, 4). Null until then — a class that never reaches 100% finalized stays null for everyone in it unless an admin runs POST /classes/:id/results/:termId/rank."
           },
           "outOf": {
             "type": [
               "integer",
               "null"
             ]
+          },
+          "daysPresent": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Snapshotted at finalize time — PRESENT+LATE, CLOSED sessions only. Never recomputed."
+          },
+          "daysSchoolOpened": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Snapshotted at finalize time — count of CLOSED AttendanceSessions. Never recomputed."
           },
           "classTeacherComment": {
             "type": [
@@ -1744,6 +1770,10 @@
             ],
             "format": "date-time"
           },
+          "feeWithholdingReleased": {
+            "type": "boolean",
+            "description": "Set by POST /results/:id/release-withholding — an ADMIN override, per term."
+          },
           "createdAt": {
             "type": "string",
             "format": "date-time"
@@ -1763,12 +1793,15 @@
           "averageScore",
           "position",
           "outOf",
+          "daysPresent",
+          "daysSchoolOpened",
           "classTeacherComment",
           "principalComment",
           "submittedByUserId",
           "submittedAt",
           "finalizedByUserId",
           "finalizedAt",
+          "feeWithholdingReleased",
           "createdAt",
           "updatedAt"
         ]
@@ -1779,6 +1812,164 @@
           "DRAFT",
           "SUBMITTED",
           "FINALIZED"
+        ]
+      },
+      "ResultWithRatings": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Result"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "ratings": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/RatingWithTrait"
+                }
+              }
+            },
+            "required": [
+              "ratings"
+            ]
+          }
+        ]
+      },
+      "RatingWithTrait": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "studentId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "termId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "value": {
+            "type": "integer"
+          },
+          "enteredByUserId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "enteredAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedByUserId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "cuid"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "trait": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "cuid"
+              },
+              "category": {
+                "$ref": "#/components/schemas/TraitCategory"
+              },
+              "name": {
+                "type": "string"
+              },
+              "order": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "category",
+              "name",
+              "order"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "studentId",
+          "termId",
+          "value",
+          "enteredByUserId",
+          "enteredAt",
+          "updatedByUserId",
+          "updatedAt",
+          "trait"
+        ]
+      },
+      "TraitCategory": {
+        "type": "string",
+        "enum": [
+          "AFFECTIVE",
+          "PSYCHOMOTOR"
+        ]
+      },
+      "PaymentRequiredError": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "PAYMENT_REQUIRED"
+                ]
+              },
+              "message": {
+                "type": "string"
+              },
+              "details": {
+                "type": "object",
+                "properties": {
+                  "outstandingKobo": {
+                    "type": "integer"
+                  },
+                  "feeObligationIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "outstandingKobo",
+                  "feeObligationIds"
+                ]
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "details"
+            ]
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "description": "IMPORTANT — handle this status explicitly; an unhandled 402 renders as a generic error and defeats the point of this response. The result exists and is FINALIZED, but is withheld because the student has an outstanding fee balance for this term (or a session-wide, not-term-specific fee) — partial payment does not release it. Distinct from 404 (not published yet): a 404 here means check back later, a 402 means the parent has an action to take now. `details.outstandingKobo` and `details.feeObligationIds` are always present, so a client can render a \"pay outstanding balance\" call-to-action directly from this response, without a follow-up request."
+      },
+      "ResultListItem": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/ResultWithTerm"
+          },
+          {
+            "$ref": "#/components/schemas/WithheldResultListItem"
+          }
         ]
       },
       "ResultWithTerm": {
@@ -1833,6 +2024,75 @@
           }
         ]
       },
+      "WithheldResultListItem": {
+        "type": "object",
+        "properties": {
+          "termId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "term": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "cuid"
+              },
+              "name": {
+                "type": "string"
+              },
+              "order": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "order"
+            ]
+          },
+          "session": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "cuid"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "WITHHELD"
+            ]
+          },
+          "outstandingKobo": {
+            "type": "integer"
+          },
+          "feeObligationIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "description": "cuid"
+            }
+          }
+        },
+        "required": [
+          "termId",
+          "term",
+          "session",
+          "status",
+          "outstandingKobo",
+          "feeObligationIds"
+        ]
+      },
       "ResultWithStudent": {
         "allOf": [
           {
@@ -1849,6 +2109,200 @@
               "student"
             ]
           }
+        ]
+      },
+      "SessionResultWithSubjectAverages": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/SessionResult"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "subjectAverages": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/SessionSubjectAverageWithSubject"
+                }
+              }
+            },
+            "required": [
+              "subjectAverages"
+            ]
+          }
+        ]
+      },
+      "SessionSubjectAverageWithSubject": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/SessionSubjectAverage"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "subject": {
+                "$ref": "#/components/schemas/Subject"
+              }
+            },
+            "required": [
+              "subject"
+            ]
+          }
+        ]
+      },
+      "SessionSubjectAverage": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "sessionResultId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "subjectId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "averageScore": {
+            "type": "string",
+            "description": "Decimal value, serialized as a string"
+          },
+          "termsCounted": {
+            "type": "integer",
+            "description": "How many of the session's terms actually fed this subject's average (display-only — under FINAL_TERM_CARRIES this is always 1, the carried-forward term)."
+          }
+        },
+        "required": [
+          "id",
+          "sessionResultId",
+          "subjectId",
+          "averageScore",
+          "termsCounted"
+        ]
+      },
+      "SessionResult": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "studentId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "enrollmentId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "academicSessionId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ResultStatus"
+          },
+          "averageScore": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Mean of subjectAverages' per-subject averages — never computed independently of them."
+          },
+          "position": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "outOf": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "finalizedByUserId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "cuid"
+          },
+          "finalizedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "studentId",
+          "enrollmentId",
+          "academicSessionId",
+          "status",
+          "averageScore",
+          "position",
+          "outOf",
+          "finalizedByUserId",
+          "finalizedAt",
+          "createdAt"
+        ]
+      },
+      "Trait": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "academicSessionId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "category": {
+            "$ref": "#/components/schemas/TraitCategory"
+          },
+          "name": {
+            "type": "string"
+          },
+          "order": {
+            "type": "integer"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "academicSessionId",
+          "category",
+          "name",
+          "order",
+          "createdAt"
+        ]
+      },
+      "RatingScaleLevel": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "integer"
+          },
+          "label": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "label"
         ]
       },
       "AttendanceSession": {
@@ -7728,7 +8182,7 @@
     },
     "/api/academic-sessions/{id}/grading-scale": {
       "post": {
-        "summary": "Create the grading scale for an academic session",
+        "summary": "Create the grading scale for an academic session, optionally choosing how SessionResult figures are derived (sessionAverageMethod — defaults to SESSION_AVERAGE if omitted)",
         "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
@@ -7749,6 +8203,25 @@
             "in": "path"
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "sessionAverageMethod": {
+                    "type": "string",
+                    "enum": [
+                      "SESSION_AVERAGE",
+                      "FINAL_TERM_CARRIES"
+                    ]
+                  }
+                },
+                "default": {}
+              }
+            }
+          }
+        },
         "responses": {
           "201": {
             "description": "Created",
@@ -8585,8 +9058,8 @@
     },
     "/api/results/{studentId}/{termId}": {
       "get": {
-        "summary": "Get a student's report-card result for a term",
-        "description": "ADMIN, the student's linked parent, the student themself, or a teacher currently assigned to their class. A PARENT or STUDENT caller only ever sees a FINALIZED result — DRAFT/SUBMITTED reads as 404 for them, the same as if compute had never run.",
+        "summary": "Get a student's report-card result for a term, with this term's affective/psychomotor ratings",
+        "description": "ADMIN, the student's linked parent, the student themself, or a teacher currently assigned to their class. A PARENT or STUDENT caller only ever sees a FINALIZED result — DRAFT/SUBMITTED reads as 404 for them, the same as if compute had never run. IMPORTANT: for a PARENT/STUDENT caller, a FINALIZED result with an outstanding fee balance for this term (or a session-wide, not-term-specific fee) is withheld — see the 402 response below, not returned here as 200. Released via POST /results/:id/release-withholding.",
         "security": [
           {
             "bearerAuth": []
@@ -8618,7 +9091,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Result"
+                  "$ref": "#/components/schemas/ResultWithRatings"
                 }
               }
             }
@@ -8639,6 +9112,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Withheld pending payment of an outstanding fee balance — see schema for details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentRequiredError"
                 }
               }
             }
@@ -8669,7 +9152,7 @@
     "/api/students/{id}/results": {
       "get": {
         "summary": "List a student's report-card results across terms, newest first",
-        "description": "ADMIN, the student's linked parent, the student themself, or a teacher currently assigned to their class. A PARENT or STUDENT caller only ever sees FINALIZED results — non-finalized ones are simply omitted from the list, not an error.",
+        "description": "ADMIN, the student's linked parent, the student themself, or a teacher currently assigned to their class. A PARENT or STUDENT caller only ever sees FINALIZED results — non-finalized ones are simply omitted from the list, not an error. A FINALIZED term withheld for an outstanding fee balance (see GET /results/:studentId/:termId) is NOT omitted here — it's still present, but as a reduced WithheldResultListItem (status: \"WITHHELD\" plus the amount owed) in place of the normal result fields, distinguishable by that status value.",
         "security": [
           {
             "bearerAuth": []
@@ -8703,7 +9186,7 @@
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/ResultWithTerm"
+                    "$ref": "#/components/schemas/ResultListItem"
                   }
                 }
               }
@@ -8844,7 +9327,7 @@
     },
     "/api/results/{id}/finalize": {
       "post": {
-        "summary": "Finalize a report-card result, locking it except via override",
+        "summary": "Finalize a report-card result, locking it except via override. Snapshots daysPresent/daysSchoolOpened at this moment (never recomputed later). Once every actively-enrolled student in this class+term is FINALIZED, this call also triggers the class-wide position/outOf pass (ranked strictly among FINALIZED peers, ties sharing a position) — see POST /classes/:id/results/:termId/rank for the admin escape hatch if a class never completes.",
         "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
@@ -8922,6 +9405,95 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ConflictError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/classes/{id}/results/{termId}/rank": {
+      "post": {
+        "summary": "Admin escape hatch: rank whatever's currently FINALIZED for this class+term, unconditionally — for a class that never reaches 100% finalized (e.g. a student withdrew mid-term with incomplete data), so report cards aren't permanently stuck without a position. Ties share a position, the next position skips (1, 2, 2, 4).",
+        "description": "Roles: ADMIN.",
+        "x-roles": [
+          "ADMIN"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "termId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Result"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
                 }
               }
             }
@@ -9014,6 +9586,276 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/results/{id}/release-withholding": {
+      "post": {
+        "summary": "ADMIN release of fee withholding for one FINALIZED result, per term — not per session. A required reason is recorded as an audited ResultOverride (fieldName \"feeWithholdingReleased\"), the same pattern as /override. Idempotent: releasing an already-released result is still 200, with no duplicate audit row.",
+        "description": "Roles: ADMIN.",
+        "x-roles": [
+          "ADMIN"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "minLength": 10
+                  }
+                },
+                "required": [
+                  "reason"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Result"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/session-results/compute": {
+      "post": {
+        "summary": "Roll up a class's students' FINALIZED term results into per-session results, per subject then overall — averaged or carried-forward per GradingScale.sessionAverageMethod. A student with only some terms FINALIZED is averaged over those, never counting a missing term as zero. Purely derived, so every row this produces is immediately FINALIZED — there's no separate finalize step.",
+        "description": "Roles: ADMIN.",
+        "x-roles": [
+          "ADMIN"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "classId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "academicSessionId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "classId",
+                  "academicSessionId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SessionResultWithSubjectAverages"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/session-results/{studentId}/{academicSessionId}": {
+      "get": {
+        "summary": "Get a student's session-level rollup result, with its per-subject averages",
+        "description": "ADMIN, the student's linked parent, the student themself, or a teacher currently assigned to their class. Same finalized-only visibility and fee-withholding rules as GET /results/:studentId/:termId, checked session-wide (any outstanding obligation anywhere in the session withholds this) rather than against one term — see the 402 response below. Release is per-term only; a term's release does not affect this session-wide check.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "studentId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "academicSessionId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionResultWithSubjectAverages"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Withheld pending payment of an outstanding fee balance — see schema for details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentRequiredError"
                 }
               }
             }
@@ -9225,6 +10067,403 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/academic-sessions/{id}/traits": {
+      "post": {
+        "summary": "Create an affective or psychomotor trait (e.g. Punctuality, Handwriting) for an academic session",
+        "description": "Roles: ADMIN.",
+        "x-roles": [
+          "ADMIN"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "category": {
+                    "type": "string",
+                    "enum": [
+                      "AFFECTIVE",
+                      "PSYCHOMOTOR"
+                    ]
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "order": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "category",
+                  "name",
+                  "order"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Trait"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with the resource's current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "List affective/psychomotor traits for an academic session, both categories together",
+        "description": "Roles: ADMIN, BURSAR, PARENT, STUDENT, TEACHER.",
+        "x-roles": [
+          "ADMIN",
+          "BURSAR",
+          "PARENT",
+          "STUDENT",
+          "TEACHER"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Trait"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/rating-scale": {
+      "get": {
+        "summary": "List the fixed 5-point rating scale shared by both trait categories (static reference data)",
+        "description": "Roles: ADMIN, BURSAR, PARENT, STUDENT, TEACHER.",
+        "x-roles": [
+          "ADMIN",
+          "BURSAR",
+          "PARENT",
+          "STUDENT",
+          "TEACHER"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RatingScaleLevel"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/classes/{id}/results/{termId}/ratings": {
+      "put": {
+        "summary": "Bulk upsert affective/psychomotor ratings for a class+term. Only while the targeted student's Result for this term is DRAFT — same rule as the class-teacher comment; rejects (409) the whole batch if any targeted student's result is no longer DRAFT. Appear on the result read once written.",
+        "description": "Roles: ADMIN, TEACHER. ADMIN, or that class's form teacher — not a subject teacher assigned to the class.",
+        "x-roles": [
+          "ADMIN",
+          "TEACHER"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "termId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "entries": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "studentId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "traitId": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "value": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 5
+                        }
+                      },
+                      "required": [
+                        "studentId",
+                        "traitId",
+                        "value"
+                      ]
+                    },
+                    "minItems": 1
+                  }
+                },
+                "required": [
+                  "entries"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RatingWithTrait"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with the resource's current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictError"
                 }
               }
             }

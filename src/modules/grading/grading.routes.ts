@@ -7,6 +7,7 @@ import * as controller from "./grading.controller.js";
 import {
   createAssessmentComponentSchema,
   createGradeBandSchema,
+  createGradingScaleSchema,
   idParamsSchema,
 } from "./grading.schemas.js";
 
@@ -31,7 +32,7 @@ gradingRouter.get(
 gradingRouter.post(
   "/academic-sessions/:id/grading-scale",
   requireRole("ADMIN"),
-  validate({ params: idParamsSchema }),
+  validate({ params: idParamsSchema, body: createGradingScaleSchema }),
   auditMutation("GradingScale", "GRADING_SCALE_CREATED"),
   controller.createGradingScale,
 );
