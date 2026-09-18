@@ -2,16 +2,11 @@ import request from "supertest";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
-import { createAdmin, createParent, createTeacher } from "../../test/factories.js";
+import { createAdmin, createCurrentAcademicSession, createTeacher } from "../../test/factories.js";
 import { resetDb } from "../../test/resetDb.js";
+import { waitForNotification } from "../../test/waitForNotification.js";
 
 const app = createApp();
-
-async function createTeacherUserRecord(email: string) {
-  return prisma.user.create({
-    data: { email, passwordHash: "unused", roles: { create: [{ role: "TEACHER" }] } },
-  });
-}
 
 beforeEach(async () => {
   await resetDb();
@@ -21,53 +16,96 @@ afterAll(async () => {
   await resetDb();
 });
 
+// This block replaces the previous batch's "linking to a PARENT-role user"
+// and "userId"-based tests — POST /api/staff no longer links a
+// pre-existing user (see the report: it now creates the User atomically,
+// choosing its role directly via an enum that excludes PARENT/STUDENT at
+// the schema level, so "wrong role" is no longer a reachable business-
+// logic case, just an ordinary 400 on an invalid enum value).
 describe("POST /api/staff", () => {
-  it("allows an admin to create a staff profile for a TEACHER/ADMIN/BURSAR user", async () => {
+  it("creates a staff profile with a generated staff number and an atomically-created login", async () => {
     const { token } = await createAdmin("admin@test.local");
-    const teacherUser = await createTeacherUserRecord("newteacher@test.local");
+    await createCurrentAcademicSession("2026/2027");
 
     const res = await request(app)
       .post("/api/staff")
       .set("Authorization", `Bearer ${token}`)
-      .send({
-        userId: teacherUser.id,
-        staffNumber: "STF-001",
-        firstName: "Rosalind",
-        lastName: "Franklin",
-      });
+      .send({ role: "TEACHER", email: "rosalind@test.local", firstName: "Rosalind", lastName: "Franklin" });
 
     expect(res.status).toBe(201);
-    expect(res.body.staffNumber).toBe("STF-001");
+    expect(res.body.staffNumber).toBe("FIA/ST2026/001");
+    expect(res.body.temporaryPassword).toBeUndefined();
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: res.body.userId as string } });
+    expect(user.loginId).toBe("FIA/ST2026/001");
+    expect(user.email).toBe("rosalind@test.local");
+    expect(user.mustChangePassword).toBe(true);
+
+    const notification = await waitForNotification(user.id, "Staff", res.body.id as string);
+    expect(notification).not.toBeNull();
+    expect(notification?.type).toBe("CREDENTIALS_ISSUED");
   });
 
-  it("rejects linking to a PARENT-role user", async () => {
+  it("rejects PARENT/STUDENT as a role — every staff record is ADMIN, TEACHER, or BURSAR", async () => {
     const { token } = await createAdmin("admin@test.local");
-    const { user: parentUser } = await createParent("parent@test.local");
+    await createCurrentAcademicSession("2026/2027");
 
     const res = await request(app)
       .post("/api/staff")
       .set("Authorization", `Bearer ${token}`)
-      .send({ userId: parentUser.id, staffNumber: "STF-002", firstName: "X", lastName: "Y" });
+      .send({ role: "PARENT", email: "x@test.local", firstName: "X", lastName: "Y" });
 
     expect(res.status).toBe(400);
   });
 
-  it("rejects a duplicate staff number", async () => {
+  it("rejects a duplicate email with 409", async () => {
     const { token } = await createAdmin("admin@test.local");
-    const userA = await createTeacherUserRecord("a@test.local");
-    const userB = await createTeacherUserRecord("b@test.local");
+    await createCurrentAcademicSession("2026/2027");
 
     await request(app)
       .post("/api/staff")
       .set("Authorization", `Bearer ${token}`)
-      .send({ userId: userA.id, staffNumber: "STF-DUP", firstName: "A", lastName: "One" });
+      .send({ role: "TEACHER", email: "dupe@test.local", firstName: "A", lastName: "One" });
 
     const res = await request(app)
       .post("/api/staff")
       .set("Authorization", `Bearer ${token}`)
-      .send({ userId: userB.id, staffNumber: "STF-DUP", firstName: "B", lastName: "Two" });
+      .send({ role: "BURSAR", email: "dupe@test.local", firstName: "B", lastName: "Two" });
 
     expect(res.status).toBe(409);
+  });
+
+  it("rejects a duplicate staffNumber override with 409", async () => {
+    const { token } = await createAdmin("admin@test.local");
+    await createCurrentAcademicSession("2026/2027");
+
+    await request(app)
+      .post("/api/staff")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ role: "TEACHER", email: "a@test.local", staffNumber: "FIA/ST2019/010", firstName: "A", lastName: "One" });
+
+    const res = await request(app)
+      .post("/api/staff")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ role: "TEACHER", email: "b@test.local", staffNumber: "FIA/ST2019/010", firstName: "B", lastName: "Two" });
+
+    expect(res.status).toBe(409);
+  });
+});
+
+describe("PATCH /api/staff/:id — staffNumber sync", () => {
+  it("changing staffNumber updates the linked User.loginId in the same transaction", async () => {
+    const { token } = await createAdmin("admin@test.local");
+    const { staff } = await createTeacher("teacher@test.local");
+
+    const res = await request(app)
+      .patch(`/api/staff/${staff.id}`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ staffNumber: "FIA/ST2026/099" });
+    expect(res.status).toBe(200);
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: staff.userId } });
+    expect(user.loginId).toBe("FIA/ST2026/099");
   });
 });
 

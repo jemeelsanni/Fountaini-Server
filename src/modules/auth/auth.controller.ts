@@ -10,9 +10,9 @@ import type {
 } from "./auth.schemas.js";
 
 export async function login(req: Request, res: Response): Promise<void> {
-  const { email, password } = req.body as LoginBody;
+  const { identifier, password } = req.body as LoginBody;
   const tokens = await authService.login({
-    email,
+    identifier,
     password,
     ip: req.ip,
     userAgent: req.get("user-agent"),
@@ -55,8 +55,8 @@ export async function changePassword(req: Request, res: Response): Promise<void>
 // internally — see that function's own comment. Nothing here may branch on
 // whether the account existed.
 export async function requestPasswordReset(req: Request, res: Response): Promise<void> {
-  const { email } = req.body as RequestPasswordResetBody;
-  await authService.requestPasswordReset(email);
+  const { identifier } = req.body as RequestPasswordResetBody;
+  await authService.requestPasswordReset(identifier);
   res.status(204).send();
 }
 

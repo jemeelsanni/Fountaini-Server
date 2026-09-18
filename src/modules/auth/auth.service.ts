@@ -2,6 +2,7 @@ import { env } from "../../config/env.js";
 import { prisma } from "../../db/client.js";
 import { AppError } from "../../errors/AppError.js";
 import { createNotification } from "../notifications/notifications.service.js";
+import { resolvePrimaryContactParent } from "../students/students.service.js";
 import { type AccessTokenPayload, signAccessToken } from "./jwt.js";
 import { hashPassword, verifyPassword } from "./password.js";
 import { generateOpaqueToken, hashOpaqueToken } from "./tokens.js";
@@ -15,10 +16,30 @@ export interface IssuedTokens {
 }
 
 interface LoginInput {
-  email: string;
+  identifier: string;
   password: string;
   ip?: string;
   userAgent?: string;
+}
+
+/// The one lookup login()/requestPasswordReset() share: resolve by loginId,
+/// falling back to email — a single OR query rather than two sequential
+/// ones, specifically so a coincidental cross-match (someone's loginId
+/// happens to equal a DIFFERENT person's email) is caught as the
+/// broken-invariant case it actually is, not silently resolved by
+/// whichever field happened to be checked first. Never branches on role —
+/// see the report: a staff-parent is one User with two roles, and "which
+/// field do I check" has no coherent per-role answer for them anyway.
+async function findUserByIdentifier(identifier: string) {
+  const users = await prisma.user.findMany({
+    where: { OR: [{ loginId: identifier }, { email: identifier }] },
+  });
+  if (users.length > 1) {
+    throw AppError.internal(
+      `Identifier resolved to more than one account — a uniqueness invariant has broken`,
+    );
+  }
+  return users[0] ?? null;
 }
 
 async function buildAccessTokenPayload(userId: string): Promise<AccessTokenPayload> {
@@ -73,15 +94,15 @@ async function issueTokenPair(userId: string, ip?: string, userAgent?: string): 
 }
 
 export async function login(input: LoginInput): Promise<IssuedTokens> {
-  const user = await prisma.user.findUnique({ where: { email: input.email } });
+  const user = await findUserByIdentifier(input.identifier);
 
   if (!user || !user.isActive) {
-    throw AppError.unauthorized("Invalid email or password");
+    throw AppError.unauthorized("Invalid identifier or password");
   }
 
   const validPassword = await verifyPassword(user.passwordHash, input.password);
   if (!validPassword) {
-    throw AppError.unauthorized("Invalid email or password");
+    throw AppError.unauthorized("Invalid identifier or password");
   }
 
   await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
@@ -161,7 +182,10 @@ export async function changePassword(
   const newHash = await hashPassword(newPassword);
 
   await prisma.$transaction([
-    prisma.user.update({ where: { id: userId }, data: { passwordHash: newHash } }),
+    prisma.user.update({
+      where: { id: userId },
+      data: { passwordHash: newHash, mustChangePassword: false },
+    }),
     prisma.refreshToken.updateMany({
       where: { userId, revokedAt: null },
       data: { revokedAt: new Date() },
@@ -170,17 +194,38 @@ export async function changePassword(
 }
 
 /// Deliberately returns the same thing (nothing, no throw) whether or not
-/// `email` belongs to a real, active account — the caller must never be
-/// able to tell the two cases apart from the response, or this endpoint
-/// becomes an account-enumeration oracle. If the account exists, a real
-/// token is created and handed to the existing notification provider
-/// interface (see notifications.service.ts) exactly like every other
-/// notification in this codebase — nothing password-reset-specific about
-/// how the message actually gets delivered.
-export async function requestPasswordReset(email: string): Promise<void> {
-  const user = await prisma.user.findUnique({ where: { email } });
+/// `identifier` belongs to a real, active account with somewhere to send
+/// the mail — the caller must never be able to tell any of these cases
+/// apart from the response, or this endpoint becomes an account-
+/// enumeration oracle. That matters more here than it did when this only
+/// took an email: admission numbers are sequential and trivially
+/// enumerable (FIA/2026/001 through FIA/2026/400 is a guessable space in a
+/// way email addresses aren't), so the generic response and the existing
+/// rate limit are load-bearing, not belt-and-braces.
+///
+/// Destination resolution: the user's own email if set; otherwise, if the
+/// user is a student, their primary-contact (or earliest-linked, if none
+/// is flagged primary) parent's email; otherwise nothing is sent. The
+/// PasswordResetToken is still always issued against the account actually
+/// being reset (`user.id`) — only the notification's recipient differs
+/// when it's redirected to a parent, same as credential delivery.
+export async function requestPasswordReset(identifier: string): Promise<void> {
+  const user = await findUserByIdentifier(identifier);
   if (!user || !user.isActive) {
     return;
+  }
+
+  let recipientUserId: string;
+  if (user.email) {
+    recipientUserId = user.id;
+  } else {
+    const student = await prisma.student.findUnique({ where: { userId: user.id }, select: { id: true } });
+    const contact = student ? await resolvePrimaryContactParent(student.id) : null;
+    const parentEmail = contact?.parent.user.email;
+    if (!contact || !parentEmail) {
+      return;
+    }
+    recipientUserId = contact.parent.userId;
   }
 
   const rawToken = generateOpaqueToken();
@@ -196,7 +241,7 @@ export async function requestPasswordReset(email: string): Promise<void> {
   // a query param; nothing else about this flow would need to change.
   await createNotification({
     type: "PASSWORD_RESET",
-    recipientUserId: user.id,
+    recipientUserId,
     subject: "Reset your password",
     body:
       `A password reset was requested for this account. Submit the following token to ` +

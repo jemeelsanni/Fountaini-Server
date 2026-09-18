@@ -92,7 +92,15 @@ export const SchoolSchema = z
 export const UserSummarySchema = z
   .object({
     id: id(),
+    loginId: z.string().openapi({
+      description:
+        "What this account actually signs in with — an admission/staff number for a " +
+        "Student/Staff-linked user, otherwise their email.",
+    }),
     email: z.string().nullable(),
+    mustChangePassword: z.boolean().openapi({
+      description: "True until this account changes its (admin-generated) password for the first time.",
+    }),
     roles: z.array(RoleSchema),
     isActive: z.boolean(),
     createdAt: isoDateTime(),
@@ -152,6 +160,21 @@ export const StudentSchema = z
     updatedAt: isoDateTime(),
   })
   .openapi("Student");
+
+/// POST /api/students and PATCH /api/students/:id (issueLogin: true) both
+/// return this shape — temporaryPassword is present ONLY when a login was
+/// just issued and there was nowhere to deliver it (no email of the
+/// student's own, no linked parent with one either): see the report,
+/// Section C. Whenever a real destination exists, credentials are
+/// delivered by notification instead and this field is absent.
+export const StudentWithOptionalTemporaryPasswordSchema = StudentSchema.extend({
+  temporaryPassword: z.string().optional().openapi({
+    description:
+      "Present only when issueLogin created a login with no delivery destination (no own email, " +
+      "no linked parent with one) — the one-time generated password, returned so an admin can hand " +
+      "it over on paper. Absent whenever a notification was sent instead.",
+  }),
+}).openapi("StudentWithOptionalTemporaryPassword");
 
 export const StudentParentSchema = z
   .object({

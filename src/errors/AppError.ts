@@ -49,4 +49,22 @@ export class AppError extends Error {
   static paymentRequired(message: string, details?: unknown): AppError {
     return new AppError(402, "PAYMENT_REQUIRED", message, details);
   }
+
+  /// A genuinely unexpected server-side state, not a client mistake — e.g.
+  /// login()'s loginId-then-email lookup matching more than one User, which
+  /// can only mean a uniqueness invariant already broke. Named and thrown
+  /// explicitly (rather than left to fall through to app.ts's generic
+  /// unhandled-error 500) so it's greppable in logs as its own failure mode.
+  static internal(message: string): AppError {
+    return new AppError(500, "INTERNAL_ERROR", message);
+  }
+
+  /// Distinct from forbidden(): the account is fully authenticated and
+  /// would otherwise be permitted, but is carrying a server-generated
+  /// password it must replace first. A distinct code (not a generic 403) so
+  /// the client can branch straight to "show the change-password screen"
+  /// instead of treating this like an ordinary permission failure.
+  static mustChangePassword(message = "This account must change its password before continuing"): AppError {
+    return new AppError(403, "MUST_CHANGE_PASSWORD", message);
+  }
 }

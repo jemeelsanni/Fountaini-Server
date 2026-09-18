@@ -245,11 +245,19 @@
             "type": "string",
             "description": "cuid"
           },
+          "loginId": {
+            "type": "string",
+            "description": "What this account actually signs in with — an admission/staff number for a Student/Staff-linked user, otherwise their email."
+          },
           "email": {
             "type": [
               "string",
               "null"
             ]
+          },
+          "mustChangePassword": {
+            "type": "boolean",
+            "description": "True until this account changes its (admin-generated) password for the first time."
           },
           "roles": {
             "type": "array",
@@ -274,12 +282,42 @@
         },
         "required": [
           "id",
+          "loginId",
           "email",
+          "mustChangePassword",
           "roles",
           "isActive",
           "createdAt",
           "lastLoginAt"
         ]
+      },
+      "MustChangePasswordError": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "MUST_CHANGE_PASSWORD"
+                ]
+              },
+              "message": {
+                "type": "string"
+              },
+              "details": {}
+            },
+            "required": [
+              "code",
+              "message"
+            ]
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "description": "The account authenticated successfully, but must change its (admin-generated) password before doing anything else. Call POST /api/auth/change-password — GET /api/auth/me also still works."
       },
       "ConflictError": {
         "type": "object",
@@ -336,6 +374,42 @@
           "error"
         ],
         "description": "No resource exists at the given id (or, for a nested path, at that combination of ids)."
+      },
+      "StudentWithOptionalTemporaryPassword": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Student"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "temporaryPassword": {
+                "type": "string",
+                "description": "Present only when issueLogin created a login with no delivery destination (no own email, no linked parent with one) — the one-time generated password, returned so an admin can hand it over on paper. Absent whenever a notification was sent instead."
+              }
+            }
+          }
+        ]
+      },
+      "Gender": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "enum": [
+          "MALE",
+          "FEMALE",
+          null
+        ]
+      },
+      "StudentStatus": {
+        "type": "string",
+        "enum": [
+          "ACTIVE",
+          "GRADUATED",
+          "WITHDRAWN",
+          "INACTIVE"
+        ]
       },
       "Student": {
         "type": "object",
@@ -405,26 +479,6 @@
           "status",
           "createdAt",
           "updatedAt"
-        ]
-      },
-      "Gender": {
-        "type": [
-          "string",
-          "null"
-        ],
-        "enum": [
-          "MALE",
-          "FEMALE",
-          null
-        ]
-      },
-      "StudentStatus": {
-        "type": "string",
-        "enum": [
-          "ACTIVE",
-          "GRADUATED",
-          "WITHDRAWN",
-          "INACTIVE"
         ]
       },
       "Enrollment": {
@@ -3586,7 +3640,7 @@
     },
     "/api/auth/login": {
       "post": {
-        "summary": "Log in with email and password (public)",
+        "summary": "BREAKING CHANGE — log in with `identifier` + password (public), not `email` + password. `identifier` is whatever this account actually signs in with: an admission number for a student, a staff number for staff, or an email for anyone else (a parent, or a bare account with no linked record) — resolved by a single lookup, never branched by role. There is no backwards-compatible `email` fallback; this is a clean break, not a union of the two shapes.",
         "description": "Public — no authentication required.",
         "requestBody": {
           "content": {
@@ -3594,9 +3648,9 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "email": {
+                  "identifier": {
                     "type": "string",
-                    "format": "email"
+                    "minLength": 1
                   },
                   "password": {
                     "type": "string",
@@ -3604,7 +3658,7 @@
                   }
                 },
                 "required": [
-                  "email",
+                  "identifier",
                   "password"
                 ]
               }
@@ -3762,7 +3816,7 @@
     },
     "/api/auth/forgot-password": {
       "post": {
-        "summary": "Request a password reset email (public). Always responds 204 regardless of whether the email belongs to an account — the response never reveals whether an address is registered.",
+        "summary": "BREAKING CHANGE — takes `identifier` (a loginId or an email), not `email`. Always responds 204 regardless of whether the identifier belongs to an account, has an email to send to, or neither — the response never reveals which case it was. Destination: the account's own email if set; otherwise, for a student, their primary-contact (or earliest-linked) parent's email; otherwise nothing is sent. This matters more than it did for a bare email lookup: admission numbers are sequential and trivially enumerable, so this endpoint's generic response and its rate limit are load-bearing, not belt-and-braces.",
         "description": "Public — no authentication required.",
         "requestBody": {
           "content": {
@@ -3770,13 +3824,13 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "email": {
+                  "identifier": {
                     "type": "string",
-                    "format": "email"
+                    "minLength": 1
                   }
                 },
                 "required": [
-                  "email"
+                  "identifier"
                 ]
               }
             }
@@ -3971,7 +4025,7 @@
     },
     "/api/users": {
       "post": {
-        "summary": "Create a user account with one role",
+        "summary": "BREAKING CHANGE — narrowed to PARENT (and a bare ADMIN/TEACHER/BURSAR account with no Staff record of its own); STUDENT is rejected — every student is created via POST /api/students instead, atomically. No more `password` field: the password is always generated, never admin-chosen — mustChangePassword starts true, and credentials are emailed to `email`, which also becomes this account's loginId.",
         "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
@@ -3991,24 +4045,18 @@
                     "type": "string",
                     "format": "email"
                   },
-                  "password": {
-                    "type": "string",
-                    "minLength": 8
-                  },
                   "role": {
                     "type": "string",
                     "enum": [
                       "ADMIN",
                       "TEACHER",
                       "PARENT",
-                      "STUDENT",
                       "BURSAR"
                     ]
                   }
                 },
                 "required": [
                   "email",
-                  "password",
                   "role"
                 ]
               }
@@ -4047,11 +4095,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -4104,11 +4159,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -4171,11 +4233,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -4248,11 +4317,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -4325,11 +4401,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -4349,7 +4432,7 @@
     },
     "/api/students": {
       "post": {
-        "summary": "Create a student",
+        "summary": "BREAKING CHANGE — admissionNumber is server-generated (FIA/<year>/<seq>) unless explicitly overridden for a legacy paper-record import; there is no more `userId` field. Set issueLogin: true to also create a login atomically (loginId derived from the generated/overridden admissionNumber, generated password, mustChangePassword: true) — but note a parent can't be linked yet at this point (the student doesn't exist until this call returns), so the common case is to leave this false and issue the login later via PATCH /api/students/:id once a parent is linked. If issueLogin has nowhere to deliver the password (no own email, no linked parent — only possible here, not via the PATCH path), `temporaryPassword` is returned once in the response instead.",
         "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
@@ -4367,7 +4450,7 @@
                 "properties": {
                   "admissionNumber": {
                     "type": "string",
-                    "minLength": 1
+                    "pattern": "^FIA\\/\\d{4}\\/\\d{3}$"
                   },
                   "firstName": {
                     "type": "string",
@@ -4402,13 +4485,16 @@
                     ],
                     "format": "date-time"
                   },
-                  "userId": {
+                  "issueLogin": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "email": {
                     "type": "string",
-                    "minLength": 1
+                    "format": "email"
                   }
                 },
                 "required": [
-                  "admissionNumber",
                   "firstName",
                   "lastName"
                 ]
@@ -4422,7 +4508,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Student"
+                  "$ref": "#/components/schemas/StudentWithOptionalTemporaryPassword"
                 }
               }
             }
@@ -4448,11 +4534,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -4505,11 +4598,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -4569,11 +4669,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -4591,7 +4698,7 @@
         }
       },
       "patch": {
-        "summary": "Update a student. userId may only be set once, while it's still null — 409 if the student already has one, or if the target user is already linked to a different student.",
+        "summary": "BREAKING CHANGE — the old `userId` field (attach an already-existing user) is gone; replaced by `issueLogin: true`, which creates a brand-new User instead, with loginId derived from this student's own admissionNumber. 409 if this student already has a linked user. Credentials are delivered to the student's own email if given, else their primary-contact (or earliest-linked) parent's email; `temporaryPassword` is returned once in the response only if neither destination exists. Changing admissionNumber also updates the linked User.loginId, in the same transaction, when one exists.",
         "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
@@ -4620,7 +4727,7 @@
                 "properties": {
                   "admissionNumber": {
                     "type": "string",
-                    "minLength": 1
+                    "pattern": "^FIA\\/\\d{4}\\/\\d{3}$"
                   },
                   "firstName": {
                     "type": "string",
@@ -4657,9 +4764,12 @@
                       "INACTIVE"
                     ]
                   },
-                  "userId": {
+                  "issueLogin": {
+                    "type": "boolean"
+                  },
+                  "email": {
                     "type": "string",
-                    "minLength": 1
+                    "format": "email"
                   }
                 }
               }
@@ -4672,7 +4782,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Student"
+                  "$ref": "#/components/schemas/StudentWithOptionalTemporaryPassword"
                 }
               }
             }
@@ -4698,11 +4808,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -4808,11 +4925,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -4893,11 +5017,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -4970,11 +5101,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -5029,11 +5167,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -5125,11 +5270,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -5182,11 +5334,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -5249,11 +5408,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -5330,11 +5496,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -5436,11 +5609,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -5525,11 +5705,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -5549,7 +5736,7 @@
     },
     "/api/staff": {
       "post": {
-        "summary": "Create a staff profile for a TEACHER/ADMIN/BURSAR user",
+        "summary": "BREAKING CHANGE — atomically creates BOTH the User and the Staff record (no more separate POST /api/users step first): choose `role` (ADMIN/TEACHER/BURSAR) and supply `email` directly here. `staffNumber` is server-generated (FIA/ST<year>/<seq>) unless explicitly overridden for a legacy paper-record import. The password is always generated, never admin-chosen — mustChangePassword starts true, and credentials are emailed to `email`.",
         "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
@@ -5565,13 +5752,21 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "userId": {
-                    "type": "string",
-                    "minLength": 1
-                  },
                   "staffNumber": {
                     "type": "string",
-                    "minLength": 1
+                    "pattern": "^FIA\\/ST\\d{4}\\/\\d{3}$"
+                  },
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "ADMIN",
+                      "TEACHER",
+                      "BURSAR"
+                    ]
+                  },
+                  "email": {
+                    "type": "string",
+                    "format": "email"
                   },
                   "firstName": {
                     "type": "string",
@@ -5598,8 +5793,8 @@
                   }
                 },
                 "required": [
-                  "userId",
-                  "staffNumber",
+                  "role",
+                  "email",
                   "firstName",
                   "lastName"
                 ]
@@ -5639,11 +5834,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -5696,11 +5898,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -5760,11 +5969,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -5782,7 +5998,7 @@
         }
       },
       "patch": {
-        "summary": "Update a staff member",
+        "summary": "Update a staff member. Changing staffNumber also updates the linked User.loginId, in the same transaction — the two can never legitimately disagree.",
         "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
@@ -5811,7 +6027,7 @@
                 "properties": {
                   "staffNumber": {
                     "type": "string",
-                    "minLength": 1
+                    "pattern": "^FIA\\/ST\\d{4}\\/\\d{3}$"
                   },
                   "firstName": {
                     "type": "string",
@@ -5876,11 +6092,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -5995,11 +6218,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -6041,11 +6271,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -6125,11 +6362,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -6216,11 +6460,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -6380,11 +6631,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -6447,11 +6705,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -6547,11 +6812,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -6642,11 +6914,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -6752,11 +7031,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -6813,11 +7099,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -6880,11 +7173,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -6996,11 +7296,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -7088,11 +7395,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -7165,11 +7479,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -7261,11 +7582,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -7322,11 +7650,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -7409,11 +7744,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -7470,11 +7812,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -7559,11 +7908,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -7645,11 +8001,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -7705,11 +8068,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -7799,11 +8169,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -7885,11 +8262,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -7945,11 +8329,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -8066,11 +8457,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -8158,11 +8556,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -8254,11 +8659,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -8343,11 +8755,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -8461,11 +8880,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -8552,11 +8978,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -8639,11 +9072,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -8766,11 +9206,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -8875,11 +9322,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -8952,11 +9406,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -9044,11 +9505,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -9127,11 +9595,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -9213,11 +9688,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -9303,11 +9785,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -9380,11 +9869,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -9479,11 +9975,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -9591,11 +10094,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -9686,11 +10196,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -9778,11 +10295,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -9861,11 +10385,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -9957,11 +10488,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -10052,11 +10590,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -10163,11 +10708,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -10255,11 +10807,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -10318,11 +10877,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -10439,11 +11005,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -10551,11 +11124,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -10660,11 +11240,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -10738,11 +11325,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -10853,11 +11447,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -10930,11 +11531,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -11023,11 +11631,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -11101,11 +11716,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -11179,11 +11801,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -11293,11 +11922,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -11361,11 +11997,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -11448,11 +12091,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -11517,11 +12167,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -11608,11 +12265,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -11685,11 +12349,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -11759,11 +12430,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -11869,11 +12547,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -11981,11 +12666,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -12059,11 +12751,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -12147,11 +12846,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -12231,11 +12937,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -12308,11 +13021,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -12371,11 +13091,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -12435,11 +13162,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -12495,11 +13229,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -12570,11 +13311,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -12697,11 +13445,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -12764,11 +13519,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -12827,11 +13589,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -12919,11 +13688,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -12970,11 +13746,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -13061,11 +13844,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -13131,11 +13921,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -13208,11 +14005,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -13285,11 +14089,18 @@
             }
           },
           "403": {
-            "description": "Not permitted to perform this action",
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ForbiddenError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }

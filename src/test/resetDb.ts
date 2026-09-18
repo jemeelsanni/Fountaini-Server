@@ -8,6 +8,7 @@ import { prisma } from "../db/client.js";
 export async function resetDb(): Promise<void> {
   await prisma.$transaction([
     prisma.auditLog.deleteMany(),
+    prisma.identifierCounter.deleteMany(),
     prisma.notificationEvent.deleteMany(),
     prisma.resultOverride.deleteMany(),
     prisma.sessionSubjectAverage.deleteMany(),

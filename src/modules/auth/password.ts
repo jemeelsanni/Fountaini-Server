@@ -1,5 +1,27 @@
+import { randomInt } from "node:crypto";
 import argon2 from "argon2";
 import { env } from "../../config/env.js";
+
+/// No ambiguous characters (0/O, 1/I/l) — this is read off a screen or a
+/// printed slip and typed back in by hand, often by someone other than the
+/// account holder (an admin handing a slip to a parent). 12 characters from
+/// a 57-symbol alphabet is comfortably above changePasswordSchema's min(8)
+/// floor and this codebase's other generated-secret sizes are chosen the
+/// same way — entropy that matters, not memorability.
+const TEMP_PASSWORD_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+const TEMP_PASSWORD_LENGTH = 12;
+
+/// Used for every admin-created account (POST /api/users, /students,
+/// /staff) — the admin no longer chooses a password, so the account always
+/// starts with mustChangePassword: true (see requireAuth in
+/// authorization/middleware.ts) until the real owner sets their own.
+export function generateTemporaryPassword(): string {
+  let password = "";
+  for (let i = 0; i < TEMP_PASSWORD_LENGTH; i++) {
+    password += TEMP_PASSWORD_ALPHABET[randomInt(TEMP_PASSWORD_ALPHABET.length)];
+  }
+  return password;
+}
 
 /// Test-only, and the lowest parameters argon2id's own C library will
 /// accept — libargon2 rejects memoryCost below 8 * parallelism and

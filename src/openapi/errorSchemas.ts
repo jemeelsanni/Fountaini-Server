@@ -42,6 +42,20 @@ export const ForbiddenErrorSchema = errorSchema(
     "relationship to the specific resource, don't satisfy this route's guard.",
 );
 
+/// Returned instead of the route's own 403/200 by requireAuth itself (see
+/// authorization/middleware.ts) whenever the caller's account is still
+/// carrying a server-generated password — every authenticated route except
+/// GET /api/auth/me and POST /api/auth/change-password can produce this,
+/// regardless of what that route would otherwise have done. A distinct
+/// code so the client can branch straight to "show the change-password
+/// screen" instead of treating it like an ordinary permission failure.
+export const MustChangePasswordErrorSchema = errorSchema(
+  "MustChangePasswordError",
+  "MUST_CHANGE_PASSWORD",
+  "The account authenticated successfully, but must change its (admin-generated) password before " +
+    "doing anything else. Call POST /api/auth/change-password — GET /api/auth/me also still works.",
+);
+
 /// A distinct code from ForbiddenError on purpose: "this account holds no
 /// roles at all" is an account-provisioning problem, not an ordinary
 /// per-action permission failure — see AppError.noRolesAssigned()'s own

@@ -9,7 +9,9 @@ const app = createApp();
 
 async function createParentUserRecord(email: string) {
   const passwordHash = "unused";
-  return prisma.user.create({ data: { email, passwordHash, roles: { create: [{ role: "PARENT" }] } } });
+  return prisma.user.create({
+    data: { loginId: email, email, passwordHash, roles: { create: [{ role: "PARENT" }] } },
+  });
 }
 
 beforeEach(async () => {
@@ -94,6 +96,30 @@ describe("child linking", () => {
       .send(body);
 
     expect(res.status).toBe(409);
+  });
+
+  it("rejects a second parent marked primary contact for the same student", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const { parent: firstParent } = await createParent("first-parent@test.local");
+    const { parent: secondParent } = await createParent("second-parent@test.local");
+    const child = await createBareStudent("ADM-602");
+
+    const first = await request(app)
+      .post(`/api/parents/${firstParent.id}/children`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ studentId: child.id, relationship: "MOTHER", isPrimaryContact: true });
+    expect(first.status).toBe(201);
+
+    const second = await request(app)
+      .post(`/api/parents/${secondParent.id}/children`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ studentId: child.id, relationship: "FATHER", isPrimaryContact: true });
+    expect(second.status).toBe(409);
+
+    // Not linked at all as a side effect of the rejected attempt — this
+    // student still has exactly one linked parent.
+    const links = await prisma.studentParent.findMany({ where: { studentId: child.id } });
+    expect(links).toHaveLength(1);
   });
 });
 

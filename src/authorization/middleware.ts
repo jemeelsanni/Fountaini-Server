@@ -1,8 +1,21 @@
 import type { NextFunction, Request, Response } from "express";
 import type { Role } from "../../generated/prisma/index.js";
+import { prisma } from "../db/client.js";
 import { AppError } from "../errors/AppError.js";
 import { verifyAccessToken } from "../modules/auth/jwt.js";
 import type { Principal } from "./types.js";
+
+/// The only two routes reachable while mustChangePassword is true — a
+/// caller has to be able to see who they are and change their password
+/// before anything else works. Checked against req.originalUrl (the full,
+/// un-rewritten path, unaffected by which router's .use(requireAuth)
+/// actually ran this) rather than req.path, which is relative to whichever
+/// router is currently executing and would collide with an unrelated
+/// same-named path in a different module.
+export const MUST_CHANGE_PASSWORD_EXEMPT_ROUTES: ReadonlySet<string> = new Set([
+  "GET /api/auth/me",
+  "POST /api/auth/change-password",
+]);
 
 /// Tag applied to every guard middleware so the route-guard inventory test
 /// can identify "is this an auth guard" at runtime without relying on
@@ -29,7 +42,17 @@ function tagGuard(fn: Handler, guardType: GuardType, roles?: readonly Role[]): G
 
 /// Verifies the access token and attaches a Principal to the request. Every
 /// route that needs identity — role-only or data-scoped — starts here.
-function requireAuthHandler(req: Request, _res: Response, next: NextFunction): void {
+///
+/// Also enforces mustChangePassword, in this one shared layer rather than
+/// per-route, exactly like the instruction that added it asked for. This is
+/// deliberately a live DB read on every authenticated request rather than a
+/// claim embedded in the access token (the way roles/staffId/etc. are): the
+/// whole point of this gate is "change your password, then immediately
+/// proceed" within ONE session's still-valid access token — an
+/// isActive-style "enforced at next login/refresh" would leave the very
+/// request right after a successful change-password still blocked by a
+/// stale token claim, which defeats it.
+async function requireAuthHandler(req: Request, _res: Response, next: NextFunction): Promise<void> {
   const header = req.get("authorization");
   if (!header?.startsWith("Bearer ")) {
     next(AppError.unauthorized("Missing or invalid Authorization header"));
@@ -38,22 +61,42 @@ function requireAuthHandler(req: Request, _res: Response, next: NextFunction): v
 
   const token = header.slice("Bearer ".length);
 
+  let principal: Principal;
   try {
     const payload = verifyAccessToken(token);
-    const principal: Principal = {
+    principal = {
       userId: payload.sub,
       roles: new Set(payload.roles),
       staffId: payload.staffId,
       parentId: payload.parentId,
       studentId: payload.studentId,
     };
-    req.principal = principal;
-    next();
   } catch {
     next(AppError.unauthorized("Invalid or expired access token"));
+    return;
   }
+
+  const routeKey = `${req.method} ${req.originalUrl.split("?")[0]}`;
+  if (!MUST_CHANGE_PASSWORD_EXEMPT_ROUTES.has(routeKey)) {
+    const user = await prisma.user.findUnique({
+      where: { id: principal.userId },
+      select: { mustChangePassword: true },
+    });
+    if (user?.mustChangePassword) {
+      next(AppError.mustChangePassword());
+      return;
+    }
+  }
+
+  req.principal = principal;
+  next();
 }
-export const requireAuth: GuardedHandler = tagGuard(requireAuthHandler, "auth");
+export const requireAuth: GuardedHandler = tagGuard(
+  (req: Request, res: Response, next: NextFunction): void => {
+    requireAuthHandler(req, res, next).catch(next);
+  },
+  "auth",
+);
 
 /// Pure role allowlist — no data ownership involved.
 export function requireRole(...roles: Role[]): GuardedHandler {

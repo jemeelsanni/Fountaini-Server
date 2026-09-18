@@ -10,10 +10,13 @@ async function seedAdmin() {
 
   const passwordHash = await argon2.hash(password, { type: argon2.argon2id });
 
+  // loginId = email here, same as any other bare account with no linked
+  // Student/Staff record (see User.loginId's own schema comment) — this
+  // seeded admin never gets one of those.
   const admin = await prisma.user.upsert({
     where: { email },
     update: {},
-    create: { email, passwordHash, roles: { create: [{ role: "ADMIN" }] } },
+    create: { loginId: email, email, passwordHash, roles: { create: [{ role: "ADMIN" }] } },
   });
 
   console.log(`Seeded admin user: ${admin.email} (id: ${admin.id})`);

@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import type { Role } from "../../generated/prisma/index.js";
 import { prisma } from "../db/client.js";
 import { signAccessToken } from "../modules/auth/jwt.js";
@@ -6,15 +7,23 @@ import { hashPassword } from "../modules/auth/password.js";
 /// Test-only helpers: sign tokens directly rather than round-tripping through
 /// /api/auth/login for every fixture — login itself is already covered by
 /// Phase 1's auth tests, so these just need a valid, correctly-shaped token.
-async function createUser(email: string, roles: Role[], password = "password-123456") {
+/// `loginId` is a required, explicit param (not defaulted to email) so every
+/// caller below states the same thing production code would derive: a
+/// staff/student fixture's loginId is its staffNumber/admissionNumber, not
+/// its (fixture-only, never-real) email.
+async function createUser(loginId: string, email: string, roles: Role[], password = "password-123456") {
   const passwordHash = await hashPassword(password);
   return prisma.user.create({
-    data: { email, passwordHash, roles: { create: roles.map((role) => ({ role })) } },
+    data: { loginId, email, passwordHash, roles: { create: roles.map((role) => ({ role })) } },
   });
 }
 
+function generateStaffNumber(): string {
+  return `STAFF-${randomBytes(5).toString("hex").toUpperCase()}`;
+}
+
 export async function createAdmin(email: string) {
-  const user = await createUser(email, ["ADMIN"]);
+  const user = await createUser(email, email, ["ADMIN"]);
   const token = signAccessToken({
     sub: user.id,
     roles: ["ADMIN"],
@@ -26,14 +35,10 @@ export async function createAdmin(email: string) {
 }
 
 export async function createTeacher(email: string) {
-  const user = await createUser(email, ["TEACHER"]);
+  const staffNumber = generateStaffNumber();
+  const user = await createUser(staffNumber, email, ["TEACHER"]);
   const staff = await prisma.staff.create({
-    data: {
-      userId: user.id,
-      staffNumber: `STAFF-${user.id.slice(0, 10)}`,
-      firstName: "Test",
-      lastName: "Teacher",
-    },
+    data: { userId: user.id, staffNumber, firstName: "Test", lastName: "Teacher" },
   });
   const token = signAccessToken({
     sub: user.id,
@@ -46,14 +51,10 @@ export async function createTeacher(email: string) {
 }
 
 export async function createBursar(email: string) {
-  const user = await createUser(email, ["BURSAR"]);
+  const staffNumber = generateStaffNumber();
+  const user = await createUser(staffNumber, email, ["BURSAR"]);
   const staff = await prisma.staff.create({
-    data: {
-      userId: user.id,
-      staffNumber: `STAFF-${user.id.slice(0, 10)}`,
-      firstName: "Test",
-      lastName: "Bursar",
-    },
+    data: { userId: user.id, staffNumber, firstName: "Test", lastName: "Bursar" },
   });
   const token = signAccessToken({
     sub: user.id,
@@ -66,7 +67,7 @@ export async function createBursar(email: string) {
 }
 
 export async function createParent(email: string) {
-  const user = await createUser(email, ["PARENT"]);
+  const user = await createUser(email, email, ["PARENT"]);
   const parent = await prisma.parent.create({
     data: { userId: user.id, firstName: "Test", lastName: "Parent" },
   });
@@ -81,7 +82,7 @@ export async function createParent(email: string) {
 }
 
 export async function createStudentWithLogin(email: string, admissionNumber: string) {
-  const user = await createUser(email, ["STUDENT"]);
+  const user = await createUser(admissionNumber, email, ["STUDENT"]);
   const student = await prisma.student.create({
     data: { admissionNumber, firstName: "Test", lastName: "Student", userId: user.id },
   });
@@ -99,14 +100,10 @@ export async function createStudentWithLogin(email: string, admissionNumber: str
 /// couldn't represent before UserRole existed. Used to prove scope resolvers
 /// grant access via EITHER role independently, not just the "first" one.
 export async function createStaffParent(email: string) {
-  const user = await createUser(email, ["TEACHER", "PARENT"]);
+  const staffNumber = generateStaffNumber();
+  const user = await createUser(staffNumber, email, ["TEACHER", "PARENT"]);
   const staff = await prisma.staff.create({
-    data: {
-      userId: user.id,
-      staffNumber: `STAFF-${user.id.slice(0, 10)}`,
-      firstName: "Test",
-      lastName: "StaffParent",
-    },
+    data: { userId: user.id, staffNumber, firstName: "Test", lastName: "StaffParent" },
   });
   const parent = await prisma.parent.create({
     data: { userId: user.id, firstName: "Test", lastName: "StaffParent" },

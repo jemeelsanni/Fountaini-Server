@@ -67,7 +67,21 @@ export async function linkChild(parentId: string, input: LinkChildBody) {
     });
   } catch (err) {
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
-      throw AppError.conflict("This student is already linked to this parent");
+      // Two different unique constraints can produce this same P2002: the
+      // ordinary (studentId, parentId) one, and the partial index enforcing
+      // at most one isPrimaryContact per student (see StudentParent's own
+      // schema comment) — distinguished by the index name Postgres reports
+      // in meta.target, since only the second one is actually caused by
+      // what THIS request is trying to do (isPrimaryContact: true) rather
+      // than a plain duplicate link.
+      const target = err.meta?.target;
+      const isPrimaryContactConflict =
+        typeof target === "string" && target.includes("one_primary_contact_per_student");
+      throw AppError.conflict(
+        isPrimaryContactConflict
+          ? "This student already has a different primary-contact parent"
+          : "This student is already linked to this parent",
+      );
     }
     throw err;
   }

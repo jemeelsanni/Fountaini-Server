@@ -88,9 +88,55 @@ inside an interactive transaction.
 | `scores.service.ts` `bulkUpsertScores()` | A bulk score edit racing `submitScores()` — the edit's stale "not submitted yet" read let it silently overwrite a Score row after submission, leaving the already-computed `SubjectResult.totalScore` stale relative to the Score sheet | `alreadySubmitted` check and the per-cell writes moved inside one transaction; each cell's write is `updateMany({ status: { not: "SUBMITTED" } })`; a lost race throws the same conflict the whole batch already used, rather than silently applying every other entry |
 | `admissions.service.ts` `convertEnquiry()` | Two concurrent converts of the same enquiry — both passing the "not converted yet" read and both creating a Student | Conditional-claim `updateMany({ where: { id, status: { not: "CONVERTED" } } })` inside the same transaction as the `Student` creation — a lost race rolls back the whole transaction, so the loser's Student row never persists |
 | `users.service.ts` `createUser()`, `parents.service.ts` `createParent()` | Concurrent duplicate signups/links — the pre-check passing for both, second `.create()` hitting the unique constraint unhandled | `try/catch` around `.create()`, `P2002` → the same conflict the pre-check throws |
+| `identifiers.service.ts` `generateAdmissionNumber()` / `generateStaffNumber()` | Two admins creating a student/staff member at the same instant — reading the current max sequence and adding one is exactly this doc's title | Not a conditional claim on the target row (there's no pre-existing row to claim) — see below, this one's a genuinely different shape. |
+| `students.service.ts` `issueLoginForStudent()` | Two concurrent `issueLogin` calls for the same never-logged-in-yet student — both can pass the "userId is still null" pre-check and both attempt to create a `User` with the same `loginId` (the student's `admissionNumber` hasn't changed between them) | Conditional-claim `updateMany({ where: { id, userId: null } })` for the common case, **plus** a `try/catch` on `User.loginId`'s own unique constraint for the case where both racers get past the pre-check and collide on the `User.create()` itself, before either ever reaches the `updateMany` |
 | `fees.service.ts` `generateObligations()` | Concurrent (or double-clicked) obligation generation for the same fee structure — `createMany` aborting the whole batch on the first collision | `skipDuplicates: true`. **Known gap**: this relies on the unique constraint on `(studentId, feeStructureId, termId)`, and Postgres never treats `NULL == NULL` for uniqueness — a session-wide fee structure (`termId: null`, a real, documented case) is *not* protected by this fix. Confirmed empirically. Not fixed — see below. |
 | `parents.service.ts` `unlinkChild()`, `academic-structure.service.ts` `deleteClassSubjectAssignment()` | Concurrent double-unlink/double-delete — `delete({ where: { id } })` throwing P2025 unhandled once the row's already gone | `deleteMany({ where })` + check `count`, instead of `findUnique` then `delete` |
 | `academic-structure.service.ts` `setCurrentAcademicSession()` / `setCurrentTerm()` | 3-or-more concurrent switches to different targets could leave more than one row `isCurrent` | See below — this one had a real surprise. |
+
+### A different shape: race-safe sequence generation
+
+Every other fix in the table above is a variant of "claim a row that
+already exists, conditionally." Admission/staff number generation has no
+row to claim — there's nothing to check "is this still true" against
+before the write, because the number doesn't exist until this call creates
+it. Reading `MAX(sequence)` and adding one is the read-then-write shape
+this whole document exists to warn about, just without an existing target
+row to make the write conditional on.
+
+The fix (`identifiers.service.ts`): one atomic upsert-increment per
+prefix-and-year, inside the same transaction as the `Student`/`Staff`
+insert:
+
+```sql
+INSERT INTO "IdentifierCounter" ("prefix", "lastValue")
+VALUES ($1, 1)
+ON CONFLICT ("prefix") DO UPDATE SET "lastValue" = "IdentifierCounter"."lastValue" + 1
+RETURNING "lastValue"
+```
+
+`INSERT ... ON CONFLICT ... DO UPDATE` handles "this prefix has never been
+used" and "this prefix already has a counter" in the same statement, so
+there's no separate existence check to race on — and the row this touches
+(existing or newly inserted) is locked for the rest of the transaction,
+which is what actually serializes two concurrent callers for the *same*
+prefix into two different numbers rather than a shared one.
+
+**The test that matters here is a 2-racer trap in the other direction.**
+Every other fix in this document is tested with a *forced* interleaving
+(`awaitLockWaiter`, below) — proving one specific bad ordering is now
+impossible. That's the wrong shape for this fix: there's no "bad ordering"
+to force, since every ordering should produce distinct numbers. A 2-racer
+`Promise.all` test can pass by luck even against a broken read-then-write
+implementation (only one of the two ever actually contends for the same
+value in a 2-way race often enough to go undetected), which is exactly what
+happened once already in this codebase (see the `isCurrent` lesson below —
+the same "too few racers, passed by luck" shape). The batch that introduced
+this fix used a 4-concurrent-creations test instead
+(`students.test.ts`) — plain, unforced `Promise.all`, asserting all four
+resulting numbers are distinct. More racers, not a forced order, is the
+right shape when you're proving "no collision under contention," as
+opposed to "no corruption under one specific bad interleaving."
 
 ### The `isCurrent` fix is not what it looks like at first
 
@@ -298,6 +344,22 @@ each subsequent CI run's outcome (pass/fail on each of the two steps) until
 enough runs have accumulated to state a real rate. Do not re-measure locally
 by running the suite in a loop — that reproduces the same confound this
 entry exists to flag, not a cleaner number.
+
+**2026-09-18 addition**: while adding requireAuth's new mustChangePassword
+check (one extra DB round-trip on every authenticated request — see
+"Fixes applied" is not the right section for this, it's not a race fix,
+just noted here because of what it looked like at first), a 3-run
+before/after comparison on `authMatrix.test.ts` alone (3/3 clean without
+the check, 1/3 timing out with it) briefly looked like a new, attributable
+regression. It wasn't distinguishable from this entry's own already-
+documented ~20%-of-runs rate at that sample size — a later 5-run batch
+with the check in place produced a `Parse Error: Expected HTTP/` on a
+completely different row (`POST /api/admission-enquiries/:id/convert`),
+the exact symptom already on file above, not a timeout at all. Recorded
+here rather than claimed as a fix: `testTimeout` was still raised to
+10,000ms (vitest.config.ts) on the grounds that the added per-request cost
+is real regardless of this specific flake's cause, but that change should
+not be read as resolving — or even being confirmed to affect — this entry.
 
 ## attendance.test.ts scan/close: folded into the known flake above, not separate
 

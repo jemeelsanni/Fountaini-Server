@@ -11,17 +11,21 @@
 //   destructive deletes for anything referenced by historical academic or financial data.
 //
 // NOTE — partial unique indexes: Prisma's schema DSL cannot express a `WHERE`
-// clause on a unique index, so the three "at most one X is currently
-// active/current" invariants in this schema are declared here only as plain
-// columns; the actual enforcement lives in raw-SQL migrations instead:
-//   1. AcademicSession.isCurrent  — migration add_current_session_term_partial_indexes
-//   2. Term.isCurrent             — migration add_current_session_term_partial_indexes
-//   3. StudentQrCode.isActive     — migration add_qr_code_one_active_partial_index
-// All three are backed by the app-layer transaction that clears the flag on siblings
-// before setting it on the new row AND a DB-level partial unique index — see each
-// field's own comment. The app-layer step alone was found to have a real gap under
-// 3-or-more-way concurrent switches (see docs/concurrency.md), which is exactly the
-// kind of bypass the index exists to catch.
+// clause on a unique index, so the four "at most one X is currently
+// active/current/primary" invariants in this schema are declared here only as
+// plain columns; the actual enforcement lives in raw-SQL migrations instead:
+//   1. AcademicSession.isCurrent      — migration add_current_session_term_partial_indexes
+//   2. Term.isCurrent                 — migration add_current_session_term_partial_indexes
+//   3. StudentQrCode.isActive         — migration add_qr_code_one_active_partial_index
+//   4. StudentParent.isPrimaryContact — migration add_login_id_and_identifier_counters
+// The first three are backed by an app-layer transaction that clears the flag on
+// siblings before setting it on the new row AND a DB-level partial unique index — see
+// each field's own comment; the app-layer step alone was found to have a real gap
+// under 3-or-more-way concurrent switches (see docs/concurrency.md), which is exactly
+// the kind of bypass the index exists to catch. StudentParent.isPrimaryContact is
+// simpler: it's only ever set at link-creation time (there's no "promote to primary"
+// toggle), so the partial index alone — caught as a clean 409, not a raw 500 — is
+// enough; no clear-then-set transaction is needed because there's nothing to clear.
 
 // Pinned to Prisma 6.x (not the current 7.x major): this environment's Node
 // (v23.11.0, a non-LTS release) fails to run the Prisma 7 CLI at all — see
@@ -62,15 +66,34 @@ enum Role {
   BURSAR
 }
 
+/// The identity a User actually signs in with — always present, unlike
+/// email. Derived, never admin-typed directly: a Student's is their
+/// admissionNumber, a Staff's is their staffNumber (both server-generated —
+/// see IdentifierCounter), and anyone else's (Parent, or a bare account with
+/// no linked record) is their email. Kept in sync with the source field by
+/// the same transaction that changes it (see updateStudent/updateStaff) —
+/// there is no separate "resync" path, because there must never be a moment
+/// where they can legitimately disagree.
 model User {
-  id           String    @id @default(cuid())
-  email        String?   @unique
-  phone        String?   @unique
-  passwordHash String
-  isActive     Boolean   @default(true)
-  lastLoginAt  DateTime?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  id                 String    @id @default(cuid())
+  loginId            String    @unique
+  /// Nullable: a student frequently has none of their own. Parents and
+  /// staff always do (parents log in with it; staff receive credentials at
+  /// it) — enforced at the point those records are created, not here.
+  email              String?   @unique
+  phone              String?   @unique
+  passwordHash       String
+  /// True from creation whenever the password was server-generated rather
+  /// than admin-chosen (see password.ts's generateTemporaryPassword) —
+  /// cleared by changePassword(). Enforced in requireAuth itself (see
+  /// authorization/middleware.ts), not per-route: every authenticated route
+  /// except GET /api/auth/me and POST /api/auth/change-password 403s while
+  /// this is true.
+  mustChangePassword Boolean   @default(false)
+  isActive           Boolean   @default(true)
+  lastLoginAt        DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   staff   Staff?
   parent  Parent?
@@ -135,6 +158,12 @@ model Staff {
   id             String    @id @default(cuid())
   userId         String    @unique
   user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Server-generated (FIA/ST<year>/<seq>, see IdentifierCounter) unless an
+  /// admin explicitly overrides it at creation — either way it's permanent:
+  /// it records the year of employment, not the current session, and is
+  /// never reissued once set. Mutable via PATCH /api/staff/:id, but only
+  /// together with the linked User.loginId, in the same transaction — see
+  /// updateStaff().
   staffNumber    String    @unique
   firstName      String
   lastName       String
@@ -184,6 +213,13 @@ enum Gender {
 
 model Student {
   id              String        @id @default(cuid())
+  /// Server-generated (FIA/<year>/<seq>, see IdentifierCounter) unless an
+  /// admin explicitly overrides it at creation — either way it's permanent:
+  /// it records the year of admission, not the current session, and is
+  /// never reissued once set, including after the student leaves. Mutable
+  /// via PATCH /api/students/:id, but only together with the linked
+  /// User.loginId (when one exists), in the same transaction — see
+  /// updateStudent().
   admissionNumber String        @unique
   /// Nullable: portal login is not guaranteed for every student (e.g. very young
   /// students may never be issued an account). See "least-certain decisions".
@@ -230,11 +266,38 @@ model StudentParent {
   parentId         String
   parent           Parent             @relation(fields: [parentId], references: [id], onDelete: Cascade)
   relationship     FamilyRelationship
+  /// At most one true per studentId — enforced by a partial unique index
+  /// (migration add_login_id_and_identifier_counters, see the caveat at the
+  /// top of this file), not just app logic: this flag decides where a
+  /// child's login credentials and password-reset mail get sent (see
+  /// resolvePrimaryContactParent in students.service.ts), so more than one
+  /// "primary" per student is no longer a harmless inconsistency. Settable
+  /// only at link-creation time (POST /api/parents/:id/children) — there is
+  /// no "promote to primary" toggle, so the index alone is enough; a second
+  /// attempt to set it true for the same student is a clean 409. Zero
+  /// primary links falls back to the earliest-linked parent instead.
   isPrimaryContact Boolean            @default(false)
   createdAt        DateTime           @default(now())
 
   @@unique([studentId, parentId])
   @@index([parentId])
+}
+
+/// Race-safe sequence generator for admission/staff numbers, one row per
+/// prefix-and-year combination (e.g. "FIA/2026", "FIA/ST2026") — the prefix
+/// IS the primary key, so "restart at 1 for each new prefix-and-year" is
+/// free. Incremented via `UPDATE ... SET "lastValue" = "lastValue" + 1 ...
+/// RETURNING "lastValue"` inside the same transaction as the Student/Staff
+/// insert (see generateIdentifier in students.service.ts/staff.service.ts)
+/// — the row lock that statement takes is what makes the increment atomic
+/// without a separate advisory lock (see docs/concurrency.md). An admin
+/// override that supplies a number ahead of the counter's current value
+/// bumps `lastValue` to match in the same transaction, so the generator
+/// never reissues an imported number later. Gaps (a rolled-back creation
+/// consuming a value) are acceptable; reuse is not.
+model IdentifierCounter {
+  prefix    String @id
+  lastValue Int    @default(0)
 }
 
 // =========================================================================
@@ -1112,6 +1175,11 @@ enum NotificationType {
   ACADEMIC
   ADMIN_GENERAL
   PASSWORD_RESET
+  /// A newly-generated login credential — staff to their own email,
+  /// students to their primary-contact (or earliest-linked) parent's
+  /// email, addressed to the parent and naming the child. See
+  /// deliverCredentials in students.service.ts/staff.service.ts.
+  CREDENTIALS_ISSUED
 }
 
 /// The logical, in-app notification. Channel-agnostic by design — this table

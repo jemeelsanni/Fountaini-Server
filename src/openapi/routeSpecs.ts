@@ -98,6 +98,7 @@ import {
   StudentParentWithStudentSchema,
   StudentQrCodeSchema,
   StudentSchema,
+  StudentWithOptionalTemporaryPasswordSchema,
   SubjectResultSchema,
   SubjectResultWithRelationsSchema,
   SubjectSchema,
@@ -347,7 +348,12 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
 
   // --- auth ---------------------------------------------------------------
   "POST /api/auth/login": {
-    summary: "Log in with email and password (public)",
+    summary:
+      "BREAKING CHANGE — log in with `identifier` + password (public), not `email` + password. " +
+      "`identifier` is whatever this account actually signs in with: an admission number for a " +
+      "student, a staff number for staff, or an email for anyone else (a parent, or a bare account " +
+      "with no linked record) — resolved by a single lookup, never branched by role. There is no " +
+      "backwards-compatible `email` fallback; this is a clean break, not a union of the two shapes.",
     requestBody: loginSchema,
     responses: { 200: { description: "OK", schema: AuthTokensSchema } },
   },
@@ -372,8 +378,13 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
   },
   "POST /api/auth/forgot-password": {
     summary:
-      "Request a password reset email (public). Always responds 204 regardless of whether the email " +
-      "belongs to an account — the response never reveals whether an address is registered.",
+      "BREAKING CHANGE — takes `identifier` (a loginId or an email), not `email`. Always responds " +
+      "204 regardless of whether the identifier belongs to an account, has an email to send to, or " +
+      "neither — the response never reveals which case it was. Destination: the account's own " +
+      "email if set; otherwise, for a student, their primary-contact (or earliest-linked) parent's " +
+      "email; otherwise nothing is sent. This matters more than it did for a bare email lookup: " +
+      "admission numbers are sequential and trivially enumerable, so this endpoint's generic " +
+      "response and its rate limit are load-bearing, not belt-and-braces.",
     requestBody: requestPasswordResetSchema,
     responses: { 204: noContent },
   },
@@ -758,7 +769,12 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
 
   // --- staff --------------------------------------------------------------
   "POST /api/staff": {
-    summary: "Create a staff profile for a TEACHER/ADMIN/BURSAR user",
+    summary:
+      "BREAKING CHANGE — atomically creates BOTH the User and the Staff record (no more separate " +
+      "POST /api/users step first): choose `role` (ADMIN/TEACHER/BURSAR) and supply `email` " +
+      "directly here. `staffNumber` is server-generated (FIA/ST<year>/<seq>) unless explicitly " +
+      "overridden for a legacy paper-record import. The password is always generated, never " +
+      "admin-chosen — mustChangePassword starts true, and credentials are emailed to `email`.",
     requestBody: createStaffSchema,
     responses: { 201: { description: "Created", schema: StaffSchema } },
   },
@@ -773,7 +789,9 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     scopeNote: SCOPE_NOTES.canReadStaff,
   },
   "PATCH /api/staff/:id": {
-    summary: "Update a staff member",
+    summary:
+      "Update a staff member. Changing staffNumber also updates the linked User.loginId, in the " +
+      "same transaction — the two can never legitimately disagree.",
     requestParams: staffIdParamsSchema,
     requestBody: updateStaffSchema,
     responses: { 200: { description: "OK", schema: StaffSchema } },
@@ -781,9 +799,18 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
 
   // --- students ---------------------------------------------------------------
   "POST /api/students": {
-    summary: "Create a student",
+    summary:
+      "BREAKING CHANGE — admissionNumber is server-generated (FIA/<year>/<seq>) unless explicitly " +
+      "overridden for a legacy paper-record import; there is no more `userId` field. Set " +
+      "issueLogin: true to also create a login atomically (loginId derived from the generated/" +
+      "overridden admissionNumber, generated password, mustChangePassword: true) — but note a " +
+      "parent can't be linked yet at this point (the student doesn't exist until this call " +
+      "returns), so the common case is to leave this false and issue the login later via " +
+      "PATCH /api/students/:id once a parent is linked. If issueLogin has nowhere to deliver the " +
+      "password (no own email, no linked parent — only possible here, not via the PATCH path), " +
+      "`temporaryPassword` is returned once in the response instead.",
     requestBody: createStudentSchema,
-    responses: { 201: { description: "Created", schema: StudentSchema } },
+    responses: { 201: { description: "Created", schema: StudentWithOptionalTemporaryPasswordSchema } },
   },
   "GET /api/students": {
     summary: "List students",
@@ -797,11 +824,16 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
   },
   "PATCH /api/students/:id": {
     summary:
-      "Update a student. userId may only be set once, while it's still null — 409 if the student " +
-      "already has one, or if the target user is already linked to a different student.",
+      "BREAKING CHANGE — the old `userId` field (attach an already-existing user) is gone; " +
+      "replaced by `issueLogin: true`, which creates a brand-new User instead, with loginId " +
+      "derived from this student's own admissionNumber. 409 if this student already has a linked " +
+      "user. Credentials are delivered to the student's own email if given, else their primary-" +
+      "contact (or earliest-linked) parent's email; `temporaryPassword` is returned once in the " +
+      "response only if neither destination exists. Changing admissionNumber also updates the " +
+      "linked User.loginId, in the same transaction, when one exists.",
     requestParams: studentsIdParamsSchema,
     requestBody: updateStudentSchema,
-    responses: { 200: { description: "OK", schema: StudentSchema } },
+    responses: { 200: { description: "OK", schema: StudentWithOptionalTemporaryPasswordSchema } },
   },
   "GET /api/students/:id/parents": {
     summary: "List a student's linked parents, with relationship and primary-contact flag",
@@ -857,7 +889,12 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
 
   // --- users --------------------------------------------------------------
   "POST /api/users": {
-    summary: "Create a user account with one role",
+    summary:
+      "BREAKING CHANGE — narrowed to PARENT (and a bare ADMIN/TEACHER/BURSAR account with no Staff " +
+      "record of its own); STUDENT is rejected — every student is created via POST /api/students " +
+      "instead, atomically. No more `password` field: the password is always generated, never " +
+      "admin-chosen — mustChangePassword starts true, and credentials are emailed to `email`, " +
+      "which also becomes this account's loginId.",
     requestBody: createUserSchema,
     responses: { 201: { description: "Created", schema: UserSummarySchema } },
   },

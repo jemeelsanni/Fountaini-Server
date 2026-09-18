@@ -1,7 +1,10 @@
+import { z } from "zod";
+import { MUST_CHANGE_PASSWORD_EXEMPT_ROUTES } from "../authorization/middleware.js";
 import type { DiscoveredRoute } from "../authorization/routeInventory.js";
 import {
   ConflictErrorSchema,
   ForbiddenErrorSchema,
+  MustChangePasswordErrorSchema,
   NoRolesAssignedErrorSchema,
   NotFoundErrorSchema,
   PaymentRequiredErrorSchema,
@@ -114,13 +117,34 @@ export function commonErrorResponses(
     out[401] = { description: "Missing, invalid, or expired credentials", schema: UnauthorizedErrorSchema };
   }
 
+  // Every non-public route except GET /api/auth/me and
+  // POST /api/auth/change-password can 403 with MUST_CHANGE_PASSWORD —
+  // requireAuth enforces it itself (authorization/middleware.ts), before
+  // the route's own role/scope guard (if any) ever runs. NO_ROLES_ASSIGNED
+  // routes are excluded automatically: login/refresh are both public, so
+  // this is always false for them.
+  const mustChangePasswordApplies = !isPublic && !MUST_CHANGE_PASSWORD_EXEMPT_ROUTES.has(routeKey);
+
   if (NO_ROLES_ASSIGNED_ROUTE_KEYS.has(routeKey)) {
     out[403] = {
       description: "The account authenticates but holds no roles at all",
       schema: NoRolesAssignedErrorSchema,
     };
   } else if (route.allowedRoles !== undefined || route.guardTypes.has("scope")) {
-    out[403] = { description: "Not permitted to perform this action", schema: ForbiddenErrorSchema };
+    out[403] = mustChangePasswordApplies
+      ? {
+          description:
+            "Not permitted to perform this action, OR the caller's account must change its " +
+            "password first (see MustChangePasswordError) — requireAuth enforces the second case " +
+            "before this route's own guard ever runs.",
+          schema: z.union([ForbiddenErrorSchema, MustChangePasswordErrorSchema]),
+        }
+      : { description: "Not permitted to perform this action", schema: ForbiddenErrorSchema };
+  } else if (mustChangePasswordApplies) {
+    out[403] = {
+      description: "The caller's account must change its password before continuing",
+      schema: MustChangePasswordErrorSchema,
+    };
   }
 
   if (hasPathParam(route.path)) {

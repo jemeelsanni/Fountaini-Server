@@ -22,5 +22,24 @@ export default defineConfig({
     fileParallelism: false,
     pool: "forks",
     maxWorkers: 1,
+    // requireAuth now does one extra DB round-trip per authenticated
+    // request (the mustChangePassword check — see authorization/
+    // middleware.ts) to satisfy a genuine correctness requirement (it must
+    // take effect on the very next request after change-password, within
+    // the same still-valid access token, so it can't be cached in the
+    // JWT). That's real, permanent added latency on every one of the many
+    // sequential HTTP calls a test like authMatrix.test.ts's per-row cases
+    // makes. NOTE: a small (3-run) before/after comparison while adding
+    // this looked like it confirmed the extra query was newly causing
+    // authMatrix.test.ts timeouts — but see docs/concurrency.md's "Known
+    // intermittent test failure": that exact symptom (5000ms timeouts and
+    // `Parse Error: Expected HTTP/` on authMatrix.test.ts rows
+    // specifically) is an already-documented, unexplained, ~20%-of-runs
+    // flake with cause "unknown," predating this batch entirely — a 3-run
+    // sample can't distinguish "caused by this change" from "that flake
+    // fired." Bumped the timeout anyway, since the added per-request cost
+    // is real regardless; just not claiming it as a confirmed fix for a
+    // flake this small a sample can't actually attribute.
+    testTimeout: 10_000,
   },
 });

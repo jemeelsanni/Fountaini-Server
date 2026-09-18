@@ -3,6 +3,25 @@ import type { Prisma } from "../../../generated/prisma/index.js";
 import { logger } from "../../config/logger.js";
 import { writeAuditLog } from "../../modules/audit/audit.service.js";
 
+/// Field names never persisted into AuditLog.afterData, even though the
+/// client legitimately receives them in the response — a one-time
+/// generated credential (see students.service.ts/staff.service.ts/
+/// users.service.ts's createStudent/createStaff/createUser, and
+/// scoreForAssignment's... no, just the credential-issuing paths) would
+/// otherwise land in a permanent, plaintext DB row readable via
+/// GET /api/audit-log. Redacted by omission, not a "[REDACTED]"
+/// placeholder — the audit trail's job is recording who created what, not
+/// whether a secret happened to be issued.
+const REDACTED_RESPONSE_FIELDS: ReadonlySet<string> = new Set(["temporaryPassword"]);
+
+function redact(body: Record<string, unknown>): Record<string, unknown> {
+  const out = { ...body };
+  for (const field of REDACTED_RESPONSE_FIELDS) {
+    delete out[field];
+  }
+  return out;
+}
+
 /// Declarative audit logging for admin/bursar mutation routes — one line at
 /// route-registration time instead of a writeAuditLog() call threaded through
 /// every service function. Captures whatever the route responds with (works
@@ -38,7 +57,7 @@ export function auditMutation(entityType: string, action: string) {
         action,
         entityType,
         entityId: idFromParams ?? idFromBody ?? "unknown",
-        afterData: capturedBody as Prisma.InputJsonValue | undefined,
+        afterData: bodyRecord ? (redact(bodyRecord) as Prisma.InputJsonValue) : undefined,
         ipAddress: req.ip,
         userAgent: req.get("user-agent"),
       }).catch((err: unknown) => {

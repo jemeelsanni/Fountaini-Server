@@ -50,7 +50,7 @@ function expectOneSuccessRestFailedWith(outcomes: Outcome<unknown>[], status: nu
 /// not the full Parent record itself — creating that is what's under test.
 function createParentUserRecord(email: string) {
   return prisma.user.create({
-    data: { email, passwordHash: "unused", roles: { create: [{ role: "PARENT" }] } },
+    data: { loginId: email, email, passwordHash: "unused", roles: { create: [{ role: "PARENT" }] } },
   });
 }
 
@@ -65,8 +65,8 @@ afterAll(async () => {
 describe("500-instead-of-409/404 cluster: concurrent duplicate handling", () => {
   it("createUser: two concurrent signups with the same email resolve as one success and one 409, never a 500", async () => {
     const [a, b] = await Promise.all([
-      settle(createUser({ email: "dupe@test.local", password: "a-secure-password", role: "TEACHER" })),
-      settle(createUser({ email: "dupe@test.local", password: "another-secure-pw", role: "TEACHER" })),
+      settle(createUser({ email: "dupe@test.local", role: "TEACHER" })),
+      settle(createUser({ email: "dupe@test.local", role: "TEACHER" })),
     ]);
     expectOneSuccessRestFailedWith([a, b], 409);
 
