@@ -68,6 +68,20 @@ export const NoRolesAssignedErrorSchema = errorSchema(
     "problem an admin needs to fix, not something the caller can route around.",
 );
 
+/// A distinct code from both ForbiddenError and NoRolesAssignedError: the
+/// account holds a role (PARENT, or TEACHER/BURSAR) that always implies a
+/// specific linked profile record, but that record is missing — see
+/// AppError.incompleteRoleLink()'s own comment. Only ever returned by
+/// login/refresh (see errorResponses.ts), same as NoRolesAssignedError.
+export const IncompleteRoleLinkErrorSchema = errorSchema(
+  "IncompleteRoleLinkError",
+  "INCOMPLETE_ROLE_LINK",
+  "This account authenticated successfully but holds a role whose linked profile record " +
+    "(Parent, for PARENT; Staff, for TEACHER/BURSAR) is missing, so no access token was issued. " +
+    "An account-provisioning problem an admin needs to fix, not something the caller can route " +
+    "around.",
+);
+
 export const NotFoundErrorSchema = errorSchema(
   "NotFoundError",
   "NOT_FOUND",

@@ -57,9 +57,30 @@ async function buildAccessTokenPayload(userId: string): Promise<AccessTokenPaylo
     throw AppError.noRolesAssigned();
   }
 
+  const roles = userRoles.map((ur) => ur.role);
+
+  // Same boundary-check reasoning, one level more specific: PARENT and
+  // TEACHER/BURSAR aren't just roles, they're roles that always imply a
+  // linked profile record (Parent, Staff respectively) — parents.service.ts
+  // ::createParent and staff.service.ts::createStaff both create the User
+  // and that record together, in one transaction, so this shouldn't be
+  // reachable today either. Without this check, a role with no backing
+  // record would authenticate fine and then get denied everywhere that
+  // role's own routes check principal.parentId/staffId (not just the role
+  // itself) — the same "empty portal" failure mode noRolesAssigned() above
+  // exists to prevent, one step further in.
+  if (roles.includes("PARENT") && !parent) {
+    throw AppError.incompleteRoleLink("This account holds the PARENT role but has no linked Parent record");
+  }
+  if ((roles.includes("TEACHER") || roles.includes("BURSAR")) && !staff) {
+    throw AppError.incompleteRoleLink(
+      "This account holds the TEACHER or BURSAR role but has no linked Staff record",
+    );
+  }
+
   return {
     sub: userId,
-    roles: userRoles.map((ur) => ur.role),
+    roles,
     staffId: staff?.id ?? null,
     parentId: parent?.id ?? null,
     studentId: student?.id ?? null,

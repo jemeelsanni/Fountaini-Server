@@ -361,6 +361,53 @@ here rather than claimed as a fix: `testTimeout` was still raised to
 is real regardless of this specific flake's cause, but that change should
 not be read as resolving — or even being confirmed to affect — this entry.
 
+**2026-09-19 measurement**: the 2026-09-18 entry above left two things open
+— an actual number for the added per-request cost, and whether the 10s
+`testTimeout` raise is still doing anything. Both resolved this session.
+
+Cost: a throwaway benchmark script ran the exact isolated query
+(`prisma.user.findUnique({where:{id}, select:{mustChangePassword:true}})`)
+300 times (30-iteration warmup first), twice independently. Run 1: avg
+0.296ms, p50 0.254ms, p95 0.460ms, p99 1.088ms, max 4.411ms. Run 2: avg
+0.324ms, p50 0.274ms, p95 0.534ms, p99 2.282ms, max 4.013ms. Consistent
+~0.3ms avg, sub-millisecond at p95 both times — confirms this was never a
+plausible cause of a 5000ms→10000ms-shaped problem; the 2026-09-18 entry's
+"real regardless" framing was correct that the cost is real, but it's real
+and negligible, not real and load-bearing.
+
+`testTimeout`: briefly reverted to Vitest's 5000ms default to test whether
+10s was still buying anything, then ran the full suite 3x at the default.
+Two of three runs hit the already-documented flake in its non-timeout forms
+(a `socket hang up` on `timetable.test.ts`'s double-booking test in one
+standalone run; a `Parse Error`-adjacent failure on
+`authMatrix.test.ts`'s `POST /api/students/:id/qr-code/rotate` row in
+another) — consistent with everything already on file above. The third
+produced a genuine `Test timed out in 5000ms` on
+`fees.test.ts`'s "a rejected payment does not count toward the balance"
+test — notable specifically because that's neither `authMatrix.test.ts`
+nor auth-heavy, i.e. this is the same general, unexplained, cross-file flake
+as everything else in this section, not something specific to the routes
+the 2026-09-18 entry happened to be watching. Restored `testTimeout: 10_000`
+on this direct evidence, not the mustChangePassword cost: a 3-run sample is
+still small (same caveat as every other tally in this section), but it's a
+real, fresh before/after showing the default is reachable by this flake and
+10s gives it more room. Not claimed as a fix for the flake's cause — same
+posture as 2026-09-18 — just a measured, now better-justified reason to
+keep the higher number than "the cost is real" was.
+
+Separately, unrelated to `testTimeout` entirely: `notifications.test.ts`'s
+fee-reminder-trigger test failed on every one of these local runs with a
+live Resend API `429 daily_quota_exceeded` — this test's local/CI
+environment is apparently sending real email through a rate-limited
+provider rather than a mock, and today's quota was already spent before
+these runs started. Noted here only so it isn't mistaken for a new instance
+of the flake above (it is not — the failure mode, `error.name`, and status
+code are all specific to Resend, not to anything in this document) or
+attributed to anything changed this session. Not investigated further:
+fixing it would mean deciding whether that test should mock its email
+provider, which is a real question but a different one than what this
+section tracks.
+
 ## attendance.test.ts scan/close: folded into the known flake above, not separate
 
 An earlier version of this entry treated the "scan/close concurrency"

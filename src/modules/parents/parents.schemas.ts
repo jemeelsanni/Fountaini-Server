@@ -9,8 +9,14 @@ export const parentChildParamsSchema = z.object({
 });
 export type ParentChildParams = z.infer<typeof parentChildParamsSchema>;
 
+// Atomic, same shape as createStaffSchema: the User (loginId = email,
+// generated password, mustChangePassword: true) and the Parent profile are
+// created together — there is no separate POST /api/users step anymore, so
+// there's no window where a PARENT-role account exists without its Parent
+// record (see auth.service.ts's buildAccessTokenPayload for the boundary
+// check on that invariant).
 export const createParentSchema = z.object({
-  userId: z.string().min(1),
+  email: z.string().email(),
   firstName: z.string().min(1),
   lastName: z.string().min(1),
   phone: z.string().min(1).optional(),

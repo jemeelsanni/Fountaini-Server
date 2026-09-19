@@ -32,6 +32,22 @@ export class AppError extends Error {
     return new AppError(403, "NO_ROLES_ASSIGNED", message);
   }
 
+  /// Distinct from noRolesAssigned(): the account holds a role that always
+  /// implies a specific linked profile record (PARENT -> Parent,
+  /// TEACHER/BURSAR -> Staff), but that record is missing. Every current
+  /// creation path creates the User and its profile atomically in one
+  /// transaction (parents.service.ts::createParent, staff.service.ts::
+  /// createStaff), so this shouldn't be reachable through the API today —
+  /// same account-provisioning category and same reject-at-issuance
+  /// posture as noRolesAssigned(), for whatever future path (a direct DB
+  /// edit, a role-granting feature that doesn't exist yet) could produce
+  /// it. The alternative — issuing the token anyway — authenticates fine
+  /// and then denies that role's own routes on every subsequent request,
+  /// indistinguishable from an ordinary permission failure.
+  static incompleteRoleLink(message: string): AppError {
+    return new AppError(403, "INCOMPLETE_ROLE_LINK", message);
+  }
+
   static notFound(message = "Not Found"): AppError {
     return new AppError(404, "NOT_FOUND", message);
   }

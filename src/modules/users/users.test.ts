@@ -9,9 +9,16 @@ const app = createApp();
 
 async function createUserAndLogin(email: string, password: string, role: "ADMIN" | "TEACHER") {
   const passwordHash = await hashPassword(password);
-  await prisma.user.create({
+  const user = await prisma.user.create({
     data: { loginId: email, email, passwordHash, roles: { create: [{ role }] } },
   });
+  // A TEACHER-role account always implies a linked Staff record now (see
+  // auth.service.ts's buildAccessTokenPayload) — login() rejects a bare one.
+  if (role === "TEACHER") {
+    await prisma.staff.create({
+      data: { userId: user.id, staffNumber: "FIA/ST2026/001", firstName: "Test", lastName: "Teacher" },
+    });
+  }
   const loginRes = await request(app).post("/api/auth/login").send({ identifier: email, password });
   return loginRes.body.accessToken as string;
 }
@@ -29,30 +36,30 @@ afterAll(async () => {
 });
 
 describe("POST /api/users", () => {
-  it("allows an admin to create a user with a generated, unrecoverable-by-admin password", async () => {
+  it("allows an admin to create a bare ADMIN account with a generated, unrecoverable-by-admin password", async () => {
     const adminToken = await createAdminAndLogin();
 
     const res = await request(app)
       .post("/api/users")
       .set("Authorization", `Bearer ${adminToken}`)
-      .send({ email: "new.teacher@test.local", role: "TEACHER" });
+      .send({ email: "new.admin@test.local", role: "ADMIN" });
 
     expect(res.status).toBe(201);
-    expect(res.body.email).toBe("new.teacher@test.local");
-    expect(res.body.roles).toEqual(["TEACHER"]);
+    expect(res.body.email).toBe("new.admin@test.local");
+    expect(res.body.roles).toEqual(["ADMIN"]);
     expect(res.body.passwordHash).toBeUndefined();
     // Unlike student creation's no-destination fallback, this account
     // always has a destination (its own, required email) — the password
     // is only ever delivered by notification, never in the response.
     expect(res.body.temporaryPassword).toBeUndefined();
 
-    const created = await prisma.user.findUniqueOrThrow({ where: { email: "new.teacher@test.local" } });
-    expect(created.loginId).toBe("new.teacher@test.local");
+    const created = await prisma.user.findUniqueOrThrow({ where: { email: "new.admin@test.local" } });
+    expect(created.loginId).toBe("new.admin@test.local");
     expect(created.mustChangePassword).toBe(true);
   });
 
   it("rejects an unauthenticated request", async () => {
-    const res = await request(app).post("/api/users").send({ email: "x@test.local", role: "TEACHER" });
+    const res = await request(app).post("/api/users").send({ email: "x@test.local", role: "ADMIN" });
 
     expect(res.status).toBe(401);
   });
@@ -63,33 +70,12 @@ describe("POST /api/users", () => {
     await request(app)
       .post("/api/users")
       .set("Authorization", `Bearer ${adminToken}`)
-      .send({ email: "dupe@test.local", role: "TEACHER" });
+      .send({ email: "dupe@test.local", role: "ADMIN" });
 
     const res = await request(app)
       .post("/api/users")
       .set("Authorization", `Bearer ${adminToken}`)
-      .send({ email: "dupe@test.local", role: "BURSAR" });
-
-    expect(res.status).toBe(409);
-  });
-
-  // loginId is one shared namespace across every account type — this
-  // proves a PARENT's email is checked against it even when the existing
-  // collision came from creating a completely different role (a bare
-  // TEACHER account here), not just a second PARENT.
-  it("rejects a parent whose email collides with an existing (different-role) account's loginId", async () => {
-    const adminToken = await createAdminAndLogin();
-
-    const teacherRes = await request(app)
-      .post("/api/users")
-      .set("Authorization", `Bearer ${adminToken}`)
-      .send({ email: "shared-identifier@test.local", role: "TEACHER" });
-    expect(teacherRes.status).toBe(201);
-
-    const res = await request(app)
-      .post("/api/users")
-      .set("Authorization", `Bearer ${adminToken}`)
-      .send({ email: "shared-identifier@test.local", role: "PARENT" });
+      .send({ email: "dupe@test.local", role: "ADMIN" });
 
     expect(res.status).toBe(409);
   });
@@ -105,15 +91,21 @@ describe("POST /api/users", () => {
     expect(res.status).toBe(400);
   });
 
-  it("rejects STUDENT — every student is created via POST /api/students instead", async () => {
+  // TEACHER/BURSAR now go through POST /api/staff, PARENT through
+  // POST /api/parents, and STUDENT through POST /api/students — all three
+  // atomic (User + profile record together, in one transaction). This
+  // route is narrowed to the one account type left with no profile record
+  // of its own: a bare ADMIN bootstrap account.
+  it("rejects every role except ADMIN — each now has its own atomic creation path elsewhere", async () => {
     const adminToken = await createAdminAndLogin();
 
-    const res = await request(app)
-      .post("/api/users")
-      .set("Authorization", `Bearer ${adminToken}`)
-      .send({ email: "x@test.local", role: "STUDENT" });
-
-    expect(res.status).toBe(400);
+    for (const role of ["TEACHER", "PARENT", "BURSAR", "STUDENT"]) {
+      const res = await request(app)
+        .post("/api/users")
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({ email: `${role.toLowerCase()}@test.local`, role });
+      expect(res.status, `role ${role} must be rejected`).toBe(400);
+    }
   });
 });
 

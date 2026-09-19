@@ -96,12 +96,30 @@ describe("OpenAPI spec coverage", () => {
 });
 
 interface OperationLike {
-  responses?: Record<string, { content?: { "application/json"?: { schema?: { $ref?: string } } } }>;
+  responses?: Record<
+    string,
+    { content?: { "application/json"?: { schema?: { $ref?: string; anyOf?: { $ref?: string }[] } } } }
+  >;
 }
 
 function responseRef(doc: ReturnType<typeof generateOpenApiDocument>, path: string, method: string, status: number) {
   const pathItem = doc.paths?.[path] as Record<string, OperationLike> | undefined;
   return pathItem?.[method]?.responses?.[status]?.content?.["application/json"]?.schema?.$ref;
+}
+
+/// Same as responseRef, but for a response documented as z.union([...]) —
+/// zod-to-openapi renders that as `{ anyOf: [{$ref}, {$ref}] }` rather than
+/// a single top-level `$ref`, so responseRef alone (which only ever reads
+/// `.schema.$ref`) sees nothing there.
+function responseAnyOfRefs(
+  doc: ReturnType<typeof generateOpenApiDocument>,
+  path: string,
+  method: string,
+  status: number,
+): string[] {
+  const pathItem = doc.paths?.[path] as Record<string, OperationLike> | undefined;
+  const schema = pathItem?.[method]?.responses?.[status]?.content?.["application/json"]?.schema;
+  return (schema?.anyOf ?? []).map((entry) => entry.$ref).filter((ref): ref is string => ref !== undefined);
 }
 
 describe("OpenAPI error response documentation", () => {
@@ -126,12 +144,15 @@ describe("OpenAPI error response documentation", () => {
     expect(dangling).toEqual([]);
   });
 
-  it("gives login/refresh a NO_ROLES_ASSIGNED 403, not the ordinary ForbiddenError every guarded route gets", () => {
-    expect(responseRef(doc, "/api/auth/login", "post", 403)).toBe("#/components/schemas/NoRolesAssignedError");
-    expect(responseRef(doc, "/api/auth/refresh", "post", 403)).toBe("#/components/schemas/NoRolesAssignedError");
+  it("gives login/refresh a NO_ROLES_ASSIGNED/INCOMPLETE_ROLE_LINK 403 union, not the ordinary ForbiddenError every guarded route gets", () => {
+    const expected = ["#/components/schemas/NoRolesAssignedError", "#/components/schemas/IncompleteRoleLinkError"];
+    expect(new Set(responseAnyOfRefs(doc, "/api/auth/login", "post", 403))).toEqual(new Set(expected));
+    expect(new Set(responseAnyOfRefs(doc, "/api/auth/refresh", "post", 403))).toEqual(new Set(expected));
     // And they still don't get the generic role-gate ForbiddenError — they
     // have no requireRole in front of them at all to produce one.
-    expect(responseRef(doc, "/api/auth/login", "post", 403)).not.toBe("#/components/schemas/ForbiddenError");
+    expect(responseAnyOfRefs(doc, "/api/auth/login", "post", 403)).not.toContain(
+      "#/components/schemas/ForbiddenError",
+    );
   });
 
   it("documents 401 on login/refresh even though they're public routes with no requireAuth", () => {

@@ -552,7 +552,11 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     responses: { 200: { description: "OK", schema: z.array(StudentParentWithStudentSchema) } },
   },
   "POST /api/parents": {
-    summary: "Create a parent profile linked to a PARENT-role user",
+    summary:
+      "Atomic: creates the User (loginId = email, generated password, mustChangePassword: " +
+      "true, PARENT role) and the Parent profile together, in one transaction. Credentials are " +
+      "emailed to `email`. No more `userId` input — POST /api/users no longer accepts PARENT " +
+      "(see its own summary).",
     requestBody: createParentSchema,
     responses: { 201: { description: "Created", schema: ParentSchema } },
   },
@@ -902,9 +906,10 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
   // --- users --------------------------------------------------------------
   "POST /api/users": {
     summary:
-      "BREAKING CHANGE — narrowed to PARENT (and a bare ADMIN/TEACHER/BURSAR account with no Staff " +
-      "record of its own); STUDENT is rejected — every student is created via POST /api/students " +
-      "instead, atomically. No more `password` field: the password is always generated, never " +
+      "BREAKING CHANGE — narrowed to ADMIN only, for a bare bootstrap account with no Staff " +
+      "record of its own. TEACHER/BURSAR are created via POST /api/staff, PARENT via " +
+      "POST /api/parents, STUDENT via POST /api/students — all three atomic (User + profile " +
+      "record together). No `password` field: the password is always generated, never " +
       "admin-chosen — mustChangePassword starts true, and credentials are emailed to `email`, " +
       "which also becomes this account's loginId.",
     requestBody: createUserSchema,

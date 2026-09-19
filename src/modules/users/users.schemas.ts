@@ -1,17 +1,16 @@
 import { z } from "zod";
 
-// STUDENT and TEACHER/ADMIN/BURSAR-with-a-staff-record are excluded here on
-// purpose: every student is created via POST /api/students, and every
-// staff-record account via POST /api/staff — both now atomic (User +
-// Student/Staff together, loginId derived from the generated number in the
-// same transaction; see the report). This route is narrowed to whatever's
-// left: PARENT (still two-step — POST /api/users then POST /api/parents —
-// since a parent's loginId is just their email, known immediately, with no
-// generated-number dependency), and a bare ADMIN/TEACHER/BURSAR account
-// that will never get a Staff record of its own.
+// Narrowed to ADMIN only — every other role now has its own atomic
+// creation path: STUDENT via POST /api/students (credentials issued on
+// primary-contact parent link), TEACHER/BURSAR/ADMIN-with-a-staff-record
+// via POST /api/staff, and PARENT via POST /api/parents. All three create
+// the User and its linked profile record together, in one transaction,
+// with loginId/credential generation resolved at that same time. What's
+// left for this route is the one account type that legitimately has no
+// profile record of its own: a bare ADMIN bootstrap account.
 export const createUserSchema = z.object({
   email: z.email(),
-  role: z.enum(["ADMIN", "TEACHER", "PARENT", "BURSAR"]),
+  role: z.literal("ADMIN"),
 });
 export type CreateUserBody = z.infer<typeof createUserSchema>;
 

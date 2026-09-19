@@ -8,13 +8,6 @@ import { waitForNotification } from "../../test/waitForNotification.js";
 
 const app = createApp();
 
-async function createParentUserRecord(email: string) {
-  const passwordHash = "unused";
-  return prisma.user.create({
-    data: { loginId: email, email, passwordHash, roles: { create: [{ role: "PARENT" }] } },
-  });
-}
-
 beforeEach(async () => {
   await resetDb();
 });
@@ -24,31 +17,67 @@ afterAll(async () => {
 });
 
 describe("POST /api/parents", () => {
-  it("allows an admin to create a parent profile linked to a PARENT user", async () => {
+  it("atomically creates the User and Parent profile, generates a login, and emails it to the parent", async () => {
     const { token } = await createAdmin("admin@test.local");
-    const parentUser = await createParentUserRecord("newparent@test.local");
 
     const res = await request(app)
       .post("/api/parents")
       .set("Authorization", `Bearer ${token}`)
-      .send({ userId: parentUser.id, firstName: "Grace", lastName: "Hopper" });
+      .send({ email: "newparent@test.local", firstName: "Grace", lastName: "Hopper" });
 
     expect(res.status).toBe(201);
     expect(res.body.firstName).toBe("Grace");
+    // Unlike student creation's no-destination fallback, a parent always has
+    // their own email — the password is only ever delivered by notification.
+    expect(res.body.temporaryPassword).toBeUndefined();
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: res.body.userId as string } });
+    expect(user.loginId).toBe("newparent@test.local");
+    expect(user.mustChangePassword).toBe(true);
+    const roles = await prisma.userRole.findMany({ where: { userId: user.id } });
+    expect(roles.map((r) => r.role)).toEqual(["PARENT"]);
+
+    const notification = await waitForNotification(user.id, "Parent", res.body.id as string);
+    expect(notification, "creating a parent must email them their credentials").toBeTruthy();
+    expect(notification?.body).toMatch(/Temporary password: \S+/);
   });
 
-  it("rejects linking to a user that isn't the PARENT role", async () => {
+  it("rejects a duplicate email with 409, never creating a second User or Parent", async () => {
     const { token } = await createAdmin("admin@test.local");
-    const { user: teacherUser } = await createTeacher("teacher@test.local");
+    const body = { email: "dupe-parent@test.local", firstName: "Grace", lastName: "Hopper" };
+
+    const first = await request(app).post("/api/parents").set("Authorization", `Bearer ${token}`).send(body);
+    expect(first.status).toBe(201);
+
+    const second = await request(app).post("/api/parents").set("Authorization", `Bearer ${token}`).send(body);
+    expect(second.status).toBe(409);
+
+    const users = await prisma.user.findMany({ where: { email: "dupe-parent@test.local" } });
+    expect(users).toHaveLength(1);
+    const parents = await prisma.parent.findMany({ where: { userId: users[0]?.id } });
+    expect(parents).toHaveLength(1);
+  });
+
+  // loginId is one shared namespace across every account-creation path —
+  // this proves a PARENT's email is checked against it even when the
+  // existing collision came from a completely different creation route
+  // (POST /api/users, a bare ADMIN account), not just a second parent.
+  it("rejects an email that collides with an existing (different-route) account's loginId", async () => {
+    const { token } = await createAdmin("admin@test.local");
+
+    const adminRes = await request(app)
+      .post("/api/users")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ email: "shared-identifier@test.local", role: "ADMIN" });
+    expect(adminRes.status).toBe(201);
 
     const res = await request(app)
       .post("/api/parents")
       .set("Authorization", `Bearer ${token}`)
-      .send({ userId: teacherUser.id, firstName: "Grace", lastName: "Hopper" });
+      .send({ email: "shared-identifier@test.local", firstName: "Grace", lastName: "Hopper" });
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(409);
   });
-
 });
 
 describe("child linking", () => {

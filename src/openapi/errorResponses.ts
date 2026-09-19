@@ -4,6 +4,7 @@ import type { DiscoveredRoute } from "../authorization/routeInventory.js";
 import {
   ConflictErrorSchema,
   ForbiddenErrorSchema,
+  IncompleteRoleLinkErrorSchema,
   MustChangePasswordErrorSchema,
   NoRolesAssignedErrorSchema,
   NotFoundErrorSchema,
@@ -66,10 +67,11 @@ export const PAYMENT_REQUIRED_ROUTE_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 /// login/refresh are PUBLIC (no requireRole in front to ever produce an
-/// ordinary FORBIDDEN) — the one 403 either can throw is
-/// buildAccessTokenPayload()'s zero-role check, which is NO_ROLES_ASSIGNED
-/// specifically, not the generic ForbiddenError every guarded route gets.
-const NO_ROLES_ASSIGNED_ROUTE_KEYS: ReadonlySet<string> = new Set([
+/// ordinary FORBIDDEN) — the two 403s either can throw both come from
+/// buildAccessTokenPayload()'s account-provisioning boundary checks
+/// (zero roles, or a role missing its linked profile record), never the
+/// generic ForbiddenError every guarded route gets.
+const ISSUANCE_BOUNDARY_ROUTE_KEYS: ReadonlySet<string> = new Set([
   "POST /api/auth/login",
   "POST /api/auth/refresh",
 ]);
@@ -126,10 +128,13 @@ export function commonErrorResponses(
   // this is always false for them.
   const mustChangePasswordApplies = !isPublic && !MUST_CHANGE_PASSWORD_EXEMPT_ROUTES.has(routeKey);
 
-  if (NO_ROLES_ASSIGNED_ROUTE_KEYS.has(routeKey)) {
+  if (ISSUANCE_BOUNDARY_ROUTE_KEYS.has(routeKey)) {
     out[403] = {
-      description: "The account authenticates but holds no roles at all",
-      schema: NoRolesAssignedErrorSchema,
+      description:
+        "The account authenticates but holds no roles at all, OR holds a role whose linked " +
+        "profile record (Parent/Staff) is missing — see NoRolesAssignedError and " +
+        "IncompleteRoleLinkError.",
+      schema: z.union([NoRolesAssignedErrorSchema, IncompleteRoleLinkErrorSchema]),
     };
   } else if (route.allowedRoles !== undefined || route.guardTypes.has("scope")) {
     out[403] = mustChangePasswordApplies

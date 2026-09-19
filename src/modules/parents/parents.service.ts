@@ -1,6 +1,9 @@
 import { Prisma } from "../../../generated/prisma/index.js";
+import { logger } from "../../config/logger.js";
 import { prisma } from "../../db/client.js";
 import { AppError } from "../../errors/AppError.js";
+import { generateTemporaryPassword, hashPassword } from "../auth/password.js";
+import { createNotification } from "../notifications/notifications.service.js";
 import { issueFirstLoginForStudent } from "../students/students.service.js";
 import type { CreateParentBody, LinkChildBody } from "./parents.schemas.js";
 
@@ -8,33 +11,71 @@ function isUniqueConstraintError(err: unknown): boolean {
   return err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002";
 }
 
-export async function createParent(input: CreateParentBody) {
-  const user = await prisma.user.findUnique({
-    where: { id: input.userId },
-    include: { roles: true },
+/// Fire-and-forget, same shape as staff.service.ts's deliverStaffCredentials
+/// — a parent always has their own email (createParentSchema requires it),
+/// so there's no destination resolution to await first and no "return the
+/// password instead" fallback: a parent account is never created without
+/// somewhere to send its credentials.
+function deliverParentCredentials(parent: { id: string; userId: string }, email: string, temporaryPassword: string): void {
+  createNotification({
+    type: "CREDENTIALS_ISSUED",
+    recipientUserId: parent.userId,
+    subject: "Your school portal login",
+    body:
+      `Your login ID is ${email}. Temporary password: ${temporaryPassword}. ` +
+      `You'll be asked to change it the first time you sign in.`,
+    channels: ["EMAIL"],
+    relatedEntityType: "Parent",
+    relatedEntityId: parent.id,
+  }).catch((err: unknown) => {
+    logger.error({ err, email }, "Failed to send parent credential notification");
   });
-  if (!user) {
-    throw AppError.notFound("User not found");
-  }
-  if (!user.roles.some((ur) => ur.role === "PARENT")) {
-    throw AppError.badRequest("The linked user must have the PARENT role");
-  }
-  const existing = await prisma.parent.findUnique({ where: { userId: input.userId } });
-  if (existing) {
-    throw AppError.conflict("This user is already linked to a parent record");
-  }
+}
 
+/// Atomic: creates the User (loginId = email, generated password,
+/// mustChangePassword: true, PARENT role) and the Parent row in one
+/// transaction — matching students.service.ts::issueFirstLoginForStudent
+/// and staff.service.ts::createStaff. Replaces the old two-step
+/// POST /api/users -> POST /api/parents flow, which left a window where a
+/// PARENT-role User existed with no linked Parent record (see
+/// auth.service.ts's buildAccessTokenPayload for the boundary check this
+/// closes off going forward, not just retroactively).
+export async function createParent(input: CreateParentBody) {
+  const temporaryPassword = generateTemporaryPassword();
+  const passwordHash = await hashPassword(temporaryPassword);
+
+  let parent;
   try {
-    return await prisma.parent.create({ data: input });
+    parent = await prisma.$transaction(async (tx) => {
+      const user = await tx.user.create({
+        data: {
+          loginId: input.email,
+          email: input.email,
+          passwordHash,
+          mustChangePassword: true,
+          roles: { create: [{ role: "PARENT" }] },
+        },
+      });
+      return tx.parent.create({
+        data: {
+          userId: user.id,
+          firstName: input.firstName,
+          lastName: input.lastName,
+          phone: input.phone,
+          alternatePhone: input.alternatePhone,
+          address: input.address,
+        },
+      });
+    });
   } catch (err) {
-    // The existence check above is a stale read the instant a concurrent
-    // createParent for the same user lands between it and this create() —
-    // the DB's own unique constraint on userId is the real backstop.
     if (isUniqueConstraintError(err)) {
-      throw AppError.conflict("This user is already linked to a parent record");
+      throw AppError.conflict("A user with this email already exists");
     }
     throw err;
   }
+
+  deliverParentCredentials(parent, input.email, temporaryPassword);
+  return parent;
 }
 
 export function listParents() {

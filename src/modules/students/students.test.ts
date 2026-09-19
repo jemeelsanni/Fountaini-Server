@@ -14,6 +14,7 @@ import {
   enrollStudent,
 } from "../../test/factories.js";
 import { resetDb } from "../../test/resetDb.js";
+import { waitForAuditLog } from "../../test/waitForAuditLog.js";
 import { waitForNotification } from "../../test/waitForNotification.js";
 
 const app = createApp();
@@ -331,5 +332,28 @@ describe("POST /api/students/:id/reissue-credentials", () => {
     expect(res.status).toBe(200);
     expect(typeof res.body.temporaryPassword).toBe("string");
     expect((res.body.temporaryPassword as string).length).toBeGreaterThanOrEqual(8);
+  });
+
+  it("never persists the reissued password into the audit log, even on the no-parent-linked branch that returns it", async () => {
+    const { adminToken, student, parent } = await studentWithLoginAndPrimaryParent();
+    const unlinkRes = await request(app)
+      .delete(`/api/parents/${parent.id}/children/${student.id}`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(unlinkRes.status).toBe(204);
+
+    const res = await request(app)
+      .post(`/api/students/${student.id}/reissue-credentials`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    const returnedPassword = res.body.temporaryPassword as string;
+    expect(returnedPassword).toBeTruthy();
+
+    const entry = await waitForAuditLog("Student", student.id, "STUDENT_CREDENTIALS_REISSUED");
+    expect(entry, "the reissue mutation must still be audited").not.toBeNull();
+    const afterData = entry?.afterData as Record<string, unknown> | null;
+    expect(afterData?.temporaryPassword).toBeUndefined();
+    // Belt and suspenders: the raw generated value must not appear anywhere
+    // in the persisted row, not just under the expected key name.
+    expect(JSON.stringify(afterData)).not.toContain(returnedPassword);
   });
 });

@@ -74,16 +74,16 @@ describe("500-instead-of-409/404 cluster: concurrent duplicate handling", () => 
     expect(users).toHaveLength(1);
   });
 
-  it("createParent: two concurrent creates linked to the same user resolve as one success and one 409, never a 500", async () => {
-    const parentUser = await createParentUserRecord("parent-user@test.local");
-
+  it("createParent: two concurrent creates with the same email resolve as one success and one 409, never a 500", async () => {
     const [a, b] = await Promise.all([
-      settle(createParent({ userId: parentUser.id, firstName: "Grace", lastName: "Hopper" })),
-      settle(createParent({ userId: parentUser.id, firstName: "Grace", lastName: "Hopper" })),
+      settle(createParent({ email: "parent-user@test.local", firstName: "Grace", lastName: "Hopper" })),
+      settle(createParent({ email: "parent-user@test.local", firstName: "Grace", lastName: "Hopper" })),
     ]);
     expectOneSuccessRestFailedWith([a, b], 409);
 
-    const parents = await prisma.parent.findMany({ where: { userId: parentUser.id } });
+    const users = await prisma.user.findMany({ where: { email: "parent-user@test.local" } });
+    expect(users).toHaveLength(1);
+    const parents = await prisma.parent.findMany({ where: { userId: users[0]?.id } });
     expect(parents).toHaveLength(1);
   });
 

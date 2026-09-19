@@ -22,24 +22,18 @@ export default defineConfig({
     fileParallelism: false,
     pool: "forks",
     maxWorkers: 1,
-    // requireAuth now does one extra DB round-trip per authenticated
-    // request (the mustChangePassword check — see authorization/
-    // middleware.ts) to satisfy a genuine correctness requirement (it must
-    // take effect on the very next request after change-password, within
-    // the same still-valid access token, so it can't be cached in the
-    // JWT). That's real, permanent added latency on every one of the many
-    // sequential HTTP calls a test like authMatrix.test.ts's per-row cases
-    // makes. NOTE: a small (3-run) before/after comparison while adding
-    // this looked like it confirmed the extra query was newly causing
-    // authMatrix.test.ts timeouts — but see docs/concurrency.md's "Known
-    // intermittent test failure": that exact symptom (5000ms timeouts and
-    // `Parse Error: Expected HTTP/` on authMatrix.test.ts rows
-    // specifically) is an already-documented, unexplained, ~20%-of-runs
-    // flake with cause "unknown," predating this batch entirely — a 3-run
-    // sample can't distinguish "caused by this change" from "that flake
-    // fired." Bumped the timeout anyway, since the added per-request cost
-    // is real regardless; just not claiming it as a confirmed fix for a
-    // flake this small a sample can't actually attribute.
+    // NOT because of requireAuth's mustChangePassword check: that extra
+    // per-request DB round-trip was measured directly at ~0.3ms avg
+    // (docs/concurrency.md, "2026-09-19 measurement") — noise, confirmed
+    // not to be the reason this needed raising. Kept at 10s anyway: briefly
+    // reverted to Vitest's 5000ms default to test that theory, and a 3-run
+    // check at the default produced a genuine `Test timed out in 5000ms`
+    // on fees.test.ts (not even an auth-heavy test) in 1/3 runs — direct,
+    // fresh evidence that the pre-existing, unrelated, unexplained flake
+    // documented in docs/concurrency.md really does manifest as hard
+    // timeouts at the default, not just as the malformed-response symptoms
+    // also on file there. 10s doesn't fix that flake's cause, but measurably
+    // reduces how often it surfaces as a failed run.
     testTimeout: 10_000,
   },
 });
