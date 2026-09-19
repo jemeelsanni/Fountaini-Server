@@ -4,6 +4,7 @@ import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
 import { hashPassword } from "../auth/password.js";
 import { resetDb } from "../../test/resetDb.js";
+import { waitForNotification } from "../../test/waitForNotification.js";
 
 const app = createApp();
 
@@ -56,6 +57,11 @@ describe("POST /api/users", () => {
     const created = await prisma.user.findUniqueOrThrow({ where: { email: "new.admin@test.local" } });
     expect(created.loginId).toBe("new.admin@test.local");
     expect(created.mustChangePassword).toBe(true);
+
+    // Drain the fire-and-forget credential notification before this test
+    // ends — an unawaited one can otherwise land mid-way through a later
+    // test's resetDb() and trip its FK.
+    await waitForNotification(res.body.id as string, "User", res.body.id as string);
   });
 
   it("rejects an unauthenticated request", async () => {
@@ -67,10 +73,11 @@ describe("POST /api/users", () => {
   it("rejects a duplicate email", async () => {
     const adminToken = await createAdminAndLogin();
 
-    await request(app)
+    const first = await request(app)
       .post("/api/users")
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ email: "dupe@test.local", role: "ADMIN" });
+    await waitForNotification(first.body.id as string, "User", first.body.id as string);
 
     const res = await request(app)
       .post("/api/users")

@@ -403,10 +403,66 @@ provider rather than a mock, and today's quota was already spent before
 these runs started. Noted here only so it isn't mistaken for a new instance
 of the flake above (it is not — the failure mode, `error.name`, and status
 code are all specific to Resend, not to anything in this document) or
-attributed to anything changed this session. Not investigated further:
-fixing it would mean deciding whether that test should mock its email
-provider, which is a real question but a different one than what this
-section tracks.
+attributed to anything changed this session.
+
+**2026-09-19 fix — the Resend quota hit above was a real leak, not a test
+config choice**: investigated further rather than left as a "different
+question." Root cause: `src/config/env.ts`'s own `import "dotenv/config"`
+loads `.env` (this developer's real local file, with `NOTIFICATION_PROVIDER
+=resend` and a real `RESEND_API_KEY`) from cwd as a side effect of
+`env.ts` itself being imported — which happens *after* `vitest.setup.ts`'s
+explicit `.env.test.local`/`.env.test` loads, but dotenv never overwrites an
+already-set var, and neither test env file defined `NOTIFICATION_PROVIDER`
+or `RESEND_API_KEY` before this fix. So every test run was silently sending
+real email through a real, rate-limited vendor — not a mocking question,
+an environment leak with a specific, findable cause. Fixed by adding
+`NOTIFICATION_PROVIDER=console` explicitly to `.env.test` (committed,
+portable) — dotenv's already-set-wins behavior then makes that value win
+outright over whatever `.env` says, closing the leak for that one variable.
+`RESEND_API_KEY` is left leaking harmlessly (unused once the provider is
+console) rather than also scrubbed — not worth a second variable's worth of
+defense-in-depth for a value that's already inert.
+
+**2026-09-19 fix — that leak was also masking a second, real, fixable bug**:
+switching test runs to the console provider (near-instant, always succeeds)
+immediately surfaced a `Foreign key constraint violated on the constraint:
+NotificationDelivery_notificationEventId_fkey` on `parents.test.ts`'s new
+(this-session) "rejects a duplicate email with 409" test. Same family as
+concurrency500Cluster.test.ts's documented races and this file's own
+"interactive transactions poison on error" trap: `notifications.service.ts`
+'s `createNotification()` does `notificationEvent.create()` then, per
+channel, a separate `notificationDelivery.create()` — two round-trips, not
+one transaction. A test that triggers a fire-and-forget `createNotification`
+call (parent/staff/user credential issuance, payment confirmation) and
+doesn't wait for it before finishing can let the `NotificationDelivery`
+insert land *after* the next test's `resetDb()` has already deleted the
+`NotificationEvent` row it points at — an INSERT racing a DELETE, the mirror
+image of the User/NotificationEvent race fixed earlier in the
+`id-based-login-and-credentials` branch's own parents.test.ts work. Slower,
+more variable real-Resend latency had apparently been landing outside this
+window often enough not to be caught; the console provider's speed and
+consistency made it reproducible almost immediately. Found and fixed four
+more unawaited sites the same way (added a `waitForNotification(...)` drain
+right after the triggering call): `parents.test.ts`'s two new atomic-create
+tests, `users.test.ts`'s two successful `POST /api/users` creates,
+`staff.test.ts`'s two successful `POST /api/staff` creates, and
+`results.test.ts`'s shared `confirmPayment` withholding-test helper (the
+only `fees.test.ts`-style payment-confirm call site in the whole suite
+whose student actually has a linked parent — `fees.test.ts`'s own confirm
+tests all use bare students with no linked parent, so `notifyPaymentConfirmed`
+loops zero times there and never creates a notification to race in the
+first place; checked directly rather than assumed, since it's exactly the
+kind of thing worth getting wrong). 5 consecutive full-suite runs after
+these fixes produced zero further `NotificationDelivery`/`NotificationEvent`
+FK errors — the remaining failures across those runs were the ordinary,
+already-documented flake above (socket hang up, `Parse Error: Expected
+HTTP/`, one occasional hard timeout), on a different file each time, never
+the FK signature. Not claimed as new instances of this fixed race; recorded
+as more of the same pre-existing unknown-cause flake this section already
+tracks. Any *future* unawaited `createNotification` call site remains a
+latent version of this same bug — there's no structural guard against
+writing one, just the pattern (drain with `waitForNotification` before a
+test that triggers one ends) to repeat.
 
 ## attendance.test.ts scan/close: folded into the known flake above, not separate
 

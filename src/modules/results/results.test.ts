@@ -22,6 +22,7 @@ import {
 import { awaitLockWaiter } from "../../test/awaitLockWaiter.js";
 import { resetDb } from "../../test/resetDb.js";
 import { waitForAuditLog } from "../../test/waitForAuditLog.js";
+import { waitForNotification } from "../../test/waitForNotification.js";
 
 const app = createApp();
 
@@ -1118,15 +1119,19 @@ describe("Fee withholding (Feature D)", () => {
       },
     });
 
-    return { adminToken, parentToken, studentToken, session, term, klass, result, obligation };
+    return { adminToken, parentToken, parentUserId: parent.userId, studentToken, session, term, klass, result, obligation };
   }
 
-  async function confirmPayment(obligationId: string, amountKobo: number, adminToken: string) {
+  async function confirmPayment(obligationId: string, amountKobo: number, adminToken: string, parentUserId: string) {
     const payment = await request(app)
       .post(`/api/fee-obligations/${obligationId}/payments`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ amountKobo, paymentDate: "2026-09-10" });
     await request(app).post(`/api/payments/${payment.body.id}/confirm`).set("Authorization", `Bearer ${adminToken}`);
+    // Drain the fire-and-forget payment-confirmed notification this
+    // triggers before returning — an unawaited one can otherwise land
+    // mid-way through a later test's resetDb() and trip its FK.
+    await waitForNotification(parentUserId, "Payment", payment.body.id as string);
   }
 
   it("withholds a FINALIZED result from PARENT/STUDENT with a 402 while any balance is outstanding — even a partial payment", async () => {
@@ -1139,7 +1144,7 @@ describe("Fee withholding (Feature D)", () => {
     expect(asParentUnpaid.body.error.code).toBe("PAYMENT_REQUIRED");
     expect(asParentUnpaid.body.error.details.outstandingKobo).toBe(100_000);
 
-    await confirmPayment(world.obligation.id, 40_000, world.adminToken);
+    await confirmPayment(world.obligation.id, 40_000, world.adminToken, world.parentUserId);
     const asParentPartial = await request(app)
       .get(`/api/results/${world.result.studentId}/${world.term.id}`)
       .set("Authorization", `Bearer ${world.parentToken}`);
@@ -1151,7 +1156,7 @@ describe("Fee withholding (Feature D)", () => {
       .set("Authorization", `Bearer ${world.studentToken}`);
     expect(asStudentPartial.status).toBe(402);
 
-    await confirmPayment(world.obligation.id, 60_000, world.adminToken);
+    await confirmPayment(world.obligation.id, 60_000, world.adminToken, world.parentUserId);
     const asParentPaid = await request(app)
       .get(`/api/results/${world.result.studentId}/${world.term.id}`)
       .set("Authorization", `Bearer ${world.parentToken}`);

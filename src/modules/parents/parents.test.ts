@@ -48,6 +48,10 @@ describe("POST /api/parents", () => {
 
     const first = await request(app).post("/api/parents").set("Authorization", `Bearer ${token}`).send(body);
     expect(first.status).toBe(201);
+    // Drain the fire-and-forget credential-issuance notification this
+    // create triggers before moving on — an unawaited one can otherwise
+    // land mid-way through a later test's resetDb() and trip its FK.
+    await waitForNotification(first.body.userId as string, "Parent", first.body.id as string);
 
     const second = await request(app).post("/api/parents").set("Authorization", `Bearer ${token}`).send(body);
     expect(second.status).toBe(409);
@@ -70,6 +74,9 @@ describe("POST /api/parents", () => {
       .set("Authorization", `Bearer ${token}`)
       .send({ email: "shared-identifier@test.local", role: "ADMIN" });
     expect(adminRes.status).toBe(201);
+    // Same drain as above, for POST /api/users's own fire-and-forget
+    // credential notification.
+    await waitForNotification(adminRes.body.id as string, "User", adminRes.body.id as string);
 
     const res = await request(app)
       .post("/api/parents")

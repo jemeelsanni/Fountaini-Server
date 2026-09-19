@@ -62,10 +62,11 @@ describe("POST /api/staff", () => {
     const { token } = await createAdmin("admin@test.local");
     await createCurrentAcademicSession("2026/2027");
 
-    await request(app)
+    const first = await request(app)
       .post("/api/staff")
       .set("Authorization", `Bearer ${token}`)
       .send({ role: "TEACHER", email: "dupe@test.local", firstName: "A", lastName: "One" });
+    await waitForNotification(first.body.userId as string, "Staff", first.body.id as string);
 
     const res = await request(app)
       .post("/api/staff")
@@ -79,10 +80,11 @@ describe("POST /api/staff", () => {
     const { token } = await createAdmin("admin@test.local");
     await createCurrentAcademicSession("2026/2027");
 
-    await request(app)
+    const first = await request(app)
       .post("/api/staff")
       .set("Authorization", `Bearer ${token}`)
       .send({ role: "TEACHER", email: "a@test.local", staffNumber: "FIA/ST2019/010", firstName: "A", lastName: "One" });
+    await waitForNotification(first.body.userId as string, "Staff", first.body.id as string);
 
     const res = await request(app)
       .post("/api/staff")
