@@ -41,6 +41,24 @@ UPDATE "User"
 SET "loginId" = "email"
 WHERE "loginId" IS NULL;
 
+-- Last-resort fallback: a row still NULL here has no Staff link, no
+-- Student link, and no email of its own. Nothing in this system's
+-- application history should be able to produce that state (parent/staff/
+-- bare-admin creation has always required an email; students are covered
+-- by the admissionNumber step above regardless of their own email), but
+-- nothing at the DB level has ever enforced it either — User.email has
+-- always been nullable (see its own schema comment), so a legacy row, a
+-- direct DB fix from an old incident, or a future restore this reasoning
+-- turns out to be wrong about could still hit it. Without this, the SET
+-- NOT NULL below would fail the same way the StudentParent index below it
+-- just did in production. Falling back to the row's own id is safe both
+-- ways: always present (it's the primary key) and structurally unable to
+-- collide with a staffNumber/admissionNumber/email (cuids contain neither
+-- "@" nor "/").
+UPDATE "User"
+SET "loginId" = "id"
+WHERE "loginId" IS NULL;
+
 ALTER TABLE "User" ALTER COLUMN "loginId" SET NOT NULL;
 CREATE UNIQUE INDEX "User_loginId_key" ON "User"("loginId");
 
@@ -48,6 +66,32 @@ CREATE UNIQUE INDEX "User_loginId_key" ON "User"("loginId");
 -- StudentParent — at most one primary contact per student (see the caveat
 -- at the top of schema.prisma; this is entry 4 in that list)
 -- ---------------------------------------------------------------------------
+
+-- Deduplicate before the index below can enforce it: this failed against
+-- production on first deploy — at least one student already had more than
+-- one isPrimaryContact = true row, predating the index (the application
+-- only ever enforced "at most one" at link-creation time, via this same
+-- index, so nothing stopped an earlier code path or a direct fix from
+-- leaving more than one set). Keeps the earliest-linked flagged row per
+-- student and clears the rest — the same primary-else-earliest-linked
+-- fallback resolvePrimaryContactParent (students.service.ts) already uses
+-- at runtime, so the migration and the runtime agree on who "the primary"
+-- is for any student this affects, rather than the migration picking
+-- arbitrarily. "id" is a secondary sort key only to make the choice
+-- deterministic if two rows for the same student share an identical
+-- createdAt timestamp; it does not otherwise affect which row wins.
+WITH ranked_primary_contacts AS (
+  SELECT "id",
+         ROW_NUMBER() OVER (
+           PARTITION BY "studentId"
+           ORDER BY "createdAt" ASC, "id" ASC
+         ) AS rn
+  FROM "StudentParent"
+  WHERE "isPrimaryContact"
+)
+UPDATE "StudentParent"
+SET "isPrimaryContact" = false
+WHERE "id" IN (SELECT "id" FROM ranked_primary_contacts WHERE rn > 1);
 
 CREATE UNIQUE INDEX "StudentParent_one_primary_contact_per_student" ON "StudentParent" ("studentId") WHERE "isPrimaryContact";
 

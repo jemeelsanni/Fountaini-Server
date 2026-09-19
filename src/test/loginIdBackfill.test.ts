@@ -60,3 +60,93 @@ describe("loginId backfill (migration 20260918120214)", () => {
     expect(parentUser.loginId).toBe(parentUser.email);
   });
 });
+
+/// Migration 20260918120214 failed against production on first deploy: at
+/// least one student already had more than one StudentParent row with
+/// isPrimaryContact = true, predating the partial unique index the
+/// migration creates to enforce "at most one" — nothing before that index
+/// existed stopped it. The fix adds a dedup UPDATE ahead of the CREATE
+/// UNIQUE INDEX (see the migration's own comment). This re-runs that exact
+/// statement the same way the describe block above re-runs the loginId
+/// backfill: against the current (already-migrated) schema, corrupting
+/// data the schema would otherwise refuse to hold. The corruption here is
+/// schema-level, not just row-level, though — the whole point of the
+/// duplicate state is that the index blocks it — so this drops the index
+/// first and always restores it in a finally, even if an assertion fails,
+/// rather than leaving the constraint silently off for every later test in
+/// this process. Also verified directly against a real reproduction of
+/// production's failure (all 9 migrations replayed against a throwaway
+/// Postgres database, seeded with three isPrimaryContact = true rows for
+/// one student, migration re-run) — not part of this automated suite, but
+/// confirmed by hand before writing this.
+describe("StudentParent primary-contact dedup (migration 20260918120214)", () => {
+  it("keeps the earliest-linked primary-contact row and clears the rest when re-run against corrupted data", async () => {
+    const student = await createBareStudent("FIA/2026/900");
+    const { parent: parentA } = await createParent("dedup-parent-a@test.local");
+    const { parent: parentB } = await createParent("dedup-parent-b@test.local");
+    const { parent: parentC } = await createParent("dedup-parent-c@test.local");
+
+    await prisma.$executeRaw`DROP INDEX "StudentParent_one_primary_contact_per_student"`;
+    try {
+      const earliest = await prisma.studentParent.create({
+        data: {
+          studentId: student.id,
+          parentId: parentA.id,
+          relationship: "MOTHER",
+          isPrimaryContact: true,
+          createdAt: new Date("2026-01-01T00:00:00Z"),
+        },
+      });
+      const middle = await prisma.studentParent.create({
+        data: {
+          studentId: student.id,
+          parentId: parentB.id,
+          relationship: "FATHER",
+          isPrimaryContact: true,
+          createdAt: new Date("2026-02-01T00:00:00Z"),
+        },
+      });
+      const latest = await prisma.studentParent.create({
+        data: {
+          studentId: student.id,
+          parentId: parentC.id,
+          relationship: "GUARDIAN",
+          isPrimaryContact: true,
+          createdAt: new Date("2026-03-01T00:00:00Z"),
+        },
+      });
+
+      // The migration's own dedup statement, verbatim.
+      await prisma.$executeRaw`
+        WITH ranked_primary_contacts AS (
+          SELECT "id",
+                 ROW_NUMBER() OVER (
+                   PARTITION BY "studentId"
+                   ORDER BY "createdAt" ASC, "id" ASC
+                 ) AS rn
+          FROM "StudentParent"
+          WHERE "isPrimaryContact"
+        )
+        UPDATE "StudentParent"
+        SET "isPrimaryContact" = false
+        WHERE "id" IN (SELECT "id" FROM ranked_primary_contacts WHERE rn > 1)
+      `;
+
+      const refreshed = await prisma.studentParent.findMany({
+        where: { studentId: student.id },
+        orderBy: { createdAt: "asc" },
+      });
+      expect(refreshed.find((l) => l.id === earliest.id)?.isPrimaryContact).toBe(true);
+      expect(refreshed.find((l) => l.id === middle.id)?.isPrimaryContact).toBe(false);
+      expect(refreshed.find((l) => l.id === latest.id)?.isPrimaryContact).toBe(false);
+    } finally {
+      // Re-creating the index here isn't just teardown — it's also part of
+      // the assertion: this is the exact statement the migration itself
+      // runs immediately after the dedup, and it throws if any student
+      // still has more than one row flagged true. A dedup bug that left
+      // duplicates behind would fail here, not just at the expect() calls
+      // above.
+      await prisma.$executeRaw`CREATE UNIQUE INDEX "StudentParent_one_primary_contact_per_student" ON "StudentParent" ("studentId") WHERE "isPrimaryContact"`;
+    }
+  });
+});
