@@ -5,12 +5,27 @@
 -- multi_role_users migration. `prisma migrate dev` also refuses to run
 -- non-interactively once it detects the "unique constraint may fail on
 -- existing duplicates" warning below.
+--
+-- Every DDL statement in this file is written IF [NOT] EXISTS / idempotent
+-- on purpose: this migration already failed once against production (the
+-- StudentParent duplicate-primary issue fixed below) and needed a second
+-- deploy attempt. Verified directly (not just reasoned about) that a
+-- Postgres 16 ROLLBACK on the original failure fully undid every earlier
+-- statement in this file, including `ALTER TYPE ... ADD VALUE` — which is
+-- fully transactional as of Postgres 12, unlike in older versions — so a
+-- clean retry from scratch was already safe. This layer is for whatever
+-- that reasoning didn't cover: Prisma's own migration-history bookkeeping
+-- marks a failed attempt as unresolved regardless of the schema's actual
+-- state, and a future failure in this same file (or a manual intervention
+-- in response to one) might not roll back as cleanly. Every statement here
+-- can now be re-run against a database that already has some or all of it,
+-- with no error either way.
 
 -- ---------------------------------------------------------------------------
 -- IdentifierCounter — race-safe admission/staff number sequences
 -- ---------------------------------------------------------------------------
 
-CREATE TABLE "IdentifierCounter" (
+CREATE TABLE IF NOT EXISTS "IdentifierCounter" (
     "prefix" TEXT NOT NULL,
     "lastValue" INTEGER NOT NULL DEFAULT 0,
 
@@ -21,8 +36,8 @@ CREATE TABLE "IdentifierCounter" (
 -- User.loginId — backfill before NOT NULL/UNIQUE
 -- ---------------------------------------------------------------------------
 
-ALTER TABLE "User" ADD COLUMN "loginId" TEXT;
-ALTER TABLE "User" ADD COLUMN "mustChangePassword" BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "loginId" TEXT;
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "mustChangePassword" BOOLEAN NOT NULL DEFAULT false;
 
 -- Staff first, then Student, then whatever's left (Parent, or a bare
 -- account with no linked record) falls back to email — exactly the table
@@ -60,7 +75,7 @@ SET "loginId" = "id"
 WHERE "loginId" IS NULL;
 
 ALTER TABLE "User" ALTER COLUMN "loginId" SET NOT NULL;
-CREATE UNIQUE INDEX "User_loginId_key" ON "User"("loginId");
+CREATE UNIQUE INDEX IF NOT EXISTS "User_loginId_key" ON "User"("loginId");
 
 -- ---------------------------------------------------------------------------
 -- StudentParent — at most one primary contact per student (see the caveat
@@ -93,10 +108,10 @@ UPDATE "StudentParent"
 SET "isPrimaryContact" = false
 WHERE "id" IN (SELECT "id" FROM ranked_primary_contacts WHERE rn > 1);
 
-CREATE UNIQUE INDEX "StudentParent_one_primary_contact_per_student" ON "StudentParent" ("studentId") WHERE "isPrimaryContact";
+CREATE UNIQUE INDEX IF NOT EXISTS "StudentParent_one_primary_contact_per_student" ON "StudentParent" ("studentId") WHERE "isPrimaryContact";
 
 -- ---------------------------------------------------------------------------
 -- NotificationType — credential delivery
 -- ---------------------------------------------------------------------------
 
-ALTER TYPE "NotificationType" ADD VALUE 'CREDENTIALS_ISSUED';
+ALTER TYPE "NotificationType" ADD VALUE IF NOT EXISTS 'CREDENTIALS_ISSUED';

@@ -78,7 +78,17 @@ describe("loginId backfill (migration 20260918120214)", () => {
 /// production's failure (all 9 migrations replayed against a throwaway
 /// Postgres database, seeded with three isPrimaryContact = true rows for
 /// one student, migration re-run) — not part of this automated suite, but
-/// confirmed by hand before writing this.
+/// confirmed by hand before writing this. Every DDL statement in this
+/// migration is IF [NOT] EXISTS for the same reason: confirmed by hand
+/// (inside an explicit BEGIN/COMMIT, matching how Prisma actually runs a
+/// migration file) that a Postgres 16 rollback on the original failure
+/// undid the whole file cleanly, including `ALTER TYPE ... ADD VALUE`
+/// (transactional since Postgres 12) — but Prisma's own migration-history
+/// bookkeeping still marks a failed attempt as unresolved regardless of
+/// the schema's actual state, so the file needs to survive a second
+/// attempt either way. Confirmed the full file re-applies successfully
+/// twice in a row (fresh, then immediately again) against the same
+/// duplicate-primary reproduction above, with no error on the second run.
 describe("StudentParent primary-contact dedup (migration 20260918120214)", () => {
   it("keeps the earliest-linked primary-contact row and clears the rest when re-run against corrupted data", async () => {
     const student = await createBareStudent("FIA/2026/900");
