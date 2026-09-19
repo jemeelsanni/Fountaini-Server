@@ -2,6 +2,7 @@ import { Prisma, type Role } from "../../../generated/prisma/index.js";
 import { logger } from "../../config/logger.js";
 import { prisma } from "../../db/client.js";
 import { AppError } from "../../errors/AppError.js";
+import { fireAndForget } from "../../lib/fireAndForget.js";
 import { generateTemporaryPassword, hashPassword } from "../auth/password.js";
 import { createNotification } from "../notifications/notifications.service.js";
 
@@ -65,19 +66,20 @@ export async function createUser(input: { email: string; role: Role }) {
     throw err;
   }
 
-  createNotification({
-    type: "CREDENTIALS_ISSUED",
-    recipientUserId: user.id,
-    subject: "Your school portal login",
-    body:
-      `Your login ID is ${input.email}. Temporary password: ${temporaryPassword}. ` +
-      `You'll be asked to change it the first time you sign in.`,
-    channels: ["EMAIL"],
-    relatedEntityType: "User",
-    relatedEntityId: user.id,
-  }).catch((err: unknown) => {
-    logger.error({ err }, "Failed to send user credential notification");
-  });
+  fireAndForget(
+    createNotification({
+      type: "CREDENTIALS_ISSUED",
+      recipientUserId: user.id,
+      subject: "Your school portal login",
+      body:
+        `Your login ID is ${input.email}. Temporary password: ${temporaryPassword}. ` +
+        `You'll be asked to change it the first time you sign in.`,
+      channels: ["EMAIL"],
+      relatedEntityType: "User",
+      relatedEntityId: user.id,
+    }),
+    (err) => logger.error({ err }, "Failed to send user credential notification"),
+  );
 
   return flattenRoles(user);
 }

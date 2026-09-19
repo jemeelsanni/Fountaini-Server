@@ -3,6 +3,7 @@ import type { Prisma } from "../../../generated/prisma/index.js";
 import { logger } from "../../config/logger.js";
 import { prisma } from "../../db/client.js";
 import { AppError } from "../../errors/AppError.js";
+import { fireAndForget } from "../../lib/fireAndForget.js";
 import { createNotification } from "../notifications/notifications.service.js";
 import type {
   CreateFeeStructureBody,
@@ -243,9 +244,9 @@ export async function confirmPayment(id: string, actorUserId: string) {
 
   // Fire-and-forget: a slow or failing notification must not hold up the
   // response or fail an otherwise-successful confirmation.
-  notifyPaymentConfirmed(id).catch((err: unknown) => {
-    logger.error({ err }, "Failed to send payment confirmation notification");
-  });
+  fireAndForget(notifyPaymentConfirmed(id), (err) =>
+    logger.error({ err }, "Failed to send payment confirmation notification"),
+  );
 
   return updated;
 }

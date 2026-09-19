@@ -459,10 +459,44 @@ already-documented flake above (socket hang up, `Parse Error: Expected
 HTTP/`, one occasional hard timeout), on a different file each time, never
 the FK signature. Not claimed as new instances of this fixed race; recorded
 as more of the same pre-existing unknown-cause flake this section already
-tracks. Any *future* unawaited `createNotification` call site remains a
-latent version of this same bug — there's no structural guard against
-writing one, just the pattern (drain with `waitForNotification` before a
-test that triggers one ends) to repeat.
+tracks.
+
+**2026-09-19 fix — closed structurally, not just at the five known sites**:
+the "no structural guard" gap this entry originally ended on is now closed
+two ways.
+
+Production correctness fix: `createNotification()`'s `notificationEvent.
+create()` and every channel's `notificationDelivery.create()` (the PENDING
+placeholder rows) now run in one `$transaction` — either the event and all
+its delivery rows exist, or none do. This was a real gap independent of any
+test: a crash between the two writes left an event the system believed was
+delivered, with no delivery record for it at all. The actual send (network
+I/O, per channel) deliberately stays outside that transaction — holding a
+DB transaction open for the duration of an external HTTP call is its own
+anti-pattern, and a crash mid-send now just leaves an existing row at
+PENDING rather than erasing it. As a side effect, this also shrinks the test
+race's window to just the send/update phase, which is now near-instant
+against the console provider.
+
+Structural test-infra fix, for that remaining window and for every *future*
+call site: every fire-and-forget write in this codebase (the five sites
+above, plus `auditMutation.ts`'s own fire-and-forget `writeAuditLog`, which
+has the identical shape and was never audited for this specific race before
+now) goes through a new `fireAndForget()` wrapper
+(`src/lib/fireAndForget.ts`) instead of a hand-rolled `.catch(logger.error)`
+or bare `void`. Same runtime behavior in production — it doesn't await
+anything, doesn't change latency or error handling — but it now also tracks
+the in-flight promise, and `resetDb()` calls the paired `drainFireAndForget
+()` before touching any table. A leftover write from the *previous* test
+can no longer land mid-truncate, structurally, without any test author
+needing to remember a per-call-site `waitForNotification()` drain — that
+helper still exists and is still used where a test wants to assert on a
+notification's actual *content*, which is a different job. The five
+`waitForNotification()` drains added earlier this session are now
+redundant for race-prevention specifically (`resetDb()` covers that
+generally) but were left in place rather than stripped back out — several
+double as the content assertions just described, and removing the rest
+would have been churn for no correctness gain.
 
 ## attendance.test.ts scan/close: folded into the known flake above, not separate
 

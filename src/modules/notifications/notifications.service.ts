@@ -31,24 +31,46 @@ async function resolveRecipientAddress(userId: string, channel: NotificationChan
 }
 
 export async function createNotification(input: CreateNotificationInput) {
-  const event = await prisma.notificationEvent.create({
-    data: {
-      type: input.type,
-      recipientUserId: input.recipientUserId,
-      subject: input.subject,
-      body: input.body,
-      relatedEntityType: input.relatedEntityType,
-      relatedEntityId: input.relatedEntityId,
-    },
-  });
-
   const channels = [...new Set<NotificationChannel>([...input.channels, "IN_APP"])];
 
+  // Atomic: the event and every channel's PENDING delivery placeholder are
+  // created together, in one transaction — a crash (or, in tests, a
+  // resetDb() truncate) between "event exists" and "its deliveries exist"
+  // used to be possible, leaving an event the system believes was
+  // delivered with no delivery record for it at all. This is a real
+  // production correctness gap, not only the test race it also happened to
+  // cause (see docs/concurrency.md's 2026-09-19 entries) — same family as
+  // this codebase's other read-then-write races. The actual send (network
+  // I/O, per channel, below) deliberately stays OUTSIDE this transaction:
+  // holding a DB transaction open for the duration of an external HTTP call
+  // is its own anti-pattern, and a crash mid-send now just leaves an
+  // existing delivery row at PENDING rather than erasing it entirely.
+  const { event, pendingDeliveries } = await prisma.$transaction(async (tx) => {
+    const event = await tx.notificationEvent.create({
+      data: {
+        type: input.type,
+        recipientUserId: input.recipientUserId,
+        subject: input.subject,
+        body: input.body,
+        relatedEntityType: input.relatedEntityType,
+        relatedEntityId: input.relatedEntityId,
+      },
+    });
+
+    const pendingDeliveries = await Promise.all(
+      channels.map((channel) =>
+        tx.notificationDelivery.create({
+          data: { notificationEventId: event.id, channel, status: "PENDING" },
+        }),
+      ),
+    );
+
+    return { event, pendingDeliveries };
+  });
+
   const deliveries = await Promise.all(
-    channels.map(async (channel) => {
-      const delivery = await prisma.notificationDelivery.create({
-        data: { notificationEventId: event.id, channel, status: "PENDING" },
-      });
+    pendingDeliveries.map(async (delivery) => {
+      const channel = delivery.channel;
 
       // In-app "delivery" is just the row existing — no external dispatch needed.
       if (channel === "IN_APP") {

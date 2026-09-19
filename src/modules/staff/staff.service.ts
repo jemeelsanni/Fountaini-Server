@@ -2,6 +2,7 @@ import { Prisma, type Role } from "../../../generated/prisma/index.js";
 import { logger } from "../../config/logger.js";
 import { prisma } from "../../db/client.js";
 import { AppError } from "../../errors/AppError.js";
+import { fireAndForget } from "../../lib/fireAndForget.js";
 import { generateTemporaryPassword, hashPassword } from "../auth/password.js";
 import {
   generateStaffNumber,
@@ -22,19 +23,20 @@ function isUniqueConstraintError(err: unknown): boolean {
 /// instead" fallback: a staff account is never created without somewhere
 /// to send its credentials.
 function deliverStaffCredentials(staff: { id: string; staffNumber: string }, userId: string, email: string, temporaryPassword: string): void {
-  createNotification({
-    type: "CREDENTIALS_ISSUED",
-    recipientUserId: userId,
-    subject: "Your school portal login",
-    body:
-      `Your login ID is ${staff.staffNumber}. Temporary password: ${temporaryPassword}. ` +
-      `You'll be asked to change it the first time you sign in.`,
-    channels: ["EMAIL"],
-    relatedEntityType: "Staff",
-    relatedEntityId: staff.id,
-  }).catch((err: unknown) => {
-    logger.error({ err, email }, "Failed to send staff credential notification");
-  });
+  fireAndForget(
+    createNotification({
+      type: "CREDENTIALS_ISSUED",
+      recipientUserId: userId,
+      subject: "Your school portal login",
+      body:
+        `Your login ID is ${staff.staffNumber}. Temporary password: ${temporaryPassword}. ` +
+        `You'll be asked to change it the first time you sign in.`,
+      channels: ["EMAIL"],
+      relatedEntityType: "Staff",
+      relatedEntityId: staff.id,
+    }),
+    (err) => logger.error({ err, email }, "Failed to send staff credential notification"),
+  );
 }
 
 /// Atomic: generates (or registers an override for) the staff number,

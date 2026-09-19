@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from "express";
 import type { Prisma } from "../../../generated/prisma/index.js";
 import { logger } from "../../config/logger.js";
+import { fireAndForget } from "../../lib/fireAndForget.js";
 import { writeAuditLog } from "../../modules/audit/audit.service.js";
 
 /// Field names never persisted into AuditLog.afterData, even though the
@@ -51,18 +52,19 @@ export function auditMutation(entityType: string, action: string) {
       const idFromBody = typeof bodyRecord?.id === "string" ? bodyRecord.id : undefined;
       const idFromParams = typeof req.params.id === "string" ? req.params.id : undefined;
 
-      writeAuditLog({
-        actorUserId: req.principal.userId,
-        actorRoles: [...req.principal.roles],
-        action,
-        entityType,
-        entityId: idFromParams ?? idFromBody ?? "unknown",
-        afterData: bodyRecord ? (redact(bodyRecord) as Prisma.InputJsonValue) : undefined,
-        ipAddress: req.ip,
-        userAgent: req.get("user-agent"),
-      }).catch((err: unknown) => {
-        logger.error({ err }, "Failed to write audit log");
-      });
+      fireAndForget(
+        writeAuditLog({
+          actorUserId: req.principal.userId,
+          actorRoles: [...req.principal.roles],
+          action,
+          entityType,
+          entityId: idFromParams ?? idFromBody ?? "unknown",
+          afterData: bodyRecord ? (redact(bodyRecord) as Prisma.InputJsonValue) : undefined,
+          ipAddress: req.ip,
+          userAgent: req.get("user-agent"),
+        }),
+        (err) => logger.error({ err }, "Failed to write audit log"),
+      );
     });
 
     next();

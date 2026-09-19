@@ -2,6 +2,7 @@ import { Prisma } from "../../../generated/prisma/index.js";
 import { logger } from "../../config/logger.js";
 import { prisma } from "../../db/client.js";
 import { AppError } from "../../errors/AppError.js";
+import { fireAndForget } from "../../lib/fireAndForget.js";
 import { generateTemporaryPassword, hashPassword } from "../auth/password.js";
 import { createNotification } from "../notifications/notifications.service.js";
 import { issueFirstLoginForStudent } from "../students/students.service.js";
@@ -17,19 +18,20 @@ function isUniqueConstraintError(err: unknown): boolean {
 /// password instead" fallback: a parent account is never created without
 /// somewhere to send its credentials.
 function deliverParentCredentials(parent: { id: string; userId: string }, email: string, temporaryPassword: string): void {
-  createNotification({
-    type: "CREDENTIALS_ISSUED",
-    recipientUserId: parent.userId,
-    subject: "Your school portal login",
-    body:
-      `Your login ID is ${email}. Temporary password: ${temporaryPassword}. ` +
-      `You'll be asked to change it the first time you sign in.`,
-    channels: ["EMAIL"],
-    relatedEntityType: "Parent",
-    relatedEntityId: parent.id,
-  }).catch((err: unknown) => {
-    logger.error({ err, email }, "Failed to send parent credential notification");
-  });
+  fireAndForget(
+    createNotification({
+      type: "CREDENTIALS_ISSUED",
+      recipientUserId: parent.userId,
+      subject: "Your school portal login",
+      body:
+        `Your login ID is ${email}. Temporary password: ${temporaryPassword}. ` +
+        `You'll be asked to change it the first time you sign in.`,
+      channels: ["EMAIL"],
+      relatedEntityType: "Parent",
+      relatedEntityId: parent.id,
+    }),
+    (err) => logger.error({ err, email }, "Failed to send parent credential notification"),
+  );
 }
 
 /// Atomic: creates the User (loginId = email, generated password,
@@ -138,7 +140,13 @@ export async function linkChild(parentId: string, input: LinkChildBody) {
   // fresh, not a flag passed in here), so a non-primary link, or relinking
   // a student who already has one, correctly does nothing.
   if (link.isPrimaryContact) {
-    void issueFirstLoginForStudent(student.id, { userId: parent.userId, user: parent.user });
+    fireAndForget(
+      issueFirstLoginForStudent(student.id, { userId: parent.userId, user: parent.user }),
+      // issueFirstLoginForStudent already catches and logs its own errors
+      // rather than ever rejecting — this is belt-and-suspenders, not a
+      // realistically reachable branch.
+      (err) => logger.error({ err, studentId: student.id }, "issueFirstLoginForStudent rejected unexpectedly"),
+    );
   }
 
   return link;
