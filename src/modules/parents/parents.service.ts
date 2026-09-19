@@ -1,6 +1,7 @@
 import { Prisma } from "../../../generated/prisma/index.js";
 import { prisma } from "../../db/client.js";
 import { AppError } from "../../errors/AppError.js";
+import { issueFirstLoginForStudent } from "../students/students.service.js";
 import type { CreateParentBody, LinkChildBody } from "./parents.schemas.js";
 
 function isUniqueConstraintError(err: unknown): boolean {
@@ -50,14 +51,15 @@ export async function getParentById(id: string) {
 
 export async function linkChild(parentId: string, input: LinkChildBody) {
   const [parent, student] = await Promise.all([
-    prisma.parent.findUnique({ where: { id: parentId } }),
+    prisma.parent.findUnique({ where: { id: parentId }, include: { user: { select: { email: true } } } }),
     prisma.student.findUnique({ where: { id: input.studentId } }),
   ]);
   if (!parent) throw AppError.notFound("Parent not found");
   if (!student) throw AppError.notFound("Student not found");
 
+  let link;
   try {
-    return await prisma.studentParent.create({
+    link = await prisma.studentParent.create({
       data: {
         parentId,
         studentId: input.studentId,
@@ -85,6 +87,20 @@ export async function linkChild(parentId: string, input: LinkChildBody) {
     }
     throw err;
   }
+
+  // Fire-and-forget, same posture as fees.service.ts's notifyPaymentConfirmed:
+  // a slow password hash + email send must not hold up this response, and
+  // issueFirstLoginForStudent already catches and logs its own errors
+  // rather than ever rejecting. Fires only on a primary-contact link, and
+  // only ever does anything for this student's FIRST login —
+  // issueFirstLoginForStudent is the sole authority on that (it checks
+  // fresh, not a flag passed in here), so a non-primary link, or relinking
+  // a student who already has one, correctly does nothing.
+  if (link.isPrimaryContact) {
+    void issueFirstLoginForStudent(student.id, { userId: parent.userId, user: parent.user });
+  }
+
+  return link;
 }
 
 export async function unlinkChild(parentId: string, studentId: string) {

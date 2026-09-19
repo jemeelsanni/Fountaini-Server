@@ -4,6 +4,7 @@ import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
 import { createAdmin, createBareStudent, createParent, createStaffParent, createTeacher } from "../../test/factories.js";
 import { resetDb } from "../../test/resetDb.js";
+import { waitForNotification } from "../../test/waitForNotification.js";
 
 const app = createApp();
 
@@ -62,6 +63,12 @@ describe("child linking", () => {
       .send({ studentId: child.id, relationship: "MOTHER", isPrimaryContact: true });
     expect(linkRes.status).toBe(201);
 
+    // isPrimaryContact: true fires an unawaited credential-issuance
+    // background task (bcrypt hashing is slow) — drain it before this test
+    // ends, or its late NotificationEvent write can land mid-way through
+    // the next test's resetDb() and violate the FK it deletes under.
+    await waitForNotification(parent.userId, "Student", child.id);
+
     const myChildren = await request(app)
       .get("/api/parents/me/children")
       .set("Authorization", `Bearer ${parentToken}`);
@@ -109,6 +116,9 @@ describe("child linking", () => {
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ studentId: child.id, relationship: "MOTHER", isPrimaryContact: true });
     expect(first.status).toBe(201);
+    // Drain the fire-and-forget credential issuance this primary-contact
+    // link triggers before moving on — see the identical comment above.
+    await waitForNotification(firstParent.userId, "Student", child.id);
 
     const second = await request(app)
       .post(`/api/parents/${secondParent.id}/children`)
@@ -120,6 +130,90 @@ describe("child linking", () => {
     // student still has exactly one linked parent.
     const links = await prisma.studentParent.findMany({ where: { studentId: child.id } });
     expect(links).toHaveLength(1);
+  });
+
+  it("issues a student login the first time a primary-contact parent is linked", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const { parent } = await createParent("parent@test.local");
+    const child = await createBareStudent("ADM-610", { firstName: "Ada" });
+    expect(child.userId).toBeNull();
+
+    const res = await request(app)
+      .post(`/api/parents/${parent.id}/children`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ studentId: child.id, relationship: "MOTHER", isPrimaryContact: true });
+    expect(res.status).toBe(201);
+
+    const notification = await waitForNotification(parent.userId, "Student", child.id);
+    expect(notification, "issuing a login must notify the primary-contact parent").toBeTruthy();
+    expect(notification?.subject).toContain("Ada");
+    expect(notification?.body).toMatch(/Temporary password: \S+/);
+
+    const issued = await prisma.student.findUniqueOrThrow({ where: { id: child.id } });
+    expect(issued.userId).not.toBeNull();
+    const loginUser = await prisma.user.findUniqueOrThrow({ where: { id: issued.userId! } });
+    expect(loginUser.loginId).toBe(child.admissionNumber);
+    expect(loginUser.mustChangePassword).toBe(true);
+    const roles = await prisma.userRole.findMany({ where: { userId: loginUser.id } });
+    expect(roles.map((r) => r.role)).toEqual(["STUDENT"]);
+  });
+
+  it("does not reissue a login when a second, non-primary parent is linked", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const { parent: primaryParent } = await createParent("primary-parent@test.local");
+    const { parent: secondParent } = await createParent("second-parent@test.local");
+    const child = await createBareStudent("ADM-611");
+
+    await request(app)
+      .post(`/api/parents/${primaryParent.id}/children`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ studentId: child.id, relationship: "MOTHER", isPrimaryContact: true });
+    const firstNotification = await waitForNotification(primaryParent.userId, "Student", child.id);
+    expect(firstNotification).toBeTruthy();
+    const issuedOnce = await prisma.student.findUniqueOrThrow({ where: { id: child.id } });
+    expect(issuedOnce.userId).not.toBeNull();
+
+    const res = await request(app)
+      .post(`/api/parents/${secondParent.id}/children`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ studentId: child.id, relationship: "FATHER" });
+    expect(res.status).toBe(201);
+
+    const secondParentNotification = await waitForNotification(secondParent.userId, "Student", child.id);
+    expect(secondParentNotification, "a non-primary link must never trigger issuance").toBeNull();
+    const stillSame = await prisma.student.findUniqueOrThrow({ where: { id: child.id } });
+    expect(stillSame.userId).toBe(issuedOnce.userId);
+  });
+
+  it("relinking a new primary-contact parent after the original is unlinked stays silent — reissue is the admin's fix", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const { parent: originalParent } = await createParent("original-parent@test.local");
+    const { parent: newParent } = await createParent("new-parent@test.local");
+    const child = await createBareStudent("ADM-612");
+
+    await request(app)
+      .post(`/api/parents/${originalParent.id}/children`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ studentId: child.id, relationship: "MOTHER", isPrimaryContact: true });
+    await waitForNotification(originalParent.userId, "Student", child.id);
+    const issuedOnce = await prisma.student.findUniqueOrThrow({ where: { id: child.id } });
+    expect(issuedOnce.userId).not.toBeNull();
+
+    const unlinkRes = await request(app)
+      .delete(`/api/parents/${originalParent.id}/children/${child.id}`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(unlinkRes.status).toBe(204);
+
+    const relinkRes = await request(app)
+      .post(`/api/parents/${newParent.id}/children`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ studentId: child.id, relationship: "FATHER", isPrimaryContact: true });
+    expect(relinkRes.status).toBe(201);
+
+    const newParentNotification = await waitForNotification(newParent.userId, "Student", child.id);
+    expect(newParentNotification, "relinking a new primary contact must not silently reissue").toBeNull();
+    const stillSame = await prisma.student.findUniqueOrThrow({ where: { id: child.id } });
+    expect(stillSame.userId).toBe(issuedOnce.userId);
   });
 });
 

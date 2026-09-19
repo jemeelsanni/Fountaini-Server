@@ -26,6 +26,11 @@ export async function updateStudent(req: Request, res: Response): Promise<void> 
   res.status(200).json(await service.updateStudent(id, req.body as UpdateStudentBody));
 }
 
+export async function reissueCredentials(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as unknown as IdParams;
+  res.status(200).json(await service.reissueCredentialsForStudent(id));
+}
+
 export async function listParents(req: Request, res: Response): Promise<void> {
   const { id } = req.params as unknown as IdParams;
   res.status(200).json(await service.listParentsForStudent(id));

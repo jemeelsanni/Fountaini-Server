@@ -19,8 +19,9 @@ function isUniqueConstraintError(err: unknown): boolean {
 /// email of their own — the flagged isPrimaryContact link if one exists
 /// (see StudentParent's own comment: at most one, enforced by a partial
 /// unique index), otherwise the earliest-linked parent. Returns null if the
-/// student has no linked parents at all yet. Shared by credential delivery
-/// (below) and password-reset destination resolution (auth.service.ts).
+/// student has no linked parents at all. Shared by credential issuance
+/// (parents.service.ts's linkChild), reissueCredentials below, and
+/// password-reset destination resolution (auth.service.ts).
 export async function resolvePrimaryContactParent(studentId: string) {
   const links = await prisma.studentParent.findMany({
     where: { studentId },
@@ -33,72 +34,155 @@ export async function resolvePrimaryContactParent(studentId: string) {
   return links.find((l) => l.isPrimaryContact) ?? links[0]!;
 }
 
-/// Sends the CREDENTIALS_ISSUED notification and reports whether a
-/// destination existed to send it to — the caller uses that to decide
-/// whether the temporary password must be returned in the response instead
-/// (see Section C: an unrecoverable account is not acceptable). The actual
-/// send is fire-and-forget (mirrors notifyPaymentConfirmed in
-/// fees.service.ts) — a slow or failing notification must not hold up the
-/// response, but "is there anywhere to send this" is resolved and awaited
-/// first, since the response shape genuinely depends on it.
-async function deliverStudentCredentials(
-  student: { id: string; admissionNumber: string; firstName: string; lastName: string },
-  ownUserId: string,
-  ownEmail: string | null,
-  temporaryPassword: string,
-): Promise<boolean> {
-  if (ownEmail) {
-    createNotification({
+/// Generates a student's FIRST login, atomically, and notifies the given
+/// parent — called from parents.service.ts's linkChild exactly when a link
+/// is created with isPrimaryContact: true. Self-guarding, not just
+/// race-safe: does nothing at all if the student already has a userId
+/// (checked fresh here, not trusted from the caller), so linkChild can call
+/// this unconditionally on every primary-contact link without separately
+/// tracking "is this the first one" itself — "first" is exactly "no userId
+/// yet," which this function is the sole authority on. A student's own
+/// email is never involved: delivery is always to this parent now.
+///
+/// A failure here must never undo an otherwise-successful parent link, so
+/// this is called after the link already committed, and errors are caught
+/// and logged rather than propagated — matching this codebase's existing
+/// posture (see fees.service.ts's notifyPaymentConfirmed) that a slow or
+/// failing notification/side-effect must not turn an otherwise-successful
+/// mutation into a failed request.
+export async function issueFirstLoginForStudent(
+  studentId: string,
+  recipientParent: { userId: string; user: { email: string | null } },
+): Promise<void> {
+  try {
+    const student = await prisma.student.findUnique({ where: { id: studentId } });
+    if (!student || student.userId) {
+      return;
+    }
+
+    const temporaryPassword = generateTemporaryPassword();
+    const passwordHash = await hashPassword(temporaryPassword);
+
+    // Returns null if the race was lost (some other concurrent call
+    // already issued this student's first login) — the transaction rolls
+    // back this attempt's freshly-created (now-orphaned) User with it. A
+    // return value, not a thrown sentinel: this is an ordinary, expected
+    // outcome under concurrency, not an error condition.
+    const issued = await prisma.$transaction(async (tx) => {
+      const user = await tx.user.create({
+        data: {
+          loginId: student.admissionNumber,
+          email: null,
+          passwordHash,
+          mustChangePassword: true,
+          roles: { create: [{ role: "STUDENT" }] },
+        },
+      });
+
+      const { count } = await tx.student.updateMany({
+        where: { id: studentId, userId: null },
+        data: { userId: user.id },
+      });
+      return count > 0;
+    });
+    if (!issued) {
+      return;
+    }
+
+    if (!recipientParent.user.email) {
+      logger.error(
+        { studentId },
+        "Primary-contact parent has no email on file — credentials generated but not delivered",
+      );
+      return;
+    }
+
+    await createNotification({
       type: "CREDENTIALS_ISSUED",
-      recipientUserId: ownUserId,
-      subject: "Your school portal login",
+      recipientUserId: recipientParent.userId,
+      subject: `Login credentials for ${student.firstName} ${student.lastName}`,
       body:
-        `Your login ID is ${student.admissionNumber}. Temporary password: ${temporaryPassword}. ` +
-        `You'll be asked to change it the first time you sign in.`,
+        `A school portal login has been created for ${student.firstName} ${student.lastName} ` +
+        `(${student.admissionNumber}). Temporary password: ${temporaryPassword}. ` +
+        `They'll be asked to change it the first time they sign in.`,
       channels: ["EMAIL"],
       relatedEntityType: "Student",
-      relatedEntityId: student.id,
-    }).catch((err: unknown) => {
-      logger.error({ err }, "Failed to send student credential notification (own email)");
+      relatedEntityId: studentId,
     });
-    return true;
+  } catch (err) {
+    logger.error({ err, studentId }, "Failed to issue first login for student");
+  }
+}
+
+/// The recovery path for a student who already has a login but has since
+/// become undeliverable — every linked parent was unlinked, or the
+/// original one lost the email, or a different parent has since become
+/// primary (relinking after an unlink is deliberately silent — see the
+/// report — so this is also how a NEW primary contact actually learns the
+/// password). Always generates a fresh password (never admin-chosen, same
+/// as every other credential path in this system) and always resets
+/// mustChangePassword to true and revokes existing sessions — a freshly
+/// issued credential must not coexist with sessions built on whatever
+/// existed before it, the same posture changePassword()/resetPassword()
+/// already take.
+///
+/// Two distinct failure states, both real and both worth a clear message:
+/// no login exists yet at all (link a primary-contact parent first — that's
+/// what creates one), and a login exists but there is nowhere left to
+/// deliver to. The second is NOT a hard error: rather than blocking the
+/// admin action that produced it (unlinking a student's last parent stays
+/// legal — see the report), this endpoint lets an admin recover a student
+/// in that state by generating a fresh password and returning it once in
+/// the response, exactly like a paper hand-over.
+export async function reissueCredentialsForStudent(studentId: string) {
+  const student = await prisma.student.findUnique({ where: { id: studentId } });
+  if (!student) {
+    throw AppError.notFound("Student not found");
+  }
+  if (!student.userId) {
+    throw AppError.conflict(
+      "This student has no login yet — link a primary-contact parent to issue one first",
+    );
   }
 
-  const contact = await resolvePrimaryContactParent(student.id);
+  const temporaryPassword = generateTemporaryPassword();
+  const passwordHash = await hashPassword(temporaryPassword);
+
+  await prisma.$transaction([
+    prisma.user.update({
+      where: { id: student.userId },
+      data: { passwordHash, mustChangePassword: true },
+    }),
+    prisma.refreshToken.updateMany({
+      where: { userId: student.userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    }),
+  ]);
+
+  const contact = await resolvePrimaryContactParent(studentId);
   const parentEmail = contact?.parent.user.email;
   if (!contact || !parentEmail) {
-    return false;
+    return { ...student, temporaryPassword };
   }
 
-  createNotification({
+  await createNotification({
     type: "CREDENTIALS_ISSUED",
     recipientUserId: contact.parent.userId,
     subject: `Login credentials for ${student.firstName} ${student.lastName}`,
     body:
-      `A school portal login has been created for ${student.firstName} ${student.lastName} ` +
-      `(${student.admissionNumber}). Temporary password: ${temporaryPassword}. ` +
+      `A new temporary password has been issued for ${student.firstName} ${student.lastName}'s ` +
+      `school portal login (${student.admissionNumber}): ${temporaryPassword}. ` +
       `They'll be asked to change it the first time they sign in.`,
     channels: ["EMAIL"],
     relatedEntityType: "Student",
-    relatedEntityId: student.id,
-  }).catch((err: unknown) => {
-    logger.error({ err }, "Failed to send student credential notification (parent)");
+    relatedEntityId: studentId,
   });
-  return true;
+
+  return student;
 }
 
-/// Atomic: generates (or registers an override for) the admission number,
-/// optionally creates the User + issues a login, and creates the Student
-/// row, all in one transaction — see the report on why the old two-step
-/// POST /api/users -> POST /api/students flow can't survive a loginId
-/// derived from a number that doesn't exist until this row is written.
-/// issueLogin at create time can only deliver to the student's OWN email
-/// (input.email) — a parent can't be linked yet, since studentId doesn't
-/// exist before this returns. The common "student has no email of their
-/// own" case is expected to issue the login later via
-/// PATCH /api/students/:id { issueLogin: true }, after a parent is linked.
 export async function createStudent(input: CreateStudentBody) {
-  const { student, temporaryPassword } = await prisma.$transaction(async (tx) => {
+  return prisma.$transaction(async (tx) => {
     let admissionNumber: string;
     if (input.admissionNumber) {
       // A legacy import may be from any past year — registering it never
@@ -110,25 +194,8 @@ export async function createStudent(input: CreateStudentBody) {
       admissionNumber = await generateAdmissionNumber(tx, year);
     }
 
-    let userId: string | undefined;
-    let issuedPassword: string | undefined;
-    if (input.issueLogin) {
-      issuedPassword = generateTemporaryPassword();
-      const user = await tx.user.create({
-        data: {
-          loginId: admissionNumber,
-          email: input.email ?? null,
-          passwordHash: await hashPassword(issuedPassword),
-          mustChangePassword: true,
-          roles: { create: [{ role: "STUDENT" }] },
-        },
-      });
-      userId = user.id;
-    }
-
-    let created;
     try {
-      created = await tx.student.create({
+      return await tx.student.create({
         data: {
           admissionNumber,
           firstName: input.firstName,
@@ -137,7 +204,6 @@ export async function createStudent(input: CreateStudentBody) {
           dateOfBirth: input.dateOfBirth,
           gender: input.gender,
           admissionDate: input.admissionDate,
-          userId,
         },
       });
     } catch (err) {
@@ -146,16 +212,7 @@ export async function createStudent(input: CreateStudentBody) {
       }
       throw err;
     }
-
-    return { student: created, temporaryPassword: issuedPassword };
   });
-
-  if (!student.userId || !temporaryPassword) {
-    return student;
-  }
-
-  const delivered = await deliverStudentCredentials(student, student.userId, input.email ?? null, temporaryPassword);
-  return delivered ? student : { ...student, temporaryPassword };
 }
 
 export function listStudents() {
@@ -170,83 +227,13 @@ export async function getStudentById(id: string) {
   return student;
 }
 
-/// Replaces Fix 6's userId-attach path: rather than accepting an arbitrary
-/// pre-existing user id, this creates a brand-new User with loginId derived
-/// from the student's OWN (already-known) admissionNumber — the only way
-/// this can now be consistent, since a login-less student was never given
-/// a loginId-worthy identifier to attach to a stray user in the first
-/// place. Race-safe via the same conditional-claim shape the old path used
-/// (see docs/concurrency.md): if two concurrent issueLogin calls race for
-/// the same student, only one wins the updateMany, and the transaction
-/// rolls back the loser's freshly-created User with it.
-async function issueLoginForStudent(id: string, email: string | undefined) {
-  const student = await prisma.student.findUnique({ where: { id } });
-  if (!student) {
-    throw AppError.notFound("Student not found");
-  }
-  // Cheap pre-check to skip the wasted work in the common (non-racing)
-  // case — NOT what makes this race-safe (see the catch below for that).
-  if (student.userId) {
-    throw AppError.conflict("This student already has a linked user account");
-  }
-
-  const temporaryPassword = generateTemporaryPassword();
-  const passwordHash = await hashPassword(temporaryPassword);
-
-  let updated;
-  try {
-    updated = await prisma.$transaction(async (tx) => {
-      const user = await tx.user.create({
-        data: {
-          loginId: student.admissionNumber,
-          email: email ?? null,
-          passwordHash,
-          mustChangePassword: true,
-          roles: { create: [{ role: "STUDENT" }] },
-        },
-      });
-
-      const { count } = await tx.student.updateMany({
-        where: { id, userId: null },
-        data: { userId: user.id },
-      });
-      if (count === 0) {
-        throw AppError.conflict("This student already has a linked user account");
-      }
-      return tx.student.findUniqueOrThrow({ where: { id } });
-    });
-  } catch (err) {
-    if (err instanceof AppError) {
-      throw err;
-    }
-    // Two concurrent issueLogin calls for the same never-logged-in-yet
-    // student can both pass the pre-check above (both see userId: null)
-    // and both attempt to create a User with the same loginId — this
-    // student's admissionNumber hasn't changed between them — so the
-    // loser hits this unique constraint instead of ever reaching the
-    // updateMany claim above. Same clean 409 either way; see
-    // docs/concurrency.md.
-    if (isUniqueConstraintError(err)) {
-      throw AppError.conflict("This student already has a linked user account");
-    }
-    throw err;
-  }
-
-  const delivered = await deliverStudentCredentials(updated, updated.userId!, email ?? null, temporaryPassword);
-  return delivered ? updated : { ...updated, temporaryPassword };
-}
-
 export async function updateStudent(id: string, input: UpdateStudentBody) {
-  if (input.issueLogin) {
-    return issueLoginForStudent(id, input.email);
-  }
-
   const student = await prisma.student.findUnique({ where: { id } });
   if (!student) {
     throw AppError.notFound("Student not found");
   }
 
-  const { admissionNumber, issueLogin: _issueLogin, email: _email, ...rest } = input;
+  const { admissionNumber, ...rest } = input;
 
   try {
     if (admissionNumber === undefined) {

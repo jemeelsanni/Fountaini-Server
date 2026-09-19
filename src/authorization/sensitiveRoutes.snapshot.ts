@@ -32,6 +32,10 @@ export const SENSITIVE_ROUTE_ROLES: Readonly<Record<string, readonly Role[]>> = 
   "POST /api/users": ["ADMIN"],
   "POST /api/users/:id/activate": ["ADMIN"],
   "POST /api/users/:id/deactivate": ["ADMIN"],
+  // Generates a fresh password and revokes existing sessions for an
+  // already-issued student login — ADMIN-only for the same account-
+  // lifecycle reason as the three above.
+  "POST /api/students/:id/reissue-credentials": ["ADMIN"],
 
   // --- Notifications: mass fee-reminder trigger ---
   "POST /api/notifications/fee-reminders/trigger": ["ADMIN", "BURSAR"],

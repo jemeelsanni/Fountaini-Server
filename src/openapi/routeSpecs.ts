@@ -572,7 +572,12 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     scopeNote: SCOPE_NOTES.canReadParent,
   },
   "POST /api/parents/:id/children": {
-    summary: "Link a student to a parent",
+    summary:
+      "Link a student to a parent. With isPrimaryContact: true, this is also what issues the " +
+      "student's login — the very first time only: a generated password, mustChangePassword: " +
+      "true, delivered to this parent's email naming the child. Linking a second (non-primary) " +
+      "parent never re-triggers it, and relinking a new primary contact after the original was " +
+      "unlinked is silent by design — see POST /api/students/:id/reissue-credentials for that case.",
     requestParams: parentsIdParamsSchema,
     requestBody: linkChildSchema,
     responses: { 201: { description: "Created", schema: StudentParentSchema } },
@@ -801,16 +806,12 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
   "POST /api/students": {
     summary:
       "BREAKING CHANGE — admissionNumber is server-generated (FIA/<year>/<seq>) unless explicitly " +
-      "overridden for a legacy paper-record import; there is no more `userId` field. Set " +
-      "issueLogin: true to also create a login atomically (loginId derived from the generated/" +
-      "overridden admissionNumber, generated password, mustChangePassword: true) — but note a " +
-      "parent can't be linked yet at this point (the student doesn't exist until this call " +
-      "returns), so the common case is to leave this false and issue the login later via " +
-      "PATCH /api/students/:id once a parent is linked. If issueLogin has nowhere to deliver the " +
-      "password (no own email, no linked parent — only possible here, not via the PATCH path), " +
-      "`temporaryPassword` is returned once in the response instead.",
+      "overridden for a legacy paper-record import; there is no more `userId`, `issueLogin`, or " +
+      "`email` field. A student never gets a login at creation — no parent can be linked yet " +
+      "regardless, since studentId doesn't exist until this call returns — see " +
+      "POST /api/parents/:id/children instead, which is what actually issues one.",
     requestBody: createStudentSchema,
-    responses: { 201: { description: "Created", schema: StudentWithOptionalTemporaryPasswordSchema } },
+    responses: { 201: { description: "Created", schema: StudentSchema } },
   },
   "GET /api/students": {
     summary: "List students",
@@ -824,15 +825,26 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
   },
   "PATCH /api/students/:id": {
     summary:
-      "BREAKING CHANGE — the old `userId` field (attach an already-existing user) is gone; " +
-      "replaced by `issueLogin: true`, which creates a brand-new User instead, with loginId " +
-      "derived from this student's own admissionNumber. 409 if this student already has a linked " +
-      "user. Credentials are delivered to the student's own email if given, else their primary-" +
-      "contact (or earliest-linked) parent's email; `temporaryPassword` is returned once in the " +
-      "response only if neither destination exists. Changing admissionNumber also updates the " +
-      "linked User.loginId, in the same transaction, when one exists.",
+      "BREAKING CHANGE — the old `userId`/`issueLogin`/`email` fields are gone entirely. A " +
+      "student's login is issued exactly once, automatically, by the first " +
+      "POST /api/parents/:id/children call that links them with isPrimaryContact: true — never " +
+      "through this route. Changing admissionNumber still updates the linked User.loginId, in the " +
+      "same transaction, when a login exists.",
     requestParams: studentsIdParamsSchema,
     requestBody: updateStudentSchema,
+    responses: { 200: { description: "OK", schema: StudentSchema } },
+  },
+  "POST /api/students/:id/reissue-credentials": {
+    summary:
+      "ADMIN recovery path: generates a fresh temporary password (never admin-chosen) and resets " +
+      "mustChangePassword, for a student who already has a login — 409 if they don't (link a " +
+      "primary-contact parent first, which is what creates one). Also revokes existing sessions, " +
+      "the same posture change-password/reset-password already take. Delivered to the current " +
+      "primary-contact (or earliest-linked) parent's email when one exists; if every linked parent " +
+      "has since been unlinked, there is nowhere to deliver it, so `temporaryPassword` is returned " +
+      "once in the response instead — the only remaining case in this API where a password appears " +
+      "in a response body. Audited (no reason field — this is recovery, not an override).",
+    requestParams: studentsIdParamsSchema,
     responses: { 200: { description: "OK", schema: StudentWithOptionalTemporaryPasswordSchema } },
   },
   "GET /api/students/:id/parents": {

@@ -40,6 +40,7 @@ export const CONFLICT_ROUTE_KEYS: ReadonlySet<string> = new Set([
   "PUT /api/class-subject-assignments/:id/scores",
   "POST /api/students",
   "PATCH /api/students/:id",
+  "POST /api/students/:id/reissue-credentials",
   "POST /api/students/:id/enrollments",
   "POST /api/results/:id/finalize",
   "POST /api/users",

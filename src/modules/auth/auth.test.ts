@@ -146,21 +146,37 @@ describe("POST /api/auth/login — identifier resolution", () => {
     expect(meRes.body.principal.roles.sort()).toEqual(["PARENT", "TEACHER"]);
   });
 
-  it("rejects with a 500-tier internal error if an identifier ever resolves to more than one account", async () => {
-    // Deliberately constructs the broken-invariant case directly: loginId
-    // and email are independently unique, but nothing stops one user's
-    // loginId from coincidentally equaling a DIFFERENT user's email — a
-    // real bug elsewhere (not this lookup) if it ever happens for real.
-    const shared = "shared-identifier@test.local";
+  // Replaces a since-removed test that constructed a loginId/email
+  // cross-match and expected a 500-tier "uniqueness invariant broke"
+  // error. That case is gone along with the OR-query it depended on:
+  // login() resolves by loginId alone now (see auth.service.ts's own
+  // comment — a parent's loginId already IS their email, so there was
+  // never a real reason for a separate fallback), and loginId's own
+  // `@unique` constraint means a plain `findUnique` can't produce more
+  // than one match by construction. This test instead pins the positive
+  // case that change protects: a string that happens to equal a
+  // DIFFERENT account's email must never authenticate as that account —
+  // only an exact loginId match does.
+  it("never resolves an identifier via email — only an exact loginId match authenticates", async () => {
+    const shared = "shared-string@test.local";
     const passwordHash = await hashPassword("password-123456");
-    await prisma.user.create({ data: { loginId: shared, email: "user-a@test.local", passwordHash } });
-    await prisma.user.create({ data: { loginId: "user-b-login", email: shared, passwordHash } });
+    const userA = await prisma.user.create({
+      data: { loginId: "user-a-login", email: shared, passwordHash, roles: { create: [{ role: "ADMIN" }] } },
+    });
+    const userB = await prisma.user.create({
+      data: { loginId: shared, email: "user-b@test.local", passwordHash, roles: { create: [{ role: "ADMIN" }] } },
+    });
 
     const res = await request(app)
       .post("/api/auth/login")
       .send({ identifier: shared, password: "password-123456" });
-    expect(res.status).toBe(500);
-    expect(res.body.error.code).toBe("INTERNAL_ERROR");
+    expect(res.status).toBe(200);
+
+    const meRes = await request(app)
+      .get("/api/auth/me")
+      .set("Authorization", `Bearer ${res.body.accessToken}`);
+    expect(meRes.body.principal.userId).toBe(userB.id);
+    expect(meRes.body.principal.userId).not.toBe(userA.id);
   });
 });
 

@@ -22,24 +22,17 @@ interface LoginInput {
   userAgent?: string;
 }
 
-/// The one lookup login()/requestPasswordReset() share: resolve by loginId,
-/// falling back to email — a single OR query rather than two sequential
-/// ones, specifically so a coincidental cross-match (someone's loginId
-/// happens to equal a DIFFERENT person's email) is caught as the
-/// broken-invariant case it actually is, not silently resolved by
-/// whichever field happened to be checked first. Never branches on role —
-/// see the report: a staff-parent is one User with two roles, and "which
-/// field do I check" has no coherent per-role answer for them anyway.
-async function findUserByIdentifier(identifier: string) {
-  const users = await prisma.user.findMany({
-    where: { OR: [{ loginId: identifier }, { email: identifier }] },
-  });
-  if (users.length > 1) {
-    throw AppError.internal(
-      `Identifier resolved to more than one account — a uniqueness invariant has broken`,
-    );
-  }
-  return users[0] ?? null;
+/// The one lookup login()/requestPasswordReset() share: resolve by loginId
+/// alone. Only a parent (or a bare account with no linked record) signs in
+/// with something email-shaped at all — and for them, loginId already IS
+/// their email (see User.loginId's own schema comment; nothing ever lets
+/// the two diverge — there's no endpoint that updates a User's email
+/// independently of loginId). A separate email fallback would only ever
+/// matter if that could happen, so there's no OR query, and no >1-match
+/// case to guard against: loginId is `@unique`, so `findUnique` can only
+/// ever resolve to zero or one account by construction.
+function findUserByIdentifier(identifier: string) {
+  return prisma.user.findUnique({ where: { loginId: identifier } });
 }
 
 async function buildAccessTokenPayload(userId: string): Promise<AccessTokenPayload> {

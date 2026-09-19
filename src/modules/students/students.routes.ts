@@ -41,6 +41,18 @@ studentsRouter.patch(
   auditMutation("Student", "STUDENT_UPDATED"),
   controller.updateStudent,
 );
+// Recovery path: a student with a login but nowhere left to deliver a
+// fresh one to (see reissueCredentialsForStudent's own comment) still
+// returns 200 with temporaryPassword in the body — auditMutation's
+// existing redaction (http/middleware/auditMutation.ts) keeps that one
+// field out of the permanent audit log either way.
+studentsRouter.post(
+  "/:id/reissue-credentials",
+  requireRole("ADMIN"),
+  validate({ params: idParamsSchema }),
+  auditMutation("Student", "STUDENT_CREDENTIALS_REISSUED"),
+  controller.reissueCredentials,
+);
 studentsRouter.post(
   "/:id/enrollments",
   requireRole("ADMIN"),

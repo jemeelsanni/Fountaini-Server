@@ -258,68 +258,75 @@ describe("GET /api/students/:id/parents", () => {
 // user being validated anymore — and are replaced below with coverage of
 // issueLogin's own actual behavior (delivery destination, and the
 // no-destination fallback) rather than silently dropped.
-describe("PATCH /api/students/:id — issueLogin", () => {
-  it("issues a login when the student has none yet, deriving loginId from admissionNumber", async () => {
+// Credential issuance itself moved to POST /api/parents/:id/children (see
+// parents.test.ts) — a student's login is now issued exactly once, the
+// first time a primary-contact parent is linked, never through this
+// module directly. What's left here is the admin recovery path.
+describe("POST /api/students/:id/reissue-credentials", () => {
+  async function studentWithLoginAndPrimaryParent() {
     const { token: adminToken } = await createAdmin("admin@test.local");
-    const student = await createBareStudent("ADM-001");
+    const student = await createBareStudent("FIA/2026/001");
+    const { parent } = await createParent("parent@test.local");
+    const linkRes = await request(app)
+      .post(`/api/parents/${parent.id}/children`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ studentId: student.id, relationship: "MOTHER", isPrimaryContact: true });
+    expect(linkRes.status).toBe(201);
+    const notification = await waitForNotification(parent.userId, "Student", student.id);
+    const temporaryPassword = /Temporary password: (\S+)\./.exec(notification?.body ?? "")?.[1];
+    expect(temporaryPassword, "the issuance notification must contain the temp password").toBeTruthy();
+    const issued = await prisma.student.findUniqueOrThrow({ where: { id: student.id } });
+    return { adminToken, student: issued, parent, temporaryPassword: temporaryPassword! };
+  }
+
+  it("rejects with 409 when the student has no login yet", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const student = await createBareStudent("FIA/2026/002");
 
     const res = await request(app)
-      .patch(`/api/students/${student.id}`)
-      .set("Authorization", `Bearer ${adminToken}`)
-      .send({ issueLogin: true });
-
-    expect(res.status).toBe(200);
-    expect(res.body.userId).toBeTruthy();
-
-    const user = await prisma.user.findUniqueOrThrow({ where: { id: res.body.userId as string } });
-    expect(user.loginId).toBe("ADM-001");
-    expect(user.mustChangePassword).toBe(true);
-  });
-
-  it("rejects with 409 when the student already has a linked user", async () => {
-    const { token: adminToken } = await createAdmin("admin@test.local");
-    const student = await createBareStudent("ADM-001");
-    await request(app)
-      .patch(`/api/students/${student.id}`)
-      .set("Authorization", `Bearer ${adminToken}`)
-      .send({ issueLogin: true });
-
-    const res = await request(app)
-      .patch(`/api/students/${student.id}`)
-      .set("Authorization", `Bearer ${adminToken}`)
-      .send({ issueLogin: true });
+      .post(`/api/students/${student.id}/reissue-credentials`)
+      .set("Authorization", `Bearer ${adminToken}`);
 
     expect(res.status).toBe(409);
   });
 
-  it("delivers credentials to the primary-contact parent when the student has no email of their own", async () => {
-    const { token: adminToken } = await createAdmin("admin@test.local");
-    const student = await createBareStudent("ADM-001");
-    const { parent } = await createParent("parent@test.local");
-    await prisma.studentParent.create({
-      data: { studentId: student.id, parentId: parent.id, relationship: "MOTHER", isPrimaryContact: true },
-    });
+  it("generates a fresh password, resets mustChangePassword, revokes sessions, and sends it to the primary-contact parent", async () => {
+    const { adminToken, student, temporaryPassword } = await studentWithLoginAndPrimaryParent();
+    const userBefore = await prisma.user.findUniqueOrThrow({ where: { id: student.userId! } });
+
+    // A real session on the original password, to prove reissue revokes it.
+    const loginRes = await request(app)
+      .post("/api/auth/login")
+      .send({ identifier: userBefore.loginId, password: temporaryPassword });
+    expect(loginRes.status).toBe(200);
+    const oldRefreshToken = loginRes.body.refreshToken as string;
 
     const res = await request(app)
-      .patch(`/api/students/${student.id}`)
-      .set("Authorization", `Bearer ${adminToken}`)
-      .send({ issueLogin: true });
+      .post(`/api/students/${student.id}/reissue-credentials`)
+      .set("Authorization", `Bearer ${adminToken}`);
     expect(res.status).toBe(200);
     expect(res.body.temporaryPassword).toBeUndefined();
 
-    const notification = await waitForNotification(parent.userId, "Student", student.id);
-    expect(notification).not.toBeNull();
-    expect(notification?.type).toBe("CREDENTIALS_ISSUED");
+    const userAfter = await prisma.user.findUniqueOrThrow({ where: { id: student.userId! } });
+    expect(userAfter.passwordHash).not.toBe(userBefore.passwordHash);
+    expect(userAfter.mustChangePassword).toBe(true);
+
+    const refreshAttempt = await request(app)
+      .post("/api/auth/refresh")
+      .send({ refreshToken: oldRefreshToken });
+    expect(refreshAttempt.status).toBe(401);
   });
 
-  it("returns the generated password once when there is no email and no linked parent", async () => {
-    const { token: adminToken } = await createAdmin("admin@test.local");
-    const student = await createBareStudent("ADM-001");
+  it("returns the generated password once when every linked parent has been unlinked", async () => {
+    const { adminToken, student, parent } = await studentWithLoginAndPrimaryParent();
+    const unlinkRes = await request(app)
+      .delete(`/api/parents/${parent.id}/children/${student.id}`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(unlinkRes.status).toBe(204);
 
     const res = await request(app)
-      .patch(`/api/students/${student.id}`)
-      .set("Authorization", `Bearer ${adminToken}`)
-      .send({ issueLogin: true });
+      .post(`/api/students/${student.id}/reissue-credentials`)
+      .set("Authorization", `Bearer ${adminToken}`);
 
     expect(res.status).toBe(200);
     expect(typeof res.body.temporaryPassword).toBe("string");
