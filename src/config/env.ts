@@ -5,6 +5,21 @@ const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().positive().default(4000),
   DATABASE_URL: z.url(),
+  // Overrides Prisma's own default $transaction timeout (5000ms) for every
+  // transaction made through this process's client — read once here, not
+  // threaded through individual $transaction calls or service-function
+  // signatures, so a script's own connection-latency concern never leaks
+  // into a production code path's parameters. Left unset in production:
+  // the deployed app's own server-to-database traffic runs over Railway's
+  // internal network regardless of a caller's own connection quality, so
+  // 5000ms is already generous there. Set explicitly by prisma/seed-demo.ts
+  // and prisma/wipe-demo.ts before their first import of anything that
+  // constructs the client (same env.ts-must-load-after ordering constraint
+  // as NOTIFICATION_PROVIDER, see those scripts' own comments) — both run
+  // directly against Railway's public proxy, where a single round trip has
+  // been measured at 320-700ms, and several of the transactions on their
+  // path run 6-14 round trips.
+  DB_TRANSACTION_TIMEOUT_MS: z.coerce.number().int().positive().optional(),
   // 15 min access tokens, 30 day refresh tokens with rotation — standard
   // defaults, overridable per-environment without any code change.
   JWT_ACCESS_SECRET: z.string().min(32, "JWT_ACCESS_SECRET must be at least 32 characters"),

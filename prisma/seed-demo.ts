@@ -61,6 +61,16 @@ if (process.env.NODE_ENV === "production") {
 // directly, bypassing the npm script's own env prefix.
 process.env.NOTIFICATION_PROVIDER = "console";
 
+// Same ordering requirement as NOTIFICATION_PROVIDER above — src/db/client.ts
+// reads DB_TRANSACTION_TIMEOUT_MS (via env.ts) at PrismaClient construction
+// time. Prisma's own default (5000ms) is sized for same-region server-to-
+// database traffic; this script runs directly against Railway's public
+// proxy, where a single round trip has been measured at 320-700ms and the
+// heaviest transaction on this script's path (finalizeResult's class-wide
+// ranking pass) runs on the order of 14 round trips — comfortably under
+// 30s, with no real margin left at 5s. See config/env.ts's own comment.
+process.env.DB_TRANSACTION_TIMEOUT_MS = "30000";
+
 const { prisma } = await import("../src/db/client.js");
 const { drainFireAndForget } = await import("../src/lib/fireAndForget.js");
 const { hashPassword } = await import("../src/modules/auth/password.js");
