@@ -20,6 +20,13 @@
 // worst-case, leaving effectively no margin at 30s. 60s gives real
 // headroom for the same connection.
 process.env.DB_TRANSACTION_TIMEOUT_MS = "60000";
+// Same reasoning as seed-demo.ts's own maxWait comment — this is about
+// getting a connection and sending BEGIN at all, not the transaction's
+// duration once open, and the cold-connection-setup cost it protects
+// against is a one-time thing tied to the connection, not this script's
+// own transaction size. Not requested explicitly for this script, but the
+// same risk applies identically — flagging rather than silently adding it.
+process.env.DB_TRANSACTION_MAX_WAIT_MS = "15000";
 
 const { prisma } = await import("../src/db/client.js");
 const fs = await import("node:fs/promises");

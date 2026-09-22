@@ -4,7 +4,7 @@ import { prisma } from "../../db/client.js";
 import { AppError } from "../../errors/AppError.js";
 import { fireAndForget } from "../../lib/fireAndForget.js";
 import { generateTemporaryPassword, hashPassword } from "../auth/password.js";
-import { createNotification } from "../notifications/notifications.service.js";
+import { createNotification, suppressCredentialNotifications } from "../notifications/notifications.service.js";
 import { issueFirstLoginForStudent } from "../students/students.service.js";
 import type { CreateParentBody, LinkChildBody } from "./parents.schemas.js";
 
@@ -18,6 +18,9 @@ function isUniqueConstraintError(err: unknown): boolean {
 /// password instead" fallback: a parent account is never created without
 /// somewhere to send its credentials.
 function deliverParentCredentials(parent: { id: string; userId: string }, email: string, temporaryPassword: string): void {
+  if (suppressCredentialNotifications) {
+    return;
+  }
   fireAndForget(
     createNotification({
       type: "CREDENTIALS_ISSUED",

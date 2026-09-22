@@ -12,6 +12,20 @@ import { ResendNotificationProvider } from "./providers/ResendNotificationProvid
 const provider: NotificationProvider =
   env.NOTIFICATION_PROVIDER === "resend" ? new ResendNotificationProvider() : new ConsoleNotificationProvider();
 
+/// Seed-only kill switch, checked by the four CREDENTIALS_ISSUED call sites
+/// (staff.service.ts::deliverStaffCredentials, parents.service.ts::
+/// deliverParentCredentials, students.service.ts::issueFirstLoginForStudent
+/// and ::reissueCredentialsForStudent) rather than inside createNotification
+/// itself: this skips those calls entirely — no NotificationEvent, no
+/// NotificationDelivery row, one fewer $transaction on an already-slow
+/// link — rather than creating the rows and just not sending, which
+/// wouldn't address the thing that was actually failing (the write, not
+/// the send). Scoped to this one notification type on purpose, not a
+/// blanket switch: FEE_REMINDER/PAYMENT_CONFIRMATION/ADMIN_GENERAL
+/// notifications the seed also creates (e.g. its own "a handful of
+/// notifications" scenario) are unaffected.
+export const suppressCredentialNotifications = env.SUPPRESS_CREDENTIAL_NOTIFICATIONS === "true";
+
 interface CreateNotificationInput {
   type: NotificationType;
   recipientUserId: string;

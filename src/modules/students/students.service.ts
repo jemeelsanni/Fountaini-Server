@@ -8,7 +8,7 @@ import {
   getCurrentSessionStartYear,
   registerAdmissionNumberOverride,
 } from "../identifiers/identifiers.service.js";
-import { createNotification } from "../notifications/notifications.service.js";
+import { createNotification, suppressCredentialNotifications } from "../notifications/notifications.service.js";
 import type { CreateEnrollmentBody, CreateStudentBody, UpdateStudentBody } from "./students.schemas.js";
 
 function isUniqueConstraintError(err: unknown): boolean {
@@ -97,6 +97,10 @@ export async function issueFirstLoginForStudent(
       return;
     }
 
+    if (suppressCredentialNotifications) {
+      return;
+    }
+
     await createNotification({
       type: "CREDENTIALS_ISSUED",
       recipientUserId: recipientParent.userId,
@@ -163,6 +167,10 @@ export async function reissueCredentialsForStudent(studentId: string) {
   const parentEmail = contact?.parent.user.email;
   if (!contact || !parentEmail) {
     return { ...student, temporaryPassword };
+  }
+
+  if (suppressCredentialNotifications) {
+    return student;
   }
 
   await createNotification({

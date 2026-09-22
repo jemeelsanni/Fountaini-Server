@@ -70,6 +70,16 @@ process.env.NOTIFICATION_PROVIDER = "console";
 // ranking pass) runs on the order of 14 round trips — comfortably under
 // 30s, with no real margin left at 5s. See config/env.ts's own comment.
 process.env.DB_TRANSACTION_TIMEOUT_MS = "30000";
+// Separate from timeout above: maxWait bounds getting a connection and
+// sending BEGIN in the first place, not the transaction's own duration
+// once open. Prisma's 2000ms default was the actual failure the first fix
+// missed — a cold connection to Railway's public proxy has been measured
+// at 2.2-3.4s for its very first round trip alone, already past 2000ms
+// before any query inside the transaction runs.
+process.env.DB_TRANSACTION_MAX_WAIT_MS = "15000";
+// Suppresses CREDENTIALS_ISSUED notifications specifically (not
+// notifications generally) — see config/env.ts's own comment on why.
+process.env.SUPPRESS_CREDENTIAL_NOTIFICATIONS = "true";
 
 const { prisma } = await import("../src/db/client.js");
 const { drainFireAndForget } = await import("../src/lib/fireAndForget.js");

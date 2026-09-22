@@ -20,6 +20,25 @@ const envSchema = z.object({
   // been measured at 320-700ms, and several of the transactions on their
   // path run 6-14 round trips.
   DB_TRANSACTION_TIMEOUT_MS: z.coerce.number().int().positive().optional(),
+  // Overrides Prisma's own default $transaction maxWait (2000ms) — how
+  // long Prisma will wait to acquire a connection and actually start the
+  // transaction (send BEGIN), separate from `timeout` above, which only
+  // starts counting once the transaction is already open. This is the one
+  // that actually mattered for the seed: a cold connection to Railway's
+  // public proxy measured at 2.2-3.4s for its very first round trip,
+  // which is *already past* the 2000ms default before a single query
+  // inside the transaction ever runs — raising `timeout` alone doesn't
+  // touch this, since it never gets that far. Same unset-in-production
+  // default and same script-only scope as DB_TRANSACTION_TIMEOUT_MS.
+  DB_TRANSACTION_MAX_WAIT_MS: z.coerce.number().int().positive().optional(),
+  // Seed-only kill switch for CREDENTIALS_ISSUED notifications
+  // specifically (not notifications generally — see
+  // notifications.service.ts's own comment on where this is read). Every
+  // demo account's email is @example.com (undeliverable by design) and its
+  // credentials are already in the printed/written table, so there is no
+  // value in also writing a NotificationEvent + NotificationDelivery row
+  // per account — only more round trips on an already-slow link.
+  SUPPRESS_CREDENTIAL_NOTIFICATIONS: z.enum(["true", "false"]).optional(),
   // 15 min access tokens, 30 day refresh tokens with rotation — standard
   // defaults, overridable per-environment without any code change.
   JWT_ACCESS_SECRET: z.string().min(32, "JWT_ACCESS_SECRET must be at least 32 characters"),

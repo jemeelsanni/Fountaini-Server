@@ -9,7 +9,7 @@ import {
   getCurrentSessionStartYear,
   registerStaffNumberOverride,
 } from "../identifiers/identifiers.service.js";
-import { createNotification } from "../notifications/notifications.service.js";
+import { createNotification, suppressCredentialNotifications } from "../notifications/notifications.service.js";
 import type { CreateStaffBody, UpdateStaffBody } from "./staff.schemas.js";
 
 function isUniqueConstraintError(err: unknown): boolean {
@@ -23,6 +23,9 @@ function isUniqueConstraintError(err: unknown): boolean {
 /// instead" fallback: a staff account is never created without somewhere
 /// to send its credentials.
 function deliverStaffCredentials(staff: { id: string; staffNumber: string }, userId: string, email: string, temporaryPassword: string): void {
+  if (suppressCredentialNotifications) {
+    return;
+  }
   fireAndForget(
     createNotification({
       type: "CREDENTIALS_ISSUED",
