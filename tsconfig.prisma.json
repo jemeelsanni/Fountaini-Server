@@ -5,9 +5,17 @@
   // it, --noEmit or not. This is prisma/'s own equivalent, sharing every
   // other compiler option via `extends` so it stays in sync with the main
   // config rather than drifting into its own laxer ruleset.
+  //
+  // rootDir is "." (the project root), not "prisma": seed-demo.ts and
+  // wipe-demo.ts import real service functions from src/ (the whole point
+  // of using the real generators/lifecycle services for demo data), so
+  // rootDir has to be a common ancestor of both directories — same
+  // reasoning as tsconfig.scripts.json. seed.ts itself doesn't need this,
+  // but sharing one config for everything under prisma/ is simpler than a
+  // second, narrower one just for the two files that do.
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "rootDir": "prisma",
+    "rootDir": ".",
     // Without this, `process`/`console` are unresolved here even though
     // @types/node is installed — TS's automatic @types inclusion apparently
     // doesn't kick in the same way for this second, narrower `include` (this

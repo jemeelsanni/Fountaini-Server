@@ -7,3 +7,9 @@ coverage/
 .env.local
 .env.test.local
 .DS_Store
+
+# Written by prisma/seed-demo.ts, read by prisma/wipe-demo.ts — the exact
+# set of row ids the demo seed created in *this* environment, not a static
+# asset. Regenerated fresh every run; never meant to be committed or shared
+# across environments (local vs. Railway each get their own).
+prisma/demo-seed-manifest.json
