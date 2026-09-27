@@ -90,6 +90,126 @@ describe("computeResultsForClass — first-ever compute", () => {
   });
 });
 
+describe("computeResultsForClass scopes subject results by student, not by the class being computed", () => {
+  it("counts a SUBMITTED SubjectResult from a DIFFERENT class's assignment in the same session, not just the target class's own assignments", async () => {
+    const session = await createCurrentAcademicSession("2026/2027");
+    const term = await createTermForSession(session.id, "First Term", 1);
+    const classA = await createClass("JSS1", "A");
+    const classB = await createClass("JSS1", "B");
+    const math = await createSubject("Mathematics", "MTH");
+    const english = await createSubject("English", "ENG");
+    const { staff: mathTeacher } = await createTeacher("math-teacher@test.local");
+    const { staff: englishTeacher } = await createTeacher("english-teacher@test.local");
+    const assignmentAMath = await createAssignment(classA.id, math.id, mathTeacher.id, session.id);
+    const assignmentBEnglish = await createAssignment(classB.id, english.id, englishTeacher.id, session.id);
+
+    const student = await createBareStudent("ADM-XFER-001");
+    const enrollment = await enrollStudent(student.id, classA.id, session.id);
+
+    // Work already done in class A (Math) before this student is standing
+    // in for a mid-term arm move — built directly, no transfer feature
+    // exists yet.
+    await prisma.subjectResult.create({
+      data: {
+        studentId: student.id,
+        classSubjectAssignmentId: assignmentAMath.id,
+        termId: term.id,
+        totalScore: 80,
+        status: "SUBMITTED",
+      },
+    });
+
+    // The move itself: today this is a bare Enrollment.classId edit — no
+    // route exists for it yet, which is exactly why this test needs to be
+    // independent of any transfer capability.
+    await prisma.enrollment.update({ where: { id: enrollment.id }, data: { classId: classB.id } });
+
+    // New work recorded in class B (English) after the move.
+    await prisma.subjectResult.create({
+      data: {
+        studentId: student.id,
+        classSubjectAssignmentId: assignmentBEnglish.id,
+        termId: term.id,
+        totalScore: 60,
+        status: "SUBMITTED",
+      },
+    });
+
+    const results = await computeResultsForClass({ classId: classB.id, termId: term.id });
+    const studentResult = results.find((r) => r.studentId === student.id);
+
+    expect(studentResult, "must produce a Result for the student now enrolled in class B").toBeTruthy();
+    // Both subjects count — the pre-move Math result is not silently
+    // dropped just because it was computed against class A's assignment.
+    expect(Number(studentResult?.totalScore)).toBe(140);
+    expect(Number(studentResult?.averageScore)).toBe(70);
+  });
+
+  // The wider query means a recompute can now see MORE SubjectResults than
+  // it used to for the same student — this proves that alone still never
+  // touches an already-FINALIZED Result. The guard is on the WRITE side
+  // (updateMany's own `status: { not: "FINALIZED" }` WHERE clause,
+  // unchanged by this fix) and is completely independent of what the READ
+  // side gathers, so it holds regardless of how much more this query now
+  // finds.
+  it("never overwrites an already-FINALIZED result, even when a recompute would now see additional cross-class subject results", async () => {
+    const { user: adminUser } = await createAdmin("admin@test.local");
+    const session = await createCurrentAcademicSession("2026/2027");
+    const term = await createTermForSession(session.id, "First Term", 1);
+    const classA = await createClass("JSS1", "A");
+    const classB = await createClass("JSS1", "B");
+    const math = await createSubject("Mathematics", "MTH");
+    const english = await createSubject("English", "ENG");
+    const { staff: mathTeacher } = await createTeacher("math-teacher@test.local");
+    const { staff: englishTeacher } = await createTeacher("english-teacher@test.local");
+    const assignmentAMath = await createAssignment(classA.id, math.id, mathTeacher.id, session.id);
+    const assignmentBEnglish = await createAssignment(classB.id, english.id, englishTeacher.id, session.id);
+
+    const student = await createBareStudent("ADM-XFER-003");
+    const enrollment = await enrollStudent(student.id, classA.id, session.id);
+    await prisma.subjectResult.create({
+      data: {
+        studentId: student.id,
+        classSubjectAssignmentId: assignmentAMath.id,
+        termId: term.id,
+        totalScore: 80,
+        status: "SUBMITTED",
+      },
+    });
+
+    const finalized = await finalizeResult(
+      (
+        await prisma.result.create({
+          data: { studentId: student.id, enrollmentId: enrollment.id, termId: term.id, status: "DRAFT", totalScore: 80, averageScore: 80 },
+        })
+      ).id,
+      adminUser.id,
+    );
+    expect(finalized.status).toBe("FINALIZED");
+
+    // The move, and new work in class B — exactly the data that would
+    // change this student's total if the recompute below were allowed to
+    // touch a FINALIZED row.
+    await prisma.enrollment.update({ where: { id: enrollment.id }, data: { classId: classB.id } });
+    await prisma.subjectResult.create({
+      data: {
+        studentId: student.id,
+        classSubjectAssignmentId: assignmentBEnglish.id,
+        termId: term.id,
+        totalScore: 60,
+        status: "SUBMITTED",
+      },
+    });
+
+    await computeResultsForClass({ classId: classB.id, termId: term.id });
+
+    const stillFinalized = await prisma.result.findUniqueOrThrow({ where: { id: finalized.id } });
+    expect(stillFinalized.status).toBe("FINALIZED");
+    expect(Number(stillFinalized.totalScore)).toBe(80);
+    expect(Number(stillFinalized.averageScore)).toBe(80);
+  });
+});
+
 describe("full report card lifecycle", () => {
   it("computes with partial subjects, finalizes, overrides audibly, and is viewable by the right people only", async () => {
     const { token: adminToken, user: adminUser } = await createAdmin("admin@test.local");
@@ -977,6 +1097,46 @@ describe("Report card snapshots and class-relative position (Feature B)", () => 
     const refreshed = await prisma.result.findUniqueOrThrow({ where: { id: result.id } });
     expect(refreshed.daysPresent).toBe(2);
     expect(refreshed.daysSchoolOpened).toBe(2);
+  });
+
+  it("counts attendance from a DIFFERENT class's closed sessions in the same term, not just the class the Result's enrollment currently points at", async () => {
+    const { token: adminToken, user: adminUser } = await createAdmin("admin@test.local");
+    const session = await createCurrentAcademicSession("2026/2027");
+    const term = await createTermForSession(session.id, "First Term", 1);
+    const classA = await createClass("JSS1", "A");
+    const classB = await createClass("JSS1", "B");
+    const student = await createBareStudent("ADM-ATT-XFER-001");
+    const enrollment = await enrollStudent(student.id, classA.id, session.id);
+
+    // Attendance recorded while still in class A.
+    const dayInA = await createClosedAttendanceSession(classA.id, session.id, term.id, new Date("2026-09-01"), adminUser.id);
+    await prisma.attendanceRecord.create({
+      data: { attendanceSessionId: dayInA.id, studentId: student.id, status: "PRESENT", recordedByUserId: adminUser.id },
+    });
+
+    // The move itself: a bare Enrollment.classId edit — no transfer route
+    // exists yet, which is exactly why this test needs to stand on its own.
+    await prisma.enrollment.update({ where: { id: enrollment.id }, data: { classId: classB.id } });
+
+    // Attendance recorded after moving to class B.
+    const dayInB = await createClosedAttendanceSession(classB.id, session.id, term.id, new Date("2026-09-08"), adminUser.id);
+    await prisma.attendanceRecord.create({
+      data: { attendanceSessionId: dayInB.id, studentId: student.id, status: "LATE", recordedByUserId: adminUser.id },
+    });
+
+    const result = await prisma.result.create({
+      data: { studentId: student.id, enrollmentId: enrollment.id, termId: term.id, status: "DRAFT", averageScore: 80 },
+    });
+
+    const finalizeRes = await request(app)
+      .post(`/api/results/${result.id}/finalize`)
+      .set("Authorization", `Bearer ${adminToken}`);
+
+    expect(finalizeRes.status).toBe(200);
+    // Both days count — the day spent in class A isn't dropped just
+    // because the enrollment now points at class B.
+    expect(finalizeRes.body.daysSchoolOpened).toBe(2);
+    expect(finalizeRes.body.daysPresent).toBe(2); // PRESENT + LATE both count
   });
 
   it("ranks strictly among FINALIZED peers once the whole class is finalized — ties share a position, the next position skips", async () => {

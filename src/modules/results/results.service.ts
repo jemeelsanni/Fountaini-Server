@@ -128,18 +128,26 @@ export async function computeResultsForClass(input: ComputeResultsBody) {
     throw AppError.badRequest("No students are actively enrolled in this class for this session");
   }
 
-  const assignments = await prisma.classSubjectAssignment.findMany({
-    where: { classId: input.classId, academicSessionId: term.academicSessionId },
-  });
-  const assignmentIds = assignments.map((a) => a.id);
   const studentIds = enrollments.map((e) => e.studentId);
 
+  // Scoped by studentId + termId, not by "this class's own assignment ids"
+  // — the latter was a latent bug on its own, not just a transfer-support
+  // gap: it can only ever see subject work computed against THIS class's
+  // assignments, so a student who did any of their scored work through a
+  // different class's assignment this term (a mid-term arm transfer being
+  // the concrete case that surfaced it) has that work silently excluded
+  // from their total/average here, in both the old and the new class's
+  // compute — not double-counted, just gone. Still scoped to the right
+  // academic session (via the assignment's own academicSessionId, joined
+  // through the relation rather than pre-fetched into an id list) so a
+  // stale SubjectResult from a different session's assignment can't leak
+  // in.
   const subjectResults = await prisma.subjectResult.findMany({
     where: {
-      classSubjectAssignmentId: { in: assignmentIds },
-      termId: input.termId,
       studentId: { in: studentIds },
+      termId: input.termId,
       status: "SUBMITTED",
+      classSubjectAssignment: { academicSessionId: term.academicSessionId },
     },
   });
 
@@ -337,26 +345,31 @@ export function listResultsForClass(classId: string, termId: string) {
 /// PRESENT + LATE both count as "the student was at school that day" — only
 /// ABSENT doesn't. Scoped to CLOSED AttendanceSessions only: an OPEN session
 /// that never closed is an incomplete record, not a real school day.
+///
+/// Scoped by studentId, not classId — deliberately not "every CLOSED
+/// session in this ONE class," which would silently drop every day a
+/// student attended under a DIFFERENT class this term (the concrete case:
+/// a mid-term arm transfer). This works precisely BECAUSE of how
+/// closeSession() (attendance.service.ts) works: closing a session gives
+/// every student actively enrolled in that class AT CLOSE TIME exactly one
+/// AttendanceRecord (scanned, or auto-filled ABSENT) — so "how many CLOSED-
+/// session records does this student have this term" is already the
+/// correct per-student day count, however many different classes' sessions
+/// contributed to it, with no risk of double-counting a single calendar
+/// day the way summing multiple classes' own AttendanceSession rows
+/// directly would (two classes each closing their own session on the same
+/// day are two different records for two different students, not two
+/// records for the same one).
 async function computeAttendanceSnapshot(
   studentId: string,
-  classId: string,
   termId: string,
 ): Promise<{ daysPresent: number; daysSchoolOpened: number }> {
-  const sessions = await prisma.attendanceSession.findMany({
-    where: { classId, termId, status: "CLOSED" },
-    select: { id: true },
+  const records = await prisma.attendanceRecord.findMany({
+    where: { studentId, attendanceSession: { termId, status: "CLOSED" } },
+    select: { status: true },
   });
-  const daysSchoolOpened = sessions.length;
-  if (daysSchoolOpened === 0) {
-    return { daysPresent: 0, daysSchoolOpened: 0 };
-  }
-  const daysPresent = await prisma.attendanceRecord.count({
-    where: {
-      studentId,
-      attendanceSessionId: { in: sessions.map((s) => s.id) },
-      status: { in: ["PRESENT", "LATE"] },
-    },
-  });
+  const daysSchoolOpened = records.length;
+  const daysPresent = records.filter((r) => r.status === "PRESENT" || r.status === "LATE").length;
   return { daysPresent, daysSchoolOpened };
 }
 
@@ -443,11 +456,7 @@ export async function finalizeResult(id: string, actorUserId: string) {
     throw AppError.conflict("This result is already finalized");
   }
 
-  const { daysPresent, daysSchoolOpened } = await computeAttendanceSnapshot(
-    result.studentId,
-    result.enrollment.classId,
-    result.termId,
-  );
+  const { daysPresent, daysSchoolOpened } = await computeAttendanceSnapshot(result.studentId, result.termId);
 
   const finalized = await prisma.result.update({
     where: { id },
