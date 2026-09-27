@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { requireAuth, requireRole } from "../../authorization/middleware.js";
 import { ALL_ROLES } from "../../authorization/types.js";
+import { prisma } from "../../db/client.js";
 import { auditMutation } from "../../http/middleware/auditMutation.js";
 import { validate } from "../../http/middleware/validate.js";
 import * as controller from "./academic-structure.controller.js";
@@ -34,7 +35,9 @@ academicStructureRouter.patch(
   "/academic-sessions/:id/set-current",
   requireRole("ADMIN"),
   validate({ params: idParamsSchema }),
-  auditMutation("AcademicSession", "ACADEMIC_SESSION_SET_CURRENT"),
+  auditMutation("AcademicSession", "ACADEMIC_SESSION_SET_CURRENT", {
+    fetchBefore: (id) => prisma.academicSession.findUnique({ where: { id } }),
+  }),
   controller.setCurrentAcademicSession,
 );
 academicStructureRouter.post(
@@ -54,7 +57,9 @@ academicStructureRouter.patch(
   "/terms/:id/set-current",
   requireRole("ADMIN"),
   validate({ params: idParamsSchema }),
-  auditMutation("Term", "TERM_SET_CURRENT"),
+  auditMutation("Term", "TERM_SET_CURRENT", {
+    fetchBefore: (id) => prisma.term.findUnique({ where: { id } }),
+  }),
   controller.setCurrentTerm,
 );
 

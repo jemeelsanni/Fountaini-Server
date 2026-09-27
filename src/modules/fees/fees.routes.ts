@@ -5,6 +5,7 @@ import {
   canReadPayment,
   canReadStudentFinancials,
 } from "../../authorization/scopeResolvers.js";
+import { prisma } from "../../db/client.js";
 import { auditMutation } from "../../http/middleware/auditMutation.js";
 import { validate } from "../../http/middleware/validate.js";
 import * as controller from "./fees.controller.js";
@@ -29,18 +30,20 @@ feesRouter.post(
   controller.createFeeStructure,
 );
 feesRouter.get("/fee-structures", requireRole("ADMIN", "BURSAR"), controller.listFeeStructures);
+const fetchFeeStructureBefore = (id: string) => prisma.feeStructure.findUnique({ where: { id } });
+
 feesRouter.patch(
   "/fee-structures/:id",
   requireRole("ADMIN", "BURSAR"),
   validate({ params: idParamsSchema, body: updateFeeStructureSchema }),
-  auditMutation("FeeStructure", "FEE_STRUCTURE_UPDATED"),
+  auditMutation("FeeStructure", "FEE_STRUCTURE_UPDATED", { fetchBefore: fetchFeeStructureBefore }),
   controller.updateFeeStructure,
 );
 feesRouter.delete(
   "/fee-structures/:id",
   requireRole("ADMIN", "BURSAR"),
   validate({ params: idParamsSchema }),
-  auditMutation("FeeStructure", "FEE_STRUCTURE_DELETED"),
+  auditMutation("FeeStructure", "FEE_STRUCTURE_DELETED", { fetchBefore: fetchFeeStructureBefore }),
   controller.deleteFeeStructure,
 );
 feesRouter.post(
@@ -69,7 +72,9 @@ feesRouter.patch(
   "/fee-obligations/:id",
   requireRole("ADMIN", "BURSAR"),
   validate({ params: idParamsSchema, body: updateFeeObligationSchema }),
-  auditMutation("FeeObligation", "FEE_OBLIGATION_UPDATED"),
+  auditMutation("FeeObligation", "FEE_OBLIGATION_UPDATED", {
+    fetchBefore: (id) => prisma.feeObligation.findUnique({ where: { id } }),
+  }),
   controller.updateObligation,
 );
 
@@ -80,18 +85,20 @@ feesRouter.post(
   auditMutation("Payment", "PAYMENT_RECORDED"),
   controller.recordPayment,
 );
+const fetchPaymentBefore = (id: string) => prisma.payment.findUnique({ where: { id } });
+
 feesRouter.post(
   "/payments/:id/confirm",
   requireRole("BURSAR", "ADMIN"),
   validate({ params: idParamsSchema }),
-  auditMutation("Payment", "PAYMENT_CONFIRMED"),
+  auditMutation("Payment", "PAYMENT_CONFIRMED", { fetchBefore: fetchPaymentBefore }),
   controller.confirmPayment,
 );
 feesRouter.post(
   "/payments/:id/reject",
   requireRole("BURSAR", "ADMIN"),
   validate({ params: idParamsSchema }),
-  auditMutation("Payment", "PAYMENT_REJECTED"),
+  auditMutation("Payment", "PAYMENT_REJECTED", { fetchBefore: fetchPaymentBefore }),
   controller.rejectPayment,
 );
 feesRouter.get(

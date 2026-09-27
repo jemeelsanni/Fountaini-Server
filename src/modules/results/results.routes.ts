@@ -5,6 +5,7 @@ import {
   canReadStudent,
   canWriteClassTeacherComment,
 } from "../../authorization/scopeResolvers.js";
+import { prisma } from "../../db/client.js";
 import { auditMutation } from "../../http/middleware/auditMutation.js";
 import { validate } from "../../http/middleware/validate.js";
 import * as controller from "./results.controller.js";
@@ -63,7 +64,9 @@ resultsRouter.post(
   "/results/:id/finalize",
   requireRole("ADMIN"),
   validate({ params: idParamsSchema }),
-  auditMutation("Result", "RESULT_FINALIZED"),
+  auditMutation("Result", "RESULT_FINALIZED", {
+    fetchBefore: (id) => prisma.result.findUnique({ where: { id } }),
+  }),
   controller.finalizeResult,
 );
 // Admin escape hatch: a class that never reaches 100% finalized (a student
@@ -91,7 +94,9 @@ resultsRouter.post(
   "/results/:id/release-withholding",
   requireRole("ADMIN"),
   validate({ params: idParamsSchema, body: releaseWithholdingSchema }),
-  auditMutation("Result", "RESULT_WITHHOLDING_RELEASED"),
+  auditMutation("Result", "RESULT_WITHHOLDING_RELEASED", {
+    fetchBefore: (id) => prisma.result.findUnique({ where: { id } }),
+  }),
   controller.releaseWithholding,
 );
 resultsRouter.post(

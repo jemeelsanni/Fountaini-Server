@@ -386,28 +386,35 @@ async function isClassFullyFinalized(
 /// Results with a null averageScore (never had a submitted subject) are
 /// excluded from ranking entirely, same as computeResultsForClass's own
 /// live ranking.
-/// Returns every Result row it actually updated (Prisma's update() already
-/// returns the full row — collected here rather than re-queried) so callers
-/// that need to know exactly what changed, not just "ranking ran," don't
-/// have to guess it from a separate read. rankClassResults uses this for
-/// its per-Result audit trail (see that function's own comment).
-async function rankFinalizedResults(tx: Prisma.TransactionClient, classId: string, termId: string): Promise<Result[]> {
+/// Returns, per Result it actually updated, both its prior position/outOf
+/// (read as part of computing the new ranking, not a separate query — this
+/// is the "before" half rankClassResults' audit trail uses) and the full
+/// updated row (Prisma's update() already returns it — collected here
+/// rather than re-queried, the "after" half). Callers that need to know
+/// exactly what changed, not just "ranking ran," use this instead of
+/// guessing it from a separate read.
+async function rankFinalizedResults(
+  tx: Prisma.TransactionClient,
+  classId: string,
+  termId: string,
+): Promise<Array<{ before: { id: string; position: number | null; outOf: number | null }; after: Result }>> {
   const finalized = await tx.result.findMany({
     where: { termId, status: "FINALIZED", enrollment: { classId }, averageScore: { not: null } },
-    select: { id: true, averageScore: true },
+    select: { id: true, averageScore: true, position: true, outOf: true },
     orderBy: { averageScore: "desc" },
   });
 
   const outOf = finalized.length;
   let lastScore: string | null = null;
   let lastPosition = 0;
-  const updated: Result[] = [];
+  const updated: Array<{ before: { id: string; position: number | null; outOf: number | null }; after: Result }> = [];
   for (const [i, row] of finalized.entries()) {
     const scoreKey = row.averageScore?.toString() ?? null;
     const position = scoreKey === lastScore ? lastPosition : i + 1;
     lastScore = scoreKey;
     lastPosition = position;
-    updated.push(await tx.result.update({ where: { id: row.id }, data: { position, outOf } }));
+    const after = await tx.result.update({ where: { id: row.id }, data: { position, outOf } });
+    updated.push({ before: { id: row.id, position: row.position, outOf: row.outOf }, after });
   }
   return updated;
 }
@@ -497,18 +504,25 @@ export async function rankClassResults(classId: string, termId: string, principa
   if (ranked.length > 0) {
     fireAndForget(
       Promise.all(
-        ranked.map((result) =>
+        ranked.map(({ before, after }) =>
           writeAuditLog({
             actorUserId: principal.userId,
             actorRoles: [...principal.roles],
             action: "RESULT_RANKED",
             entityType: "Result",
-            entityId: result.id,
-            // Round-tripped through JSON, same as every other action's
-            // afterData (captured from res.json()'s own serialization) —
-            // a raw Result row's Decimal fields aren't themselves a valid
+            entityId: after.id,
+            // Unlike every route wired through auditMutation's fetchBefore
+            // (a fresh read before the mutation), this "before" comes free
+            // as a side effect of the ranking pass itself — it already had
+            // to read each Result's prior position/outOf to compute the
+            // new one, so no extra query is spent capturing it. No
+            // redaction needed on either side (unlike a User row, nothing
+            // on Result is password-shaped) — round-tripped through JSON
+            // regardless, same as every other action's afterData, since a
+            // raw Result row's Decimal fields aren't themselves a valid
             // Prisma.InputJsonValue.
-            afterData: JSON.parse(JSON.stringify(result)) as Prisma.InputJsonValue,
+            beforeData: JSON.parse(JSON.stringify(before)) as Prisma.InputJsonValue,
+            afterData: JSON.parse(JSON.stringify(after)) as Prisma.InputJsonValue,
           }),
         ),
       ),

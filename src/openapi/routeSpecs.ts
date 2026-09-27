@@ -346,22 +346,35 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
   // --- audit ------------------------------------------------------------------
   "GET /api/audit-log": {
     summary:
-      "List audit log entries. beforeData is always null on every row, regardless of entityType or " +
-      "action — writeAuditLog() accepts it, but the generic auditMutation() middleware that produces " +
-      "every row here never passes it, and it has no other caller. Only afterData (a snapshot of the " +
-      "route's own response body) is ever recorded. For entityType \"Result\", all six mutation actions " +
-      "are audited equally — RESULT_FINALIZED, RESULT_RANKED, RESULT_OVERRIDDEN, " +
+      "List audit log entries. beforeData is populated only for actions whose route opted into " +
+      "auditMutation()'s fetchBefore (a pre-mutation read of the entity, keyed by req.params.id) — " +
+      "everything else still gets afterData only (a snapshot of the route's own response body), same " +
+      "as before fetchBefore existed. It's opt-in, not automatic from entityType, because the entity " +
+      "isn't always knowable from the route before the handler runs: a bulk-mutation route has no " +
+      "single row's id to key on, and a nested-collection create has :id naming the parent, not the " +
+      "(not-yet-existing) thing being created — see RESULT_RANKED below for a route that structurally " +
+      "can't use it. A throwing fetchBefore never fails the mutation it documents: caught and logged, " +
+      "beforeData just comes back null for that row. For entityType \"Result\", all six mutation " +
+      "actions are audited equally — RESULT_FINALIZED, RESULT_RANKED, RESULT_OVERRIDDEN, " +
       "RESULT_WITHHOLDING_RELEASED, CLASS_TEACHER_COMMENT_WRITTEN, PRINCIPAL_COMMENT_WRITTEN — none is " +
       "skipped, and every one carries afterData shaped as a single updated Result row, keyed by that " +
-      "Result's own id. RESULT_RANKED is written explicitly by rankClassResults() rather than the " +
-      "generic middleware (its route, POST /api/classes/:id/results/:termId/rank, has no single " +
-      "Result id of its own to key on): one audit row per Result the ranking pass actually updated, " +
-      "never one row for the whole class — most of a class's Results (still DRAFT, or FINALIZED with " +
-      "no submitted subject) are untouched by ranking and get no row. Separately, RESULT_OVERRIDDEN is " +
-      "the only one of the six with a genuine before/after value pair anywhere: not in this table " +
-      "(beforeData is null here too, and everywhere else), but in the dedicated ResultOverride table " +
-      "(fieldName/oldValue/newValue/reason), queryable by resultId. The other five actions have no " +
-      "prior-value record at all, here or elsewhere — only a post-mutation snapshot.",
+      "Result's own id. RESULT_FINALIZED and RESULT_WITHHOLDING_RELEASED carry a real beforeData " +
+      "snapshot (fetchBefore wired on their routes); CLASS_TEACHER_COMMENT_WRITTEN and " +
+      "PRINCIPAL_COMMENT_WRITTEN don't (not wired — a routine, low-stakes edit while the result is " +
+      "still DRAFT). RESULT_OVERRIDDEN deliberately has none either: it already has a more precise " +
+      "before/after pair in the dedicated ResultOverride table (fieldName/oldValue/newValue/reason, " +
+      "queryable by resultId) — a second, vaguer copy here would only be worse than none. " +
+      "RESULT_RANKED is written explicitly by rankClassResults() rather than the generic middleware " +
+      "(its route, POST /api/classes/:id/results/:termId/rank, has no single Result id of its own to " +
+      "key on): one audit row per Result the ranking pass actually updated, never one row for the " +
+      "whole class — most of a class's Results (still DRAFT, or FINALIZED with no submitted subject) " +
+      "are untouched by ranking and get no row. Its beforeData (each Result's prior position/outOf) " +
+      "comes free as a side effect of the ranking pass itself, which already has to read those values " +
+      "to compute the new ones — no extra query spent capturing it, unlike every fetchBefore-wired " +
+      "route above. Outside \"Result\": USER_ACTIVATED, USER_DEACTIVATED, PAYMENT_CONFIRMED, " +
+      "PAYMENT_REJECTED, FEE_STRUCTURE_UPDATED, FEE_STRUCTURE_DELETED, FEE_OBLIGATION_UPDATED, " +
+      "ACADEMIC_SESSION_SET_CURRENT and TERM_SET_CURRENT all carry real beforeData too; every create " +
+      "action (nothing existed before it) and every other route not listed here still has none.",
     requestQuery: listAuditLogQuerySchema,
     responses: { 200: { description: "OK", schema: z.array(AuditLogSchema) } },
   },

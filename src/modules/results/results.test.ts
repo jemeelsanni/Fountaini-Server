@@ -1142,10 +1142,34 @@ describe("Report card snapshots and class-relative position (Feature B)", () => 
     expect(rowA, "must be keyed by resultA's own id").toBeTruthy();
     expect((rowA?.afterData as { id: string; position: number })?.id).toBe(resultA.id);
     expect((rowA?.afterData as { position: number })?.position).toBe(1);
+    // Neither result had ever been ranked before this call — position starts null.
+    expect((rowA?.beforeData as { position: number | null })?.position).toBeNull();
 
     const rowB = byEntityId.get(resultB.id);
     expect(rowB, "must be keyed by resultB's own id").toBeTruthy();
     expect((rowB?.afterData as { position: number })?.position).toBe(2);
+    expect((rowB?.beforeData as { position: number | null })?.position).toBeNull();
+
+    // Rank again: this time beforeData must reflect each Result's position
+    // from the FIRST call (1 and 2), not null again — proving this is a
+    // genuine read of whatever the row looked like just before THIS
+    // mutation, not a static "always null" placeholder.
+    const secondRes = await request(app)
+      .post(`/api/classes/${klass.id}/results/${term.id}/rank`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(secondRes.status).toBe(200);
+    await drainFireAndForget();
+
+    const rowsAfterSecondRank = await prisma.auditLog.findMany({
+      where: { action: "RESULT_RANKED" },
+      orderBy: { createdAt: "asc" },
+    });
+    expect(rowsAfterSecondRank).toHaveLength(4);
+    const secondRowA = rowsAfterSecondRank
+      .filter((r) => r.entityId === resultA.id)
+      .at(-1);
+    expect((secondRowA?.beforeData as { position: number | null })?.position).toBe(1);
+    expect((secondRowA?.afterData as { position: number })?.position).toBe(1);
   });
 });
 
