@@ -42,7 +42,7 @@ import {
 import { createSchoolSchema, updateSchoolSchema } from "../modules/school/school.schemas.js";
 import { bulkUpsertScoresSchema, idParamsSchema as scoresIdParamsSchema, scoresForAssignmentQuerySchema, submitScoresSchema } from "../modules/scores/scores.schemas.js";
 import { createStaffSchema, idParamsSchema as staffIdParamsSchema, updateStaffSchema } from "../modules/staff/staff.schemas.js";
-import { bulkUpdateStudentStatusSchema, createEnrollmentSchema, createStudentSchema, idParamsSchema as studentsIdParamsSchema, updateStudentSchema } from "../modules/students/students.schemas.js";
+import { bulkUpdateStudentStatusSchema, createEnrollmentSchema, createStudentSchema, idParamsSchema as studentsIdParamsSchema, transferStudentSchema, updateStudentSchema } from "../modules/students/students.schemas.js";
 import { createTimeSlotSchema, createTimetableEntrySchema, idParamsSchema as timetableIdParamsSchema } from "../modules/timetable/timetable.schemas.js";
 import { createUserSchema, userIdParamsSchema } from "../modules/users/users.schemas.js";
 import {
@@ -1007,6 +1007,20 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     requestParams: studentsIdParamsSchema,
     responses: { 200: { description: "OK", schema: z.array(EnrollmentWithRelationsSchema) } },
     scopeNote: SCOPE_NOTES.canReadStudent,
+  },
+  "POST /api/students/:id/transfer": {
+    summary:
+      "Move a student's current-session enrollment to a different class — in place, not a new " +
+      "enrollment: scores, subject results, and attendance already recorded stay exactly where they " +
+      "are (never repointed to the new class), and remain correctly counted because the compute path " +
+      "is scoped by student, not by one class. 400 if the target class is at a different grade level " +
+      "than the student's current one (e.g. JSS1 to JSS2) — this endpoint only covers arms of the same " +
+      "grade level (e.g. JSS1 A to JSS1 B); a cross-grade move is POST /api/students/:id/enrollments " +
+      "instead. No partial-term awareness: a result already FINALIZED before the move is re-ranked " +
+      "against its new class's cohort the next time that class is ranked, same as any other re-rank.",
+    requestParams: studentsIdParamsSchema,
+    requestBody: transferStudentSchema,
+    responses: { 200: { description: "OK", schema: EnrollmentSchema } },
   },
 
   // --- timetable --------------------------------------------------------------

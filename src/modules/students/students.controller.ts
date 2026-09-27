@@ -6,6 +6,7 @@ import type {
   CreateEnrollmentBody,
   CreateStudentBody,
   IdParams,
+  TransferStudentBody,
   UpdateStudentBody,
 } from "./students.schemas.js";
 
@@ -37,7 +38,19 @@ export async function bulkUpdateStatus(req: Request, res: Response): Promise<voi
   }
   res
     .status(200)
-    .json(await service.bulkUpdateStudentStatus(req.body as BulkUpdateStudentStatusBody, req.principal.userId));
+    .json(
+      await service.bulkUpdateStudentStatus(
+        req.body as BulkUpdateStudentStatusBody,
+        req.principal.userId,
+        [...req.principal.roles],
+      ),
+    );
+}
+
+export async function transferStudent(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as unknown as IdParams;
+  const { classId } = req.body as TransferStudentBody;
+  res.status(200).json(await service.transferStudent(id, classId));
 }
 
 export async function reissueCredentials(req: Request, res: Response): Promise<void> {

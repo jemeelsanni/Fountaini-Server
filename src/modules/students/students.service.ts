@@ -1,8 +1,10 @@
-import { Prisma, type EnrollmentStatus, type StudentStatus } from "../../../generated/prisma/index.js";
+import { Prisma, type EnrollmentStatus, type Role, type StudentStatus } from "../../../generated/prisma/index.js";
 import { logger } from "../../config/logger.js";
 import { prisma } from "../../db/client.js";
 import { AppError } from "../../errors/AppError.js";
+import { fireAndForget } from "../../lib/fireAndForget.js";
 import { generateTemporaryPassword, hashPassword } from "../auth/password.js";
+import { writeAuditLog } from "../audit/audit.service.js";
 import {
   generateAdmissionNumber,
   getCurrentSessionStartYear,
@@ -316,33 +318,58 @@ export async function updateStudent(id: string, input: UpdateStudentBody, actorU
 /// capped at a few hundred ids, not a hot path, and running up to 500
 /// transactions concurrently risks exhausting the connection pool for no
 /// real benefit here.
+/// Explicit per-student audit rows, not the generic auditMutation()
+/// middleware on this route — same shape problem RESULT_RANKED had, and
+/// the same fix. auditMutation writes exactly one row per REQUEST, keyed
+/// by req.params.id or the response body's own id; this route has no
+/// single id of either kind (:id isn't in the path at all, and the
+/// response is a { updated, failed } summary, not one entity) — the
+/// generic write would land as entityId: "unknown", afterData the summary
+/// rather than any one student's data, and a History panel keyed by
+/// student id would never find it. Fire-and-forget per row, same posture
+/// as the write auditMutation itself does: an audit write must never delay
+/// or fail an otherwise-successful update, least of all one row's failure
+/// blocking the rest of the batch's audit trail.
 export async function bulkUpdateStudentStatus(
   input: BulkUpdateStudentStatusBody,
   actorUserId: string,
+  actorRoles: Role[],
 ): Promise<{ updated: string[]; failed: { id: string; message: string }[] }> {
-  const existing = await prisma.student.findMany({
-    where: { id: { in: input.ids } },
-    select: { id: true },
-  });
-  const existingIds = new Set(existing.map((s) => s.id));
+  const existing = await prisma.student.findMany({ where: { id: { in: input.ids } } });
+  const existingById = new Map(existing.map((s) => [s.id, s]));
   const closingStatus = ENROLLMENT_CLOSING_STATUS[input.status];
 
   const updated: string[] = [];
   const failed: { id: string; message: string }[] = [];
 
   for (const id of input.ids) {
-    if (!existingIds.has(id)) {
+    const before = existingById.get(id);
+    if (!before) {
       failed.push({ id, message: "Student not found" });
       continue;
     }
     try {
-      await prisma.$transaction(async (tx) => {
-        await tx.student.update({ where: { id }, data: { status: input.status } });
+      const after = await prisma.$transaction(async (tx) => {
+        const result = await tx.student.update({ where: { id }, data: { status: input.status } });
         if (closingStatus) {
           await closeActiveEnrollments(tx, id, closingStatus, actorUserId);
         }
+        return result;
       });
       updated.push(id);
+
+      fireAndForget(
+        writeAuditLog({
+          actorUserId,
+          actorRoles,
+          action: "STUDENT_STATUS_BULK_UPDATED",
+          entityType: "Student",
+          entityId: id,
+          beforeData: JSON.parse(JSON.stringify(before)) as Prisma.InputJsonValue,
+          afterData: JSON.parse(JSON.stringify(after)) as Prisma.InputJsonValue,
+        }),
+        (err) => logger.error({ err, id }, "Failed to write STUDENT_STATUS_BULK_UPDATED audit log"),
+      );
     } catch (err) {
       logger.error({ err, id }, "Failed to update student status in bulk request");
       failed.push({ id, message: "Unexpected error updating this student" });
@@ -373,6 +400,69 @@ export async function createEnrollment(studentId: string, input: CreateEnrollmen
     }
     throw err;
   }
+}
+
+/// In-place classId edit on the student's current-session enrollment — not
+/// close-old-open-new. The school confirmed a same-arm move (e.g. JSS1 A to
+/// JSS1 B) keeps everything: scores/SubjectResults stay attached to
+/// whichever assignment actually produced them (never repointed — that
+/// would misattribute the work to a teacher who didn't do it), and
+/// attendance stays attached to whichever sessions it was actually taken
+/// in. Both survive this edit correctly ONLY because computeResultsForClass
+/// and computeAttendanceSnapshot are now scoped by studentId, not by one
+/// class — see their own comments (results.service.ts). @@unique([studentId,
+/// academicSessionId]) never even comes into play: this updates the one
+/// existing Enrollment row in place, so the (studentId, academicSessionId)
+/// tuple is identical before and after.
+///
+/// Rejects a cross-grade-level move (400) rather than allowing it: JSS1 and
+/// JSS2 have entirely separate ClassSubjectAssignment rows even for a
+/// subject with the same name (@@unique([classId, subjectId,
+/// academicSessionId])) — a grade-level change means the curriculum itself
+/// changes, so blending a JSS1 SubjectResult into what reads as a JSS2
+/// grade would average two different curricula into one meaningless
+/// number. Grade changes are also a different kind of event in the first
+/// place — normally a session boundary (promotion), already served by
+/// POST /api/students/:id/enrollments (a fresh enrollment for a new
+/// session) — not a mid-term correction this endpoint is for.
+///
+/// Deliberately no partial-term awareness: a Result already FINALIZED
+/// before the move gets re-ranked against its new class's cohort the next
+/// time anyone ranks that class, same as any other re-rank — consistent
+/// with how position already works for every result, not something to
+/// engineer around here. That's a fairness question for the school to
+/// weigh, not a bug.
+export async function transferStudent(studentId: string, newClassId: string) {
+  const student = await prisma.student.findUnique({ where: { id: studentId } });
+  if (!student) {
+    throw AppError.notFound("Student not found");
+  }
+
+  const enrollment = await prisma.enrollment.findFirst({
+    where: { studentId, status: "ACTIVE", academicSession: { isCurrent: true } },
+    include: { class: true },
+  });
+  if (!enrollment) {
+    throw AppError.badRequest(
+      "This student has no active enrollment in the current academic session to transfer",
+    );
+  }
+
+  const newClass = await prisma.class.findUnique({ where: { id: newClassId } });
+  if (!newClass) {
+    throw AppError.notFound("Class not found");
+  }
+
+  if (enrollment.class.gradeName !== newClass.gradeName) {
+    throw AppError.badRequest(
+      `${enrollment.class.gradeName} and ${newClass.gradeName} are different grade levels — this endpoint ` +
+        "only moves a student between arms of the SAME grade level (e.g. JSS1 A to JSS1 B). A cross-grade " +
+        "move (promotion, repeat, or a misclassification correction) needs its own, separately-considered " +
+        "path — see POST /api/students/:id/enrollments.",
+    );
+  }
+
+  return prisma.enrollment.update({ where: { id: enrollment.id }, data: { classId: newClassId } });
 }
 
 export function listParentsForStudent(studentId: string) {

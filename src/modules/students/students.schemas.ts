@@ -62,3 +62,12 @@ export const createEnrollmentSchema = z.object({
   academicSessionId: z.string().min(1),
 });
 export type CreateEnrollmentBody = z.infer<typeof createEnrollmentSchema>;
+
+// In-place move between arms of the SAME grade level (e.g. JSS1 A to
+// JSS1 B) in the student's current-session enrollment — see
+// transferStudent's own comment (students.service.ts) for why a cross-
+// grade move is rejected rather than handled here.
+export const transferStudentSchema = z.object({
+  classId: z.string().min(1),
+});
+export type TransferStudentBody = z.infer<typeof transferStudentSchema>;

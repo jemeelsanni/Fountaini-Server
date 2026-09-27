@@ -378,6 +378,28 @@ describe("PATCH /api/students/status", () => {
     expect(refreshedA.status).toBe("INACTIVE");
   });
 
+  // Same shape fix as RESULT_RANKED: this route has no single entity id for
+  // the generic auditMutation() middleware to key on (no :id in the path,
+  // and the response is a { updated, failed } summary) — without an
+  // explicit per-student write, the audit row would land as
+  // entityId: "unknown" with the whole batch summary as afterData, and a
+  // History panel keyed by student id would never find it.
+  it("writes one audit row per student, keyed by that student's own id — not a batch summary", async () => {
+    const { token } = await createAdmin("admin@test.local");
+    const student = await createBareStudent("ADM-BULK-040");
+
+    const res = await request(app)
+      .patch("/api/students/status")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ ids: [student.id], status: "WITHDRAWN" });
+    expect(res.status).toBe(200);
+
+    const entry = await waitForAuditLog("Student", student.id, "STUDENT_STATUS_BULK_UPDATED");
+    expect(entry, "must be keyed by the student's own id, not the batch as a whole").not.toBeNull();
+    expect((entry?.beforeData as { status: string } | null)?.status).toBe("ACTIVE");
+    expect((entry?.afterData as { status: string } | null)?.status).toBe("WITHDRAWN");
+  });
+
   it("rejects a non-admin caller", async () => {
     const { token } = await createTeacher("teacher@test.local");
     const student = await createBareStudent("ADM-BULK-010");
@@ -458,5 +480,85 @@ describe("PATCH /api/students/status", () => {
     const refreshedB = await prisma.enrollment.findUniqueOrThrow({ where: { id: enrollmentB.id } });
     expect(refreshedA.status).toBe("WITHDRAWN");
     expect(refreshedB.status).toBe("WITHDRAWN");
+  });
+});
+
+describe("POST /api/students/:id/transfer", () => {
+  it("moves the student's current-session enrollment to a different class, in place", async () => {
+    const { token } = await createAdmin("admin@test.local");
+    const session = await createCurrentAcademicSession("2026/2027");
+    const classA = await createClass("JSS1", "A");
+    const classB = await createClass("JSS1", "B");
+    const student = await createBareStudent("ADM-XFER-ROUTE-001");
+    const enrollment = await enrollStudent(student.id, classA.id, session.id);
+
+    const res = await request(app)
+      .post(`/api/students/${student.id}/transfer`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ classId: classB.id });
+
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe(enrollment.id); // same row, not a new enrollment
+    expect(res.body.classId).toBe(classB.id);
+
+    const refreshed = await prisma.enrollment.findUniqueOrThrow({ where: { id: enrollment.id } });
+    expect(refreshed.classId).toBe(classB.id);
+    expect(refreshed.status).toBe("ACTIVE"); // untouched — this is a move, not a close
+  });
+
+  it("rejects a cross-grade-level target with 400, naming enrollments as the right tool", async () => {
+    const { token } = await createAdmin("admin@test.local");
+    const session = await createCurrentAcademicSession("2026/2027");
+    const jss1 = await createClass("JSS1", "A");
+    const jss2 = await createClass("JSS2", "A");
+    const student = await createBareStudent("ADM-XFER-ROUTE-002");
+    const enrollment = await enrollStudent(student.id, jss1.id, session.id);
+
+    const res = await request(app)
+      .post(`/api/students/${student.id}/transfer`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ classId: jss2.id });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.message).toContain("POST /api/students/:id/enrollments");
+
+    const unchanged = await prisma.enrollment.findUniqueOrThrow({ where: { id: enrollment.id } });
+    expect(unchanged.classId).toBe(jss1.id);
+  });
+
+  it("rejects a non-admin caller", async () => {
+    const { token } = await createTeacher("teacher@test.local");
+    const session = await createCurrentAcademicSession("2026/2027");
+    const classA = await createClass("JSS1", "A");
+    const classB = await createClass("JSS1", "B");
+    const student = await createBareStudent("ADM-XFER-ROUTE-003");
+    await enrollStudent(student.id, classA.id, session.id);
+
+    const res = await request(app)
+      .post(`/api/students/${student.id}/transfer`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ classId: classB.id });
+
+    expect(res.status).toBe(403);
+  });
+
+  it("audits the move with the OLD class captured in beforeData", async () => {
+    const { token } = await createAdmin("admin@test.local");
+    const session = await createCurrentAcademicSession("2026/2027");
+    const classA = await createClass("JSS1", "A");
+    const classB = await createClass("JSS1", "B");
+    const student = await createBareStudent("ADM-XFER-ROUTE-004");
+    await enrollStudent(student.id, classA.id, session.id);
+
+    const res = await request(app)
+      .post(`/api/students/${student.id}/transfer`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ classId: classB.id });
+    expect(res.status).toBe(200);
+
+    const entry = await waitForAuditLog("Student", student.id, "STUDENT_TRANSFERRED");
+    expect(entry).not.toBeNull();
+    expect((entry?.beforeData as { classId: string } | null)?.classId).toBe(classA.id);
+    expect((entry?.afterData as { classId: string } | null)?.classId).toBe(classB.id);
   });
 });

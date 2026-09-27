@@ -40,6 +40,9 @@ export const SENSITIVE_ROUTE_ROLES: Readonly<Record<string, readonly Role[]>> = 
   // also close each one's active enrollment(s) — same blast-radius class
   // as the account-lifecycle rows above, just batched.
   "PATCH /api/students/status": ["ADMIN"],
+  // Moves a student's current-session enrollment between classes —
+  // same account/enrollment-lifecycle blast radius as the rows above.
+  "POST /api/students/:id/transfer": ["ADMIN"],
 
   // --- Notifications: mass fee-reminder trigger ---
   "POST /api/notifications/fee-reminders/trigger": ["ADMIN", "BURSAR"],
