@@ -27,6 +27,12 @@ export async function createFeeStructure(input: CreateFeeStructureBody) {
       throw AppError.notFound("Class not found");
     }
   }
+  if (input.gradeName) {
+    const klass = await prisma.class.findFirst({ where: { gradeName: input.gradeName } });
+    if (!klass) {
+      throw AppError.notFound("No class exists at this grade level");
+    }
+  }
   if (input.termId) {
     const term = await prisma.term.findUnique({ where: { id: input.termId } });
     if (!term || term.academicSessionId !== input.academicSessionId) {
@@ -55,6 +61,32 @@ export async function updateFeeStructure(id: string, input: UpdateFeeStructureBo
   if (!structure) {
     throw AppError.notFound("Fee structure not found");
   }
+
+  // The schema's own refine only sees THIS request's payload — it can't
+  // know the row already has a classId from creation (or a gradeName from
+  // an earlier update) that this request doesn't mention at all. Merging
+  // with the existing row before checking is what actually enforces "at
+  // most one" once partial update is in play, same shape as
+  // updateGradeBand's own merge check in grading.service.ts.
+  const mergedClassId = input.classId !== undefined ? input.classId : structure.classId;
+  const mergedGradeName = input.gradeName !== undefined ? input.gradeName : structure.gradeName;
+  if (mergedClassId !== null && mergedGradeName !== null) {
+    throw AppError.badRequest("A fee structure may target a specific class or a grade level, not both");
+  }
+
+  if (input.classId) {
+    const klass = await prisma.class.findUnique({ where: { id: input.classId } });
+    if (!klass) {
+      throw AppError.notFound("Class not found");
+    }
+  }
+  if (input.gradeName) {
+    const klass = await prisma.class.findFirst({ where: { gradeName: input.gradeName } });
+    if (!klass) {
+      throw AppError.notFound("No class exists at this grade level");
+    }
+  }
+
   return prisma.feeStructure.update({ where: { id }, data: input });
 }
 
@@ -87,11 +119,20 @@ export async function generateObligations(feeStructureId: string, actorUserId: s
     throw AppError.notFound("Fee structure not found");
   }
 
+  // Resolved fresh here, at generation time, not baked in at creation —
+  // this is what makes a class added to a gradeName after the structure
+  // was created still get covered: this query re-joins against Class on
+  // every call, so a new arm is picked up the moment it exists, with no
+  // change needed to the FeeStructure row itself.
   const enrollments = await prisma.enrollment.findMany({
     where: {
       academicSessionId: feeStructure.academicSessionId,
       status: "ACTIVE",
-      classId: feeStructure.classId ?? undefined,
+      ...(feeStructure.classId
+        ? { classId: feeStructure.classId }
+        : feeStructure.gradeName
+          ? { class: { gradeName: feeStructure.gradeName } }
+          : {}),
     },
   });
   if (enrollments.length === 0) {

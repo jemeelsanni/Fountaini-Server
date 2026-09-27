@@ -1342,3 +1342,47 @@ describe("Fee withholding (Feature D)", () => {
     expect(sessionResultRead.status).toBe(402);
   });
 });
+
+describe("a graduated student's historical results", () => {
+  it("stays readable after PATCH /api/students/status closes the enrollment", async () => {
+    const { token: adminToken, user: adminUser } = await createAdmin("admin@test.local");
+    const session = await createCurrentAcademicSession("2026/2027");
+    const term = await createTermForSession(session.id, "First Term", 1);
+    const klass = await createClass("JSS1", "A");
+    const student = await createBareStudent("ADM-GRAD-001");
+    const enrollment = await enrollStudent(student.id, klass.id, session.id);
+    await prisma.result.create({
+      data: {
+        studentId: student.id,
+        enrollmentId: enrollment.id,
+        termId: term.id,
+        status: "FINALIZED",
+        averageScore: 72,
+        position: 1,
+        outOf: 1,
+        finalizedByUserId: adminUser.id,
+        finalizedAt: new Date(),
+      },
+    });
+
+    const graduateRes = await request(app)
+      .patch("/api/students/status")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ ids: [student.id], status: "GRADUATED" });
+    expect(graduateRes.status).toBe(200);
+    const closedEnrollment = await prisma.enrollment.findUniqueOrThrow({ where: { id: enrollment.id } });
+    expect(closedEnrollment.status).toBe("GRADUATED");
+
+    const perTerm = await request(app)
+      .get(`/api/results/${student.id}/${term.id}`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(perTerm.status).toBe(200);
+    expect(perTerm.body.averageScore).toBeTruthy();
+
+    const list = await request(app)
+      .get(`/api/students/${student.id}/results`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(list.status).toBe(200);
+    expect(list.body).toHaveLength(1);
+  });
+});

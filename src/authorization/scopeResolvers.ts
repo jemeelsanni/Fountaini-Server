@@ -155,6 +155,40 @@ export async function canActOnAssignment(principal: Principal, assignmentId: str
   return false;
 }
 
+/// "ADMIN, BURSAR, or a teacher assigned to teach ANY subject in this class,
+/// for this session" — the class roster route (GET /api/classes/:id/students).
+/// Neither existing class-scoped resolver fits: canReadClassResults is
+/// narrower (the form teacher only, not any subject teacher), and
+/// canReadClassTimetable is broader (any teacher at all, unconditionally —
+/// a known, deliberate gap per that resolver's own comment, not a precedent
+/// to extend here). This reuses canActOnAssignment's exact
+/// classSubjectAssignment-by-teacherId lookup, just scoped by classId
+/// instead of one specific assignment id — the same underlying "is this
+/// teacher assigned here" check, not a new shape. academicSessionId
+/// defaults to the current session (matching the route's own default) when
+/// the caller didn't pass one explicitly.
+export async function canReadClassRoster(
+  principal: Principal,
+  classId: string,
+  academicSessionId?: string,
+): Promise<boolean> {
+  if (principal.roles.has("ADMIN") || principal.roles.has("BURSAR")) {
+    return true;
+  }
+  if (!principal.roles.has("TEACHER") || !principal.staffId) {
+    return false;
+  }
+  const assignment = await prisma.classSubjectAssignment.findFirst({
+    where: {
+      classId,
+      teacherId: principal.staffId,
+      ...(academicSessionId ? { academicSessionId } : { academicSession: { isCurrent: true } }),
+    },
+    select: { id: true },
+  });
+  return assignment !== null;
+}
+
 /// Financial data gets its own, narrower scope than canReadStudent: BURSAR
 /// instead of TEACHER. Nothing in the PRD gives teachers visibility into fee
 /// records, so this deliberately does NOT reuse canReadStudent.

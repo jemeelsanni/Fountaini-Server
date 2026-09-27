@@ -127,6 +127,34 @@ export function listClasses() {
   return prisma.class.findMany({ orderBy: [{ order: "asc" }, { arm: "asc" }] });
 }
 
+/// { student, enrollment }[] rather than bare students — same shape as
+/// scores.service.ts's getRoster's underlying query (actively-enrolled
+/// students, matching enrollment.status: "ACTIVE" exactly), just returning
+/// the enrollment alongside instead of mapping it away, and parameterized
+/// directly by classId+academicSessionId rather than derived from a
+/// ClassSubjectAssignment. Defaults to the current session when
+/// academicSessionId is omitted, via the same academicSession: {isCurrent}
+/// relation filter used elsewhere (e.g. isTeacherAssignedToStudent) rather
+/// than a separate resolve-then-query round trip.
+export async function listActiveStudentsForClass(classId: string, academicSessionId?: string) {
+  const klass = await prisma.class.findUnique({ where: { id: classId } });
+  if (!klass) {
+    throw AppError.notFound("Class not found");
+  }
+
+  const enrollments = await prisma.enrollment.findMany({
+    where: {
+      classId,
+      status: "ACTIVE",
+      ...(academicSessionId ? { academicSessionId } : { academicSession: { isCurrent: true } }),
+    },
+    include: { student: true },
+    orderBy: { student: { lastName: "asc" } },
+  });
+
+  return enrollments.map(({ student, ...enrollment }) => ({ student, enrollment }));
+}
+
 // ---------------------------------------------------------------------------
 // Subjects
 // ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@ import {
   createSubject,
   createTeacher,
   createTermForSession,
+  enrollStudent,
 } from "../../test/factories.js";
 import { resetDb } from "../../test/resetDb.js";
 
@@ -567,6 +568,82 @@ describe("class form teachers", () => {
 
     const stillThere = await prisma.classFormTeacher.findUnique({ where: { id: assignment.id } });
     expect(stillThere).toBeNull();
+  });
+});
+
+describe("GET /api/classes/:id/students", () => {
+  async function buildClassWithStudents() {
+    const session = await createCurrentAcademicSession("2026/2027");
+    const klass = await createClass("JSS1", "A");
+    const otherClass = await createClass("JSS1", "B");
+    const subject = await createSubject("Mathematics", "MTH");
+    const { staff: assignedTeacher, token: assignedTeacherToken } = await createTeacher("assigned@test.local");
+    await createAssignment(klass.id, subject.id, assignedTeacher.id, session.id);
+    const { token: otherTeacherToken } = await createTeacher("other-teacher@test.local");
+    await createAssignment(otherClass.id, subject.id, (await createTeacher("filler@test.local")).staff.id, session.id);
+
+    const { student: activeStudent } = await createStudentWithLogin("active@test.local", "ADM-ROSTER-001");
+    await enrollStudent(activeStudent.id, klass.id, session.id);
+
+    // A student who transferred out — an Enrollment row exists (so it
+    // would show up if the roster query didn't filter by status) but it's
+    // not ACTIVE.
+    const { student: transferredStudent } = await createStudentWithLogin("transferred@test.local", "ADM-ROSTER-002");
+    await prisma.enrollment.create({
+      data: { studentId: transferredStudent.id, classId: klass.id, academicSessionId: session.id, status: "TRANSFERRED_OUT" },
+    });
+
+    return { session, klass, otherClass, assignedTeacherToken, otherTeacherToken, activeStudent, transferredStudent };
+  }
+
+  it("returns only actively-enrolled students — a transferred-out student doesn't appear", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const { klass, activeStudent, transferredStudent } = await buildClassWithStudents();
+
+    const res = await request(app)
+      .get(`/api/classes/${klass.id}/students`)
+      .set("Authorization", `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(200);
+    const studentIds = (res.body as Array<{ student: { id: string } }>).map((row) => row.student.id);
+    expect(studentIds).toContain(activeStudent.id);
+    expect(studentIds).not.toContain(transferredStudent.id);
+    // { student, enrollment }[], not bare students.
+    const activeRow = (res.body as Array<{ student: { id: string }; enrollment: { status: string } }>).find(
+      (row) => row.student.id === activeStudent.id,
+    );
+    expect(activeRow?.enrollment.status).toBe("ACTIVE");
+  });
+
+  it("200s for an assigned teacher, 403s for a teacher of a different class, 403s for a parent", async () => {
+    const { klass, assignedTeacherToken, otherTeacherToken } = await buildClassWithStudents();
+    const { token: parentToken } = await createParent("parent@test.local");
+
+    const asAssigned = await request(app)
+      .get(`/api/classes/${klass.id}/students`)
+      .set("Authorization", `Bearer ${assignedTeacherToken}`);
+    expect(asAssigned.status).toBe(200);
+
+    const asOtherTeacher = await request(app)
+      .get(`/api/classes/${klass.id}/students`)
+      .set("Authorization", `Bearer ${otherTeacherToken}`);
+    expect(asOtherTeacher.status).toBe(403);
+
+    const asParent = await request(app)
+      .get(`/api/classes/${klass.id}/students`)
+      .set("Authorization", `Bearer ${parentToken}`);
+    expect(asParent.status).toBe(403);
+  });
+
+  it("allows BURSAR too", async () => {
+    const { token: bursarToken } = await createBursar("bursar@test.local");
+    const { klass } = await buildClassWithStudents();
+
+    const res = await request(app)
+      .get(`/api/classes/${klass.id}/students`)
+      .set("Authorization", `Bearer ${bursarToken}`);
+
+    expect(res.status).toBe(200);
   });
 });
 

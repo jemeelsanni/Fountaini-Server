@@ -1,5 +1,6 @@
 import { Router } from "express";
-import { requireAuth, requireRole } from "../../authorization/middleware.js";
+import { requireAuth, requireRole, requireScope } from "../../authorization/middleware.js";
+import { canReadClassRoster } from "../../authorization/scopeResolvers.js";
 import { ALL_ROLES } from "../../authorization/types.js";
 import { prisma } from "../../db/client.js";
 import { auditMutation } from "../../http/middleware/auditMutation.js";
@@ -13,6 +14,9 @@ import {
   createSubjectSchema,
   createTermSchema,
   idParamsSchema,
+  type IdParams,
+  type ListClassStudentsQuery,
+  listClassStudentsQuerySchema,
 } from "./academic-structure.schemas.js";
 
 export const academicStructureRouter = Router();
@@ -71,6 +75,21 @@ academicStructureRouter.post(
   controller.createClass,
 );
 academicStructureRouter.get("/classes", requireRole(...ALL_ROLES), controller.listClasses);
+// Not parents — a parent seeing every child in their child's class is a
+// privacy decision nobody has made. requireRole gates out STUDENT/PARENT
+// entirely before the scope check ever runs, same split as every other
+// role+scope route in this codebase.
+academicStructureRouter.get(
+  "/classes/:id/students",
+  requireRole("ADMIN", "BURSAR", "TEACHER"),
+  validate({ params: idParamsSchema, query: listClassStudentsQuerySchema }),
+  requireScope((principal, req) => {
+    const { id } = req.params as unknown as IdParams;
+    const { academicSessionId } = req.query as unknown as ListClassStudentsQuery;
+    return canReadClassRoster(principal, id, academicSessionId);
+  }),
+  controller.listClassStudents,
+);
 
 academicStructureRouter.post(
   "/subjects",

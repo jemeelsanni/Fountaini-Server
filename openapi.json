@@ -493,6 +493,41 @@
           "INACTIVE"
         ]
       },
+      "BulkStudentStatusResult": {
+        "type": "object",
+        "properties": {
+          "updated": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "description": "cuid"
+            }
+          },
+          "failed": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "cuid"
+                },
+                "message": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "message"
+              ]
+            }
+          }
+        },
+        "required": [
+          "updated",
+          "failed"
+        ]
+      },
       "StudentWithOptionalTemporaryPassword": {
         "allOf": [
           {
@@ -535,6 +570,21 @@
             "type": "string",
             "format": "date-time"
           },
+          "closedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Set together with closedByUserId when status moves off ACTIVE"
+          },
+          "closedByUserId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "cuid"
+          },
           "createdAt": {
             "type": "string",
             "format": "date-time"
@@ -547,6 +597,8 @@
           "academicSessionId",
           "status",
           "enrolledAt",
+          "closedAt",
+          "closedByUserId",
           "createdAt"
         ]
       },
@@ -1172,6 +1224,21 @@
           "createdAt"
         ]
       },
+      "EnrollmentWithStudent": {
+        "type": "object",
+        "properties": {
+          "student": {
+            "$ref": "#/components/schemas/Student"
+          },
+          "enrollment": {
+            "$ref": "#/components/schemas/Enrollment"
+          }
+        },
+        "required": [
+          "student",
+          "enrollment"
+        ]
+      },
       "Subject": {
         "type": "object",
         "properties": {
@@ -1662,6 +1729,13 @@
             "type": "string",
             "description": "Decimal value, serialized as a string"
           },
+          "maxScore": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Snapshotted at compute time from the sum of that session's assessment components — never recomputed on read, so a later component edit doesn't change an already-computed result. Null only for a pre-existing row backfilled from a session that had zero components configured."
+          },
           "grade": {
             "type": [
               "string",
@@ -1709,6 +1783,7 @@
           "classSubjectAssignmentId",
           "termId",
           "totalScore",
+          "maxScore",
           "grade",
           "gradePoint",
           "remark",
@@ -2716,7 +2791,14 @@
               "string",
               "null"
             ],
-            "description": "null = applies to all classes"
+            "description": "Targets one class. Mutually exclusive with gradeName."
+          },
+          "gradeName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Targets every class at this grade level, resolved fresh each time obligations are generated (so a class added later is still covered). Mutually exclusive with classId."
           },
           "academicSessionId": {
             "type": "string",
@@ -2746,6 +2828,7 @@
           "name",
           "category",
           "classId",
+          "gradeName",
           "academicSessionId",
           "termId",
           "amountKobo",
@@ -4654,6 +4737,102 @@
         }
       }
     },
+    "/api/students/status": {
+      "patch": {
+        "summary": "Bulk status update: { ids, status }, up to 500 at once. Partial success, not all-or-nothing — returns 200 with { updated: string[], failed: { id, message }[] } always; one bad id never blocks a graduation run for the rest of the class. Setting status to GRADUATED or WITHDRAWN also closes every currently-active enrollment each affected student holds — not just the current session's, since nothing has ever closed a stale one from a past session either. Setting status to INACTIVE does NOT close anything: it's a label only, exactly like PATCH /api/students/:id's own status field — it does not end enrollment, does not remove the student from a class roster or score sheet, and does not stop billing. WITHDRAWN is the status that does all of that. Setting status back to ACTIVE never reopens a closed enrollment either — re-enrollment is POST /api/students/:id/enrollments, a deliberate action that picks a specific class.",
+        "description": "Roles: ADMIN.",
+        "x-roles": [
+          "ADMIN"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "minItems": 1,
+                    "maxItems": 500
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "ACTIVE",
+                      "INACTIVE",
+                      "GRADUATED",
+                      "WITHDRAWN"
+                    ]
+                  }
+                },
+                "required": [
+                  "ids",
+                  "status"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkStudentStatusResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/students/{id}": {
       "get": {
         "summary": "Get one student",
@@ -4735,7 +4914,7 @@
         }
       },
       "patch": {
-        "summary": "BREAKING CHANGE — the old `userId`/`issueLogin`/`email` fields are gone entirely. A student's login is issued exactly once, automatically, by the first POST /api/parents/:id/children call that links them with isPrimaryContact: true — never through this route. Changing admissionNumber still updates the linked User.loginId, in the same transaction, when a login exists.",
+        "summary": "BREAKING CHANGE — the old `userId`/`issueLogin`/`email` fields are gone entirely. A student's login is issued exactly once, automatically, by the first POST /api/parents/:id/children call that links them with isPrimaryContact: true — never through this route. Changing admissionNumber still updates the linked User.loginId, in the same transaction, when a login exists. Setting status to GRADUATED or WITHDRAWN also closes every currently-active enrollment this student holds (see PATCH /api/students/status, which shares this exact behavior). Setting status to INACTIVE does NOT: it's a label only — it does not end enrollment, does not remove the student from a class roster or score sheet, and does not stop billing. WITHDRAWN is the status that does all of that.",
         "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
@@ -7912,6 +8091,104 @@
                       "$ref": "#/components/schemas/MustChangePasswordError"
                     }
                   ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/classes/{id}/students": {
+      "get": {
+        "summary": "List students actively enrolled in a class. Defaults to the current academic session when academicSessionId is omitted. Returns { student, enrollment }[] rather than bare students — the enrollment carries the join date and status. Not readable by PARENT or STUDENT: a parent seeing every child in their child's class is a privacy decision nobody has made.",
+        "description": "Roles: ADMIN, BURSAR, TEACHER. ADMIN, BURSAR, or a TEACHER assigned to teach some subject in this class for the resolved session — not any teacher unconditionally (unlike GET /api/classes/:id/timetable's own rule), and not the form teacher specifically (unlike GET /api/classes/:id/results/:termId's).",
+        "x-roles": [
+          "ADMIN",
+          "BURSAR",
+          "TEACHER"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": false,
+            "name": "academicSessionId",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/EnrollmentWithStudent"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
                 }
               }
             }
@@ -12516,7 +12793,7 @@
     },
     "/api/fee-structures": {
       "post": {
-        "summary": "Create a fee structure",
+        "summary": "Create a fee structure. Targets exactly one of classId (a specific class), gradeName (every class at that grade level, e.g. \"JSS1\" — resolved fresh each time obligations are generated, not baked in here, so a class added later is still covered), or neither (school-wide). 400 if both classId and gradeName are set.",
         "description": "Roles: ADMIN, BURSAR.",
         "x-roles": [
           "ADMIN",
@@ -12548,6 +12825,10 @@
                     ]
                   },
                   "classId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "gradeName": {
                     "type": "string",
                     "minLength": 1
                   },
@@ -12702,7 +12983,7 @@
     },
     "/api/fee-structures/{id}": {
       "patch": {
-        "summary": "Edit a fee structure's name or amount. Never retroactively alters obligations already generated from it — only the next generate-obligations run sees the new amount.",
+        "summary": "Edit a fee structure's name, amount, or targeting (classId/gradeName — see the create route's own summary for the targeting rules; 400 if the edit would leave both set, whether both are set in this same request or one is set here and the other is already on the row from before). Never retroactively alters obligations already generated from it — only the next generate-obligations run sees the new amount or targeting.",
         "description": "Roles: ADMIN, BURSAR.",
         "x-roles": [
           "ADMIN",
@@ -12732,6 +13013,20 @@
                 "properties": {
                   "name": {
                     "type": "string",
+                    "minLength": 1
+                  },
+                  "classId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "minLength": 1
+                  },
+                  "gradeName": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
                     "minLength": 1
                   },
                   "amountKobo": {
@@ -12892,7 +13187,7 @@
     },
     "/api/fee-structures/{id}/generate-obligations": {
       "post": {
-        "summary": "Generate a fee obligation for every actively-enrolled student against this fee structure",
+        "summary": "Generate a fee obligation for every actively-enrolled student matching this fee structure's scope — a specific class, every class at a grade level, or school-wide (see POST /api/fee-structures). Targeting is resolved fresh on every call against the live Class table, not fixed at the structure's creation time — a class added to a targeted grade level after the structure existed is still covered the next time this runs.",
         "description": "Roles: ADMIN, BURSAR.",
         "x-roles": [
           "ADMIN",

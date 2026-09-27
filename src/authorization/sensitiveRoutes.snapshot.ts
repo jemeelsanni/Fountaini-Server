@@ -36,6 +36,10 @@ export const SENSITIVE_ROUTE_ROLES: Readonly<Record<string, readonly Role[]>> = 
   // already-issued student login — ADMIN-only for the same account-
   // lifecycle reason as the three above.
   "POST /api/students/:id/reissue-credentials": ["ADMIN"],
+  // Bulk lifecycle: up to 500 students at once, and GRADUATED/WITHDRAWN
+  // also close each one's active enrollment(s) — same blast-radius class
+  // as the account-lifecycle rows above, just batched.
+  "PATCH /api/students/status": ["ADMIN"],
 
   // --- Notifications: mass fee-reminder trigger ---
   "POST /api/notifications/fee-reminders/trigger": ["ADMIN", "BURSAR"],

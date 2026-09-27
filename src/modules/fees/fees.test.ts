@@ -69,6 +69,94 @@ describe("fee structures and obligation generation", () => {
     const count = await prisma.feeObligation.count({ where: { feeStructureId: structureRes.body.id } });
     expect(count).toBe(2);
   });
+
+  it("a gradeName structure bills every arm of that level, including one created after the structure", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const session = await createCurrentAcademicSession("2026/2027");
+    const armA = await createClass("JSS1", "A");
+    const armB = await createClass("JSS1", "B");
+    const studentA = await createBareStudent("ADM-GRADE-001");
+    const studentB = await createBareStudent("ADM-GRADE-002");
+    await enrollStudent(studentA.id, armA.id, session.id);
+    await enrollStudent(studentB.id, armB.id, session.id);
+
+    const structureRes = await request(app)
+      .post("/api/fee-structures")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({
+        name: "JSS1 Tuition",
+        category: "TUITION",
+        gradeName: "JSS1",
+        academicSessionId: session.id,
+        amountKobo: 5_000_000,
+      });
+    expect(structureRes.status).toBe(201);
+
+    // A third arm, created AFTER the structure — the targeting must be
+    // resolved fresh at generate time, not fixed at creation time.
+    const armC = await createClass("JSS1", "C");
+    const studentC = await createBareStudent("ADM-GRADE-003");
+    await enrollStudent(studentC.id, armC.id, session.id);
+
+    const generateRes = await request(app)
+      .post(`/api/fee-structures/${structureRes.body.id}/generate-obligations`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(generateRes.status).toBe(201);
+
+    const studentIds = (generateRes.body as Array<{ studentId: string }>).map((o) => o.studentId);
+    expect(studentIds).toContain(studentA.id);
+    expect(studentIds).toContain(studentB.id);
+    expect(studentIds).toContain(studentC.id);
+    expect(studentIds).toHaveLength(3);
+  });
+
+  it("rejects a fee structure that sets both classId and gradeName", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const session = await createCurrentAcademicSession("2026/2027");
+    const klass = await createClass("JSS1", "A");
+
+    const res = await request(app)
+      .post("/api/fee-structures")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({
+        name: "Conflicting Target",
+        category: "TUITION",
+        classId: klass.id,
+        gradeName: "JSS1",
+        academicSessionId: session.id,
+        amountKobo: 5_000_000,
+      });
+
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects an update that would leave both classId and gradeName set, whether set together or one already existed on the row", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const session = await createCurrentAcademicSession("2026/2027");
+    const klass = await createClass("JSS1", "A");
+
+    const structureRes = await request(app)
+      .post("/api/fee-structures")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({
+        name: "JSS1 Tuition",
+        category: "TUITION",
+        classId: klass.id,
+        academicSessionId: session.id,
+        amountKobo: 5_000_000,
+      });
+    expect(structureRes.status).toBe(201);
+
+    // Existing row already has classId — this update sets only gradeName,
+    // but the schema-level check alone can't see that; the merge check in
+    // updateFeeStructure is what catches this half.
+    const res = await request(app)
+      .patch(`/api/fee-structures/${structureRes.body.id}`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ gradeName: "JSS1" });
+
+    expect(res.status).toBe(400);
+  });
 });
 
 describe("payment recording, confirmation, and balance math", () => {

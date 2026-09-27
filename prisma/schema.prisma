@@ -472,6 +472,14 @@ model Enrollment {
   academicSession   AcademicSession  @relation(fields: [academicSessionId], references: [id])
   status            EnrollmentStatus @default(ACTIVE)
   enrolledAt        DateTime         @default(now())
+  /// Set together, only when status moves off ACTIVE — same pairing as
+  /// Result.finalizedAt/finalizedByUserId and Payment.confirmedAt/
+  /// confirmedByUserId. Not a delete or a hide: the row stays fully intact
+  /// (Result/SessionResult reference it by FK, RESTRICT, so it structurally
+  /// can't be removed while results exist) — this just records when and who
+  /// closed it.
+  closedAt          DateTime?
+  closedByUserId    String?
   createdAt         DateTime         @default(now())
 
   results        Result[]
@@ -652,6 +660,15 @@ model SubjectResult {
   termId                   String
   term                     Term                   @relation(fields: [termId], references: [id])
   totalScore               Decimal                @db.Decimal(5, 2)
+  /// Snapshotted at submitScores() time, from the sum of that session's
+  /// assessment components at that moment — same reasoning as
+  /// Result.daysPresent/position: components are editable, so a report
+  /// card printed in December must not change in March because someone
+  /// rebalanced CA/exam weights. Null only for rows backfilled from a
+  /// session that had zero components configured at backfill time — never
+  /// for a row computed after this column existed (submitScores already
+  /// refuses to compute anything when components.length === 0).
+  maxScore                 Decimal?               @db.Decimal(5, 2)
   grade                    String?
   gradePoint               Decimal?               @db.Decimal(4, 2)
   remark                   String?
@@ -919,9 +936,19 @@ model FeeStructure {
   id                String          @id @default(cuid())
   name              String
   category          FeeCategory
-  /// Null = applies to all classes.
+  /// Targets exactly one of classId (a specific class), gradeName (every
+  /// class at that grade level, resolved fresh at generateObligations()
+  /// time — so an arm created after this structure still gets covered), or
+  /// neither (school-wide). Enforced in Zod on create and update, since
+  /// setting both is the same bug whichever request sets them; see
+  /// fees.schemas.ts and updateFeeStructure's own merge check for why
+  /// update needs both a payload-level AND a merged-with-existing-row
+  /// check. Null = applies to all classes.
   classId           String?
   class             Class?          @relation(fields: [classId], references: [id])
+  /// e.g. "JSS1" — matches Class.gradeName exactly, not a prefix. See
+  /// classId's own comment for the targeting rules this participates in.
+  gradeName         String?
   academicSessionId String
   academicSession   AcademicSession @relation(fields: [academicSessionId], references: [id])
   /// Null = session-wide (e.g. registration fee), not tied to one term.

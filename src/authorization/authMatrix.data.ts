@@ -194,6 +194,7 @@ export const BESPOKE_ROUTE_KEYS: readonly string[] = [
   "GET /api/staff/:id",
   "GET /api/staff/:id/timetable",
   "GET /api/classes/:id/timetable",
+  "GET /api/classes/:id/students",
   "GET /api/classes/:id/results/:termId",
   "PATCH /api/results/:id/class-teacher-comment",
   "GET /api/parents/:id/children",
@@ -480,6 +481,25 @@ const ASSIGNMENT_SCOPE_CASES: MatrixCase[] = [
   { actor: "unassignedTeacher", expectedStatus: 403 },
   { actor: "bursar", expectedStatus: 403 },
   { actor: "unlinkedParent", expectedStatus: 403 },
+  { actor: "otherStudent", expectedStatus: 403 },
+];
+
+/// canReadClassRoster sits behind requireRole("ADMIN", "BURSAR", "TEACHER")
+/// — PARENT and STUDENT are rejected by the role gate itself, before the
+/// scope resolver ever runs, same shape as ASSIGNMENT_SCOPE_CASES (just
+/// with BURSAR admitted here instead of denied). unassignedTeacher passes
+/// the role gate but fails the scope check: not assigned to teach anything
+/// in this class. linkedParent proves the role gate alone is enough to
+/// deny a parent even though they're genuinely linked to a student
+/// enrolled in this exact class — this route was scoped as "not parents,
+/// period," not "not unrelated parents."
+const CLASS_ROSTER_SCOPE_CASES: MatrixCase[] = [
+  { actor: "unauthenticated", expectedStatus: 401 },
+  { actor: "admin", expectedStatus: "allowed" },
+  { actor: "bursar", expectedStatus: "allowed" },
+  { actor: "assignedTeacher", expectedStatus: "allowed" },
+  { actor: "unassignedTeacher", expectedStatus: 403 },
+  { actor: "linkedParent", expectedStatus: 403 },
   { actor: "otherStudent", expectedStatus: 403 },
 ];
 
@@ -827,6 +847,16 @@ export async function buildBespokeRows(generics: GenericActors): Promise<MatrixR
       setup: () =>
         Promise.resolve({
           url: `/api/classes/${world.class.id}/timetable`,
+          tokens: world.studentScopeTokens,
+        }),
+    },
+    {
+      name: "GET /api/classes/:id/students",
+      method: "get",
+      cases: CLASS_ROSTER_SCOPE_CASES,
+      setup: () =>
+        Promise.resolve({
+          url: `/api/classes/${world.class.id}/students?academicSessionId=${world.session.id}`,
           tokens: world.studentScopeTokens,
         }),
     },

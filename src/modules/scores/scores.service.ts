@@ -211,6 +211,14 @@ export async function submitScores(assignmentId: string, actorUserId: string, te
     include: { bands: true },
   });
 
+  // Snapshotted now, from these same already-loaded components — not
+  // derived on read later. Same reasoning as Result.daysPresent/position:
+  // components are editable, and a report card printed in December must
+  // not change in March because someone rebalanced CA/exam weights. No
+  // extra query: `components` is the full, in-scope list already fetched
+  // above for totalScore itself.
+  const maxScore = components.reduce((sum, component) => sum + component.maxScore.toNumber(), 0);
+
   const subjectResults = enrollments.map((enrollment) => {
     const totalScore = components.reduce((sum, component) => {
       const score = scoreMap.get(scoreKey(enrollment.studentId, component.id));
@@ -224,6 +232,7 @@ export async function submitScores(assignmentId: string, actorUserId: string, te
     return {
       studentId: enrollment.studentId,
       totalScore,
+      maxScore,
       grade: band?.grade ?? null,
       gradePoint: band?.gradePoint ? band.gradePoint.toNumber() : null,
     };
@@ -252,6 +261,7 @@ export async function submitScores(assignmentId: string, actorUserId: string, te
           classSubjectAssignmentId: assignmentId,
           termId,
           totalScore: r.totalScore,
+          maxScore: r.maxScore,
           grade: r.grade,
           gradePoint: r.gradePoint,
           status: "SUBMITTED",
@@ -260,6 +270,7 @@ export async function submitScores(assignmentId: string, actorUserId: string, te
         },
         update: {
           totalScore: r.totalScore,
+          maxScore: r.maxScore,
           grade: r.grade,
           gradePoint: r.gradePoint,
           status: "SUBMITTED",

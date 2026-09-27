@@ -2,7 +2,7 @@ import type { RouteParameter } from "@asteasolutions/zod-to-openapi/dist/openapi
 import type { ZodTypeAny } from "zod";
 import { z } from "zod";
 import "./zodSetup.js";
-import { createAcademicSessionSchema, createClassFormTeacherSchema, createClassSchema, createClassSubjectAssignmentSchema, createSubjectSchema, createTermSchema, idParamsSchema as academicStructureIdParamsSchema } from "../modules/academic-structure/academic-structure.schemas.js";
+import { createAcademicSessionSchema, createClassFormTeacherSchema, createClassSchema, createClassSubjectAssignmentSchema, createSubjectSchema, createTermSchema, idParamsSchema as academicStructureIdParamsSchema, listClassStudentsQuerySchema } from "../modules/academic-structure/academic-structure.schemas.js";
 import { convertEnquirySchema, createEnquirySchema, idParamsSchema as admissionsIdParamsSchema, listEnquiriesQuerySchema, updateEnquirySchema } from "../modules/admissions/admissions.schemas.js";
 import {
   changePasswordSchema,
@@ -42,7 +42,7 @@ import {
 import { createSchoolSchema, updateSchoolSchema } from "../modules/school/school.schemas.js";
 import { bulkUpsertScoresSchema, idParamsSchema as scoresIdParamsSchema, scoresForAssignmentQuerySchema, submitScoresSchema } from "../modules/scores/scores.schemas.js";
 import { createStaffSchema, idParamsSchema as staffIdParamsSchema, updateStaffSchema } from "../modules/staff/staff.schemas.js";
-import { createEnrollmentSchema, createStudentSchema, idParamsSchema as studentsIdParamsSchema, updateStudentSchema } from "../modules/students/students.schemas.js";
+import { bulkUpdateStudentStatusSchema, createEnrollmentSchema, createStudentSchema, idParamsSchema as studentsIdParamsSchema, updateStudentSchema } from "../modules/students/students.schemas.js";
 import { createTimeSlotSchema, createTimetableEntrySchema, idParamsSchema as timetableIdParamsSchema } from "../modules/timetable/timetable.schemas.js";
 import { createUserSchema, userIdParamsSchema } from "../modules/users/users.schemas.js";
 import {
@@ -62,8 +62,10 @@ import {
   ClassSubjectAssignmentSchema,
   ClassSubjectAssignmentWithRelationsSchema,
   ConvertEnquiryResultSchema,
+  BulkStudentStatusResultSchema,
   EnrollmentSchema,
   EnrollmentWithRelationsSchema,
+  EnrollmentWithStudentSchema,
   FeeObligationSchema,
   FeeObligationWithBalanceSchema,
   FeeStructureSchema,
@@ -172,6 +174,10 @@ const SCOPE_NOTES = {
     "linked PARENT scoped to a class they, or their child, are actually and currently enrolled in.",
   canManageOwnNotification: "ADMIN, or the notification's own recipient.",
   canWriteClassRatings: "ADMIN, or that class's form teacher — not a subject teacher assigned to the class.",
+  canReadClassRoster:
+    "ADMIN, BURSAR, or a TEACHER assigned to teach some subject in this class for the resolved session — " +
+    "not any teacher unconditionally (unlike GET /api/classes/:id/timetable's own rule), and not the " +
+    "form teacher specifically (unlike GET /api/classes/:id/results/:termId's).",
 } as const;
 
 /// One entry per route in the live route inventory ("METHOD /path", exactly
@@ -218,6 +224,17 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
   "GET /api/classes": {
     summary: "List classes",
     responses: { 200: { description: "OK", schema: z.array(ClassSchema) } },
+  },
+  "GET /api/classes/:id/students": {
+    summary:
+      "List students actively enrolled in a class. Defaults to the current academic session when " +
+      "academicSessionId is omitted. Returns { student, enrollment }[] rather than bare students — the " +
+      "enrollment carries the join date and status. Not readable by PARENT or STUDENT: a parent seeing " +
+      "every child in their child's class is a privacy decision nobody has made.",
+    requestParams: academicStructureIdParamsSchema,
+    requestQuery: listClassStudentsQuerySchema,
+    responses: { 200: { description: "OK", schema: z.array(EnrollmentWithStudentSchema) } },
+    scopeNote: SCOPE_NOTES.canReadClassRoster,
   },
   "POST /api/subjects": {
     summary: "Create a subject",
@@ -431,7 +448,11 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
 
   // --- fees -----------------------------------------------------------------
   "POST /api/fee-structures": {
-    summary: "Create a fee structure",
+    summary:
+      "Create a fee structure. Targets exactly one of classId (a specific class), gradeName (every " +
+      "class at that grade level, e.g. \"JSS1\" — resolved fresh each time obligations are generated, " +
+      "not baked in here, so a class added later is still covered), or neither (school-wide). 400 if " +
+      "both classId and gradeName are set.",
     requestBody: createFeeStructureSchema,
     responses: { 201: { description: "Created", schema: FeeStructureSchema } },
   },
@@ -442,8 +463,11 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
   },
   "PATCH /api/fee-structures/:id": {
     summary:
-      "Edit a fee structure's name or amount. Never retroactively alters obligations already generated " +
-      "from it — only the next generate-obligations run sees the new amount.",
+      "Edit a fee structure's name, amount, or targeting (classId/gradeName — see the create route's " +
+      "own summary for the targeting rules; 400 if the edit would leave both set, whether both are set " +
+      "in this same request or one is set here and the other is already on the row from before). " +
+      "Never retroactively alters obligations already generated from it — only the next " +
+      "generate-obligations run sees the new amount or targeting.",
     requestParams: feesIdParamsSchema,
     requestBody: updateFeeStructureSchema,
     responses: { 200: { description: "OK", schema: FeeStructureSchema } },
@@ -456,7 +480,12 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     responses: { 204: noContent },
   },
   "POST /api/fee-structures/:id/generate-obligations": {
-    summary: "Generate a fee obligation for every actively-enrolled student against this fee structure",
+    summary:
+      "Generate a fee obligation for every actively-enrolled student matching this fee structure's " +
+      "scope — a specific class, every class at a grade level, or school-wide (see " +
+      "POST /api/fee-structures). Targeting is resolved fresh on every call against the live Class " +
+      "table, not fixed at the structure's creation time — a class added to a targeted grade level " +
+      "after the structure existed is still covered the next time this runs.",
     requestParams: feesIdParamsSchema,
     responses: { 201: { description: "Created", schema: z.array(FeeObligationSchema) } },
   },
@@ -923,10 +952,30 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
       "student's login is issued exactly once, automatically, by the first " +
       "POST /api/parents/:id/children call that links them with isPrimaryContact: true — never " +
       "through this route. Changing admissionNumber still updates the linked User.loginId, in the " +
-      "same transaction, when a login exists.",
+      "same transaction, when a login exists. Setting status to GRADUATED or WITHDRAWN also closes " +
+      "every currently-active enrollment this student holds (see PATCH /api/students/status, which " +
+      "shares this exact behavior). Setting status to INACTIVE does NOT: it's a label only — it does " +
+      "not end enrollment, does not remove the student from a class roster or score sheet, and does " +
+      "not stop billing. WITHDRAWN is the status that does all of that.",
     requestParams: studentsIdParamsSchema,
     requestBody: updateStudentSchema,
     responses: { 200: { description: "OK", schema: StudentSchema } },
+  },
+  "PATCH /api/students/status": {
+    summary:
+      "Bulk status update: { ids, status }, up to 500 at once. Partial success, not all-or-nothing — " +
+      "returns 200 with { updated: string[], failed: { id, message }[] } always; one bad id never " +
+      "blocks a graduation run for the rest of the class. Setting status to GRADUATED or WITHDRAWN " +
+      "also closes every currently-active enrollment each affected student holds — not just the " +
+      "current session's, since nothing has ever closed a stale one from a past session either. " +
+      "Setting status to INACTIVE does NOT close anything: it's a label only, exactly like " +
+      "PATCH /api/students/:id's own status field — it does not end enrollment, does not remove the " +
+      "student from a class roster or score sheet, and does not stop billing. WITHDRAWN is the status " +
+      "that does all of that. Setting status back to ACTIVE never reopens a closed enrollment either — " +
+      "re-enrollment is POST /api/students/:id/enrollments, a deliberate action that picks a specific " +
+      "class.",
+    requestBody: bulkUpdateStudentStatusSchema,
+    responses: { 200: { description: "OK", schema: BulkStudentStatusResultSchema } },
   },
   "POST /api/students/:id/reissue-credentials": {
     summary:
