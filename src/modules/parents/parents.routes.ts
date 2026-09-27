@@ -10,6 +10,7 @@ import {
   type IdParams,
   linkChildSchema,
   parentChildParamsSchema,
+  updateParentSchema,
 } from "./parents.schemas.js";
 
 export const parentsRouter = Router();
@@ -32,6 +33,17 @@ parentsRouter.get(
   requireRole("ADMIN"),
   validate({ params: idParamsSchema }),
   controller.getParent,
+);
+// Login email is deliberately not editable here — it's the parent's
+// loginId (see User's own schema comment), and changing it changes how
+// they sign in. If the school needs to change a parent's login email,
+// that's a separate, audited endpoint — not folded into this profile edit.
+parentsRouter.patch(
+  "/:id",
+  requireRole("ADMIN"),
+  validate({ params: idParamsSchema, body: updateParentSchema }),
+  auditMutation("Parent", "PARENT_UPDATED"),
+  controller.updateParent,
 );
 parentsRouter.get(
   "/:id/children",

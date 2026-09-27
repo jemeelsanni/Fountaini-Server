@@ -87,6 +87,75 @@ describe("POST /api/parents", () => {
   });
 });
 
+describe("PATCH /api/parents/:id", () => {
+  it("sets a field, explicitly nulls a field, and leaves an absent field untouched — all in one request", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const { parent } = await createParent("parent@test.local");
+    await prisma.parent.update({
+      where: { id: parent.id },
+      data: { phone: "080-original", alternatePhone: "080-alt", address: "Original Address" },
+    });
+
+    const res = await request(app)
+      .patch(`/api/parents/${parent.id}`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      // phone: set to a new value. alternatePhone: explicitly cleared.
+      // address: absent entirely — must survive untouched.
+      .send({ phone: "080-updated", alternatePhone: null });
+
+    expect(res.status).toBe(200);
+    expect(res.body.phone).toBe("080-updated");
+    expect(res.body.alternatePhone).toBeNull();
+    expect(res.body.address).toBe("Original Address");
+
+    const stored = await prisma.parent.findUniqueOrThrow({ where: { id: parent.id } });
+    expect(stored.phone).toBe("080-updated");
+    expect(stored.alternatePhone).toBeNull();
+    expect(stored.address).toBe("Original Address");
+  });
+
+  // updateParentSchema has no email field at all, so an email in the body
+  // is silently stripped by Zod before this ever reaches the service —
+  // proving login/loginId is genuinely unreachable through this route, not
+  // just unchanged by coincidence.
+  it("has no effect on login email/loginId even if one is sent", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const { parent, user } = await createParent("parent@test.local");
+
+    const res = await request(app)
+      .patch(`/api/parents/${parent.id}`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ email: "changed@test.local", firstName: "Changed" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.firstName).toBe("Changed");
+    const stillSame = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+    expect(stillSame.loginId).toBe("parent@test.local");
+    expect(stillSame.email).toBe("parent@test.local");
+  });
+
+  it("404s for a non-existent parent", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const res = await request(app)
+      .patch("/api/parents/does-not-exist")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ firstName: "X" });
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects a non-admin caller", async () => {
+    const { parent } = await createParent("parent@test.local");
+    const { token: teacherToken } = await createTeacher("teacher@test.local");
+
+    const res = await request(app)
+      .patch(`/api/parents/${parent.id}`)
+      .set("Authorization", `Bearer ${teacherToken}`)
+      .send({ firstName: "X" });
+
+    expect(res.status).toBe(403);
+  });
+});
+
 describe("child linking", () => {
   it("links a child, lists it under /me/children, and unlinks it", async () => {
     const { token: adminToken } = await createAdmin("admin@test.local");

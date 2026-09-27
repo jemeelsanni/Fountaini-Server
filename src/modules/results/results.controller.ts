@@ -50,8 +50,11 @@ export async function finalizeResult(req: Request, res: Response): Promise<void>
 }
 
 export async function rankClassResults(req: Request, res: Response): Promise<void> {
+  if (!req.principal) {
+    throw AppError.unauthorized();
+  }
   const { id, termId } = req.params as unknown as ClassTermParams;
-  res.status(200).json(await service.rankClassResults(id, termId));
+  res.status(200).json(await service.rankClassResults(id, termId, req.principal));
 }
 
 export async function releaseWithholding(req: Request, res: Response): Promise<void> {

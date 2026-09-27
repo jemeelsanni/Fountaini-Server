@@ -5,11 +5,16 @@ import { prisma } from "../../db/client.js";
 import { setCurrentAcademicSession, setCurrentTerm } from "./academic-structure.service.js";
 import {
   createAdmin,
+  createAssessmentComponent,
+  createAssignment,
   createBursar,
   createClass,
+  createCurrentAcademicSession,
   createParent,
+  createStudentWithLogin,
   createSubject,
   createTeacher,
+  createTermForSession,
 } from "../../test/factories.js";
 import { resetDb } from "../../test/resetDb.js";
 
@@ -349,6 +354,98 @@ describe("class-subject-teacher assignments", () => {
       .get("/api/class-subject-assignments")
       .set("Authorization", `Bearer ${adminToken}`);
     expect(asAdmin.body).toHaveLength(2);
+  });
+});
+
+describe("deleting a class-subject-teacher assignment", () => {
+  async function buildAssignment() {
+    const { token } = await createAdmin("admin@test.local");
+    const { staff } = await createTeacher("teacher@test.local");
+    const klass = await createClass("JSS1", "A");
+    const subject = await createSubject("Mathematics", "MTH");
+    const session = await createCurrentAcademicSession("2026/2027");
+    const term = await createTermForSession(session.id, "First Term", 1);
+    const assignment = await createAssignment(klass.id, subject.id, staff.id, session.id);
+    return { token, staff, klass, subject, session, term, assignment };
+  }
+
+  async function attachTimetableEntry(assignment: { id: string; classId: string; teacherId: string }, sessionId: string) {
+    const timeSlot = await prisma.timeSlot.create({
+      data: { name: "Period 1", startTime: "08:00", endTime: "08:40", order: 1 },
+    });
+    return prisma.timetableEntry.create({
+      data: {
+        classSubjectAssignmentId: assignment.id,
+        classId: assignment.classId,
+        teacherId: assignment.teacherId,
+        academicSessionId: sessionId,
+        timeSlotId: timeSlot.id,
+        dayOfWeek: "MONDAY",
+      },
+    });
+  }
+
+  it("204s and removes the assignment when nothing is attached", async () => {
+    const { token, assignment } = await buildAssignment();
+
+    const res = await request(app)
+      .delete(`/api/class-subject-assignments/${assignment.id}`)
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(204);
+    expect(await prisma.classSubjectAssignment.findUnique({ where: { id: assignment.id } })).toBeNull();
+  });
+
+  it("204s and removes its timetable entries along with it when only timetable entries are attached", async () => {
+    const { token, assignment, session } = await buildAssignment();
+    const entry = await attachTimetableEntry(assignment, session.id);
+
+    const res = await request(app)
+      .delete(`/api/class-subject-assignments/${assignment.id}`)
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(204);
+    expect(await prisma.classSubjectAssignment.findUnique({ where: { id: assignment.id } })).toBeNull();
+    expect(await prisma.timetableEntry.findUnique({ where: { id: entry.id } })).toBeNull();
+  });
+
+  it("409s naming the blocker when scores exist, even alongside timetable entries — and deletes nothing", async () => {
+    const { token, staff, assignment, session, term } = await buildAssignment();
+    const entry = await attachTimetableEntry(assignment, session.id);
+    const component = await createAssessmentComponent(session.id, "CA1", "CA", 40, 1);
+    const { student } = await createStudentWithLogin("scored-student@test.local", "STU-DEL-001");
+    await prisma.score.create({
+      data: {
+        studentId: student.id,
+        classSubjectAssignmentId: assignment.id,
+        termId: term.id,
+        assessmentComponentId: component.id,
+        rawScore: 30,
+        enteredByUserId: staff.userId,
+      },
+    });
+
+    const res = await request(app)
+      .delete(`/api/class-subject-assignments/${assignment.id}`)
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.message).toContain("1 recorded score");
+    // The whole operation aborted — nothing was cleaned up, not even the
+    // timetable entry that would otherwise be deleted on its own.
+    expect(await prisma.classSubjectAssignment.findUnique({ where: { id: assignment.id } })).not.toBeNull();
+    expect(await prisma.timetableEntry.findUnique({ where: { id: entry.id } })).not.toBeNull();
+  });
+
+  it("rejects a non-admin caller", async () => {
+    const { assignment } = await buildAssignment();
+    const { token: otherTeacherToken } = await createTeacher("other-teacher@test.local");
+
+    const res = await request(app)
+      .delete(`/api/class-subject-assignments/${assignment.id}`)
+      .set("Authorization", `Bearer ${otherTeacherToken}`);
+
+    expect(res.status).toBe(403);
   });
 });
 

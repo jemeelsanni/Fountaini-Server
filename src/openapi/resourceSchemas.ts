@@ -312,6 +312,10 @@ export const AssessmentComponentSchema = z
     maxScore: decimalString(),
     order: z.number().int(),
     createdAt: isoDateTime(),
+    // Present only on PATCH /api/assessment-components/:id, and only when
+    // the edit leaves the session's components no longer summing to 100 —
+    // see that route's own summary.
+    warning: z.string().optional(),
   })
   .openapi("AssessmentComponent");
 
@@ -372,6 +376,10 @@ export const GradeBandSchema = z
     maxScore: decimalString(),
     remark: z.string().nullable(),
     gradePoint: decimalString().nullable(),
+    // Present only on POST .../bands and PATCH /api/grade-bands/:id, and
+    // only when the scale's bands (after this write) leave a gap in 0-100 —
+    // see those routes' own summaries.
+    warning: z.string().optional(),
   })
   .openapi("GradeBand");
 

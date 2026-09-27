@@ -55,6 +55,15 @@ export const SENSITIVE_ROUTE_ROLES: Readonly<Record<string, readonly Role[]>> = 
   "POST /api/academic-sessions/:id/terms": ["ADMIN"],
   "PATCH /api/terms/:id/set-current": ["ADMIN"],
 
+  // --- Grading configuration: shared across every student in a session ---
+  // Same shape as the fee-structure rows above — a shared configuration
+  // entity with many dependent records (Score, SubjectResult) — pinned for
+  // the same reason.
+  "PATCH /api/assessment-components/:id": ["ADMIN"],
+  "DELETE /api/assessment-components/:id": ["ADMIN"],
+  "PATCH /api/grade-bands/:id": ["ADMIN"],
+  "DELETE /api/grade-bands/:id": ["ADMIN"],
+
   // --- Parent privacy: family structure ---
   // Not a mutation, but pinned like one anyway: this route enumerates a
   // family's children from a parent id — TEACHER must never be widened onto

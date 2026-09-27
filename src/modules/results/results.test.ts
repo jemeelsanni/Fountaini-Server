@@ -2,6 +2,7 @@ import request from "supertest";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
+import { drainFireAndForget } from "../../lib/fireAndForget.js";
 import { computeResultsForClass, finalizeResult } from "./results.service.js";
 import {
   createAdmin,
@@ -1072,6 +1073,79 @@ describe("Report card snapshots and class-relative position (Feature B)", () => 
     const ranked = await prisma.result.findUniqueOrThrow({ where: { id: finalizedResult.id } });
     expect(ranked.position).toBe(1);
     expect(ranked.outOf).toBe(1); // only the FINALIZED one is ranked, not the incomplete one
+  });
+
+  // Fixes the gap the frontend found: a History panel keyed by Result id
+  // could never find a RESULT_RANKED entry, because it was written once
+  // per request (via the generic auditMutation() middleware) with entityId
+  // falling back to req.params.id — the CLASS id on this route, never a
+  // Result id — and afterData was the response array mangled by
+  // {...body} into a numeric-keyed object. This proves the fix: one row
+  // per actually-ranked Result, each keyed by that Result's own id, each
+  // carrying that single Result as afterData.
+  it("writes one RESULT_RANKED audit row per ranked Result, keyed by that Result's own id — not the class", async () => {
+    const { token: adminToken, user: adminUser } = await createAdmin("admin@test.local");
+    const session = await createCurrentAcademicSession("2026/2027");
+    const term = await createTermForSession(session.id, "First Term", 1);
+    const klass = await createClass("JSS1", "A");
+
+    const studentA = await createBareStudent("ADM-901");
+    const enrollmentA = await enrollStudent(studentA.id, klass.id, session.id);
+    const resultA = await prisma.result.create({
+      data: {
+        studentId: studentA.id,
+        enrollmentId: enrollmentA.id,
+        termId: term.id,
+        status: "FINALIZED",
+        averageScore: 80,
+        finalizedByUserId: adminUser.id,
+        finalizedAt: new Date(),
+      },
+    });
+
+    const studentB = await createBareStudent("ADM-902");
+    const enrollmentB = await enrollStudent(studentB.id, klass.id, session.id);
+    const resultB = await prisma.result.create({
+      data: {
+        studentId: studentB.id,
+        enrollmentId: enrollmentB.id,
+        termId: term.id,
+        status: "FINALIZED",
+        averageScore: 60,
+        finalizedByUserId: adminUser.id,
+        finalizedAt: new Date(),
+      },
+    });
+
+    // A third, still-DRAFT result in the same class/term — must get no
+    // audit row at all: ranking never touches it.
+    const untouched = await createBareStudent("ADM-903");
+    const untouchedEnrollment = await enrollStudent(untouched.id, klass.id, session.id);
+    const untouchedResult = await prisma.result.create({
+      data: { studentId: untouched.id, enrollmentId: untouchedEnrollment.id, termId: term.id, status: "DRAFT" },
+    });
+
+    const res = await request(app)
+      .post(`/api/classes/${klass.id}/results/${term.id}/rank`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    await drainFireAndForget();
+
+    const rows = await prisma.auditLog.findMany({ where: { action: "RESULT_RANKED" } });
+    expect(rows).toHaveLength(2);
+
+    const byEntityId = new Map(rows.map((r) => [r.entityId, r]));
+    expect(byEntityId.has(klass.id), "must not be keyed by the class id").toBe(false);
+    expect(byEntityId.has(untouchedResult.id), "the still-DRAFT result must get no row").toBe(false);
+
+    const rowA = byEntityId.get(resultA.id);
+    expect(rowA, "must be keyed by resultA's own id").toBeTruthy();
+    expect((rowA?.afterData as { id: string; position: number })?.id).toBe(resultA.id);
+    expect((rowA?.afterData as { position: number })?.position).toBe(1);
+
+    const rowB = byEntityId.get(resultB.id);
+    expect(rowB, "must be keyed by resultB's own id").toBeTruthy();
+    expect((rowB?.afterData as { position: number })?.position).toBe(2);
   });
 });
 

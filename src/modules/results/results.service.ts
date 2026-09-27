@@ -1,8 +1,11 @@
-import { Prisma, type SessionAverageMethod } from "../../../generated/prisma/index.js";
+import { Prisma, type Result, type SessionAverageMethod } from "../../../generated/prisma/index.js";
 import { resolveStudentAccessLevel } from "../../authorization/scopeResolvers.js";
 import type { Principal } from "../../authorization/types.js";
+import { logger } from "../../config/logger.js";
 import { prisma } from "../../db/client.js";
 import { AppError } from "../../errors/AppError.js";
+import { fireAndForget } from "../../lib/fireAndForget.js";
+import { writeAuditLog } from "../audit/audit.service.js";
 import { withBalance } from "../fees/fees.service.js";
 import type { ComputeResultsBody, ComputeSessionResultsBody, OverrideResultBody } from "./results.schemas.js";
 
@@ -383,7 +386,12 @@ async function isClassFullyFinalized(
 /// Results with a null averageScore (never had a submitted subject) are
 /// excluded from ranking entirely, same as computeResultsForClass's own
 /// live ranking.
-async function rankFinalizedResults(tx: Prisma.TransactionClient, classId: string, termId: string): Promise<void> {
+/// Returns every Result row it actually updated (Prisma's update() already
+/// returns the full row — collected here rather than re-queried) so callers
+/// that need to know exactly what changed, not just "ranking ran," don't
+/// have to guess it from a separate read. rankClassResults uses this for
+/// its per-Result audit trail (see that function's own comment).
+async function rankFinalizedResults(tx: Prisma.TransactionClient, classId: string, termId: string): Promise<Result[]> {
   const finalized = await tx.result.findMany({
     where: { termId, status: "FINALIZED", enrollment: { classId }, averageScore: { not: null } },
     select: { id: true, averageScore: true },
@@ -393,13 +401,15 @@ async function rankFinalizedResults(tx: Prisma.TransactionClient, classId: strin
   const outOf = finalized.length;
   let lastScore: string | null = null;
   let lastPosition = 0;
+  const updated: Result[] = [];
   for (const [i, row] of finalized.entries()) {
     const scoreKey = row.averageScore?.toString() ?? null;
     const position = scoreKey === lastScore ? lastPosition : i + 1;
     lastScore = scoreKey;
     lastPosition = position;
-    await tx.result.update({ where: { id: row.id }, data: { position, outOf } });
+    updated.push(await tx.result.update({ where: { id: row.id }, data: { position, outOf } }));
   }
+  return updated;
 }
 
 /// Serializes the "check completeness, then rank" sequence against a racing
@@ -459,7 +469,20 @@ export async function finalizeResult(id: string, actorUserId: string) {
 /// actively-enrolled student to be done. Shares the same advisory lock key
 /// as finalizeResult's automatic pass, so the two can never race each other
 /// into an inconsistent double-write.
-export async function rankClassResults(classId: string, termId: string) {
+/// Not wrapped in the generic auditMutation() middleware, unlike every other
+/// Result action — that middleware writes exactly one row, keyed by
+/// req.params.id or the response body's own id, and neither fits here: this
+/// route's :id is the CLASS being ranked, and the response is an array with
+/// no id of its own (redact()'s {...body} spread would also mangle it into
+/// a numeric-keyed object, not a JSON array). A History panel keyed by
+/// Result id could never find a RESULT_RANKED entry written that way.
+/// Instead, one audit row is written explicitly per Result this pass
+/// actually updated — not per Result in the class; most of a class's
+/// Results (still DRAFT, or FINALIZED with no submitted subject and so
+/// excluded from ranking) are untouched and get no entry. Fire-and-forget,
+/// same posture as auditMutation itself: a slow or failing audit write must
+/// not hold up or fail the request.
+export async function rankClassResults(classId: string, termId: string, principal: Principal) {
   const klass = await prisma.class.findUnique({ where: { id: classId } });
   if (!klass) {
     throw AppError.notFound("Class not found");
@@ -469,7 +492,29 @@ export async function rankClassResults(classId: string, termId: string) {
     throw AppError.notFound("Term not found");
   }
 
-  await withPositionFillLock(classId, termId, (tx) => rankFinalizedResults(tx, classId, termId));
+  const ranked = await withPositionFillLock(classId, termId, (tx) => rankFinalizedResults(tx, classId, termId));
+
+  if (ranked.length > 0) {
+    fireAndForget(
+      Promise.all(
+        ranked.map((result) =>
+          writeAuditLog({
+            actorUserId: principal.userId,
+            actorRoles: [...principal.roles],
+            action: "RESULT_RANKED",
+            entityType: "Result",
+            entityId: result.id,
+            // Round-tripped through JSON, same as every other action's
+            // afterData (captured from res.json()'s own serialization) —
+            // a raw Result row's Decimal fields aren't themselves a valid
+            // Prisma.InputJsonValue.
+            afterData: JSON.parse(JSON.stringify(result)) as Prisma.InputJsonValue,
+          }),
+        ),
+      ),
+      (err) => logger.error({ err, classId, termId }, "Failed to write RESULT_RANKED audit log"),
+    );
+  }
 
   return prisma.result.findMany({ where: { termId, enrollment: { classId } }, orderBy: [{ position: "asc" }] });
 }

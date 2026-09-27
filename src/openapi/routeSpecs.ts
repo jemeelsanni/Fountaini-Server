@@ -14,13 +14,13 @@ import {
 import { classAttendanceQuerySchema, correctAttendanceSchema, idParamsSchema as attendanceIdParamsSchema, openSessionSchema, scanSchema } from "../modules/attendance/attendance.schemas.js";
 import { listAuditLogQuerySchema } from "../modules/audit/audit.schemas.js";
 import { createFeeStructureSchema, idParamsSchema as feesIdParamsSchema, recordPaymentSchema, updateFeeObligationSchema, updateFeeStructureSchema } from "../modules/fees/fees.schemas.js";
-import { createAssessmentComponentSchema, createGradeBandSchema, createGradingScaleSchema, idParamsSchema as gradingIdParamsSchema } from "../modules/grading/grading.schemas.js";
+import { createAssessmentComponentSchema, createGradeBandSchema, createGradingScaleSchema, idParamsSchema as gradingIdParamsSchema, updateAssessmentComponentSchema, updateGradeBandSchema } from "../modules/grading/grading.schemas.js";
 import { createProgressSchema, idParamsSchema as madrassahIdParamsSchema } from "../modules/madrassah/madrassah.schemas.js";
 import {
   idParamsSchema as notificationsIdParamsSchema,
   triggerFeeRemindersSchema,
 } from "../modules/notifications/notifications.schemas.js";
-import { createParentSchema, idParamsSchema as parentsIdParamsSchema, linkChildSchema, parentChildParamsSchema } from "../modules/parents/parents.schemas.js";
+import { createParentSchema, idParamsSchema as parentsIdParamsSchema, linkChildSchema, parentChildParamsSchema, updateParentSchema } from "../modules/parents/parents.schemas.js";
 import {
   bulkUpsertRatingsSchema,
   classTermParamsSchema as ratingsClassTermParamsSchema,
@@ -239,7 +239,11 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     responses: { 200: { description: "OK", schema: z.array(ClassSubjectAssignmentWithRelationsSchema) } },
   },
   "DELETE /api/class-subject-assignments/:id": {
-    summary: "Remove a class-subject-teacher assignment",
+    summary:
+      "Remove a class-subject-teacher assignment. Its timetable entries are removed along with it " +
+      "(pure scheduling data, recreated in seconds). Recorded scores or computed subject results block " +
+      "the whole operation with 409 instead — those are a teacher's work and are never deleted as a " +
+      "side effect of this route.",
     requestParams: academicStructureIdParamsSchema,
     responses: { 204: noContent },
   },
@@ -341,7 +345,23 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
 
   // --- audit ------------------------------------------------------------------
   "GET /api/audit-log": {
-    summary: "List audit log entries",
+    summary:
+      "List audit log entries. beforeData is always null on every row, regardless of entityType or " +
+      "action — writeAuditLog() accepts it, but the generic auditMutation() middleware that produces " +
+      "every row here never passes it, and it has no other caller. Only afterData (a snapshot of the " +
+      "route's own response body) is ever recorded. For entityType \"Result\", all six mutation actions " +
+      "are audited equally — RESULT_FINALIZED, RESULT_RANKED, RESULT_OVERRIDDEN, " +
+      "RESULT_WITHHOLDING_RELEASED, CLASS_TEACHER_COMMENT_WRITTEN, PRINCIPAL_COMMENT_WRITTEN — none is " +
+      "skipped, and every one carries afterData shaped as a single updated Result row, keyed by that " +
+      "Result's own id. RESULT_RANKED is written explicitly by rankClassResults() rather than the " +
+      "generic middleware (its route, POST /api/classes/:id/results/:termId/rank, has no single " +
+      "Result id of its own to key on): one audit row per Result the ranking pass actually updated, " +
+      "never one row for the whole class — most of a class's Results (still DRAFT, or FINALIZED with " +
+      "no submitted subject) are untouched by ranking and get no row. Separately, RESULT_OVERRIDDEN is " +
+      "the only one of the six with a genuine before/after value pair anywhere: not in this table " +
+      "(beforeData is null here too, and everywhere else), but in the dedicated ResultOverride table " +
+      "(fieldName/oldValue/newValue/reason), queryable by resultId. The other five actions have no " +
+      "prior-value record at all, here or elsewhere — only a post-mutation snapshot.",
     requestQuery: listAuditLogQuerySchema,
     responses: { 200: { description: "OK", schema: z.array(AuditLogSchema) } },
   },
@@ -486,6 +506,30 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     requestParams: gradingIdParamsSchema,
     responses: { 200: { description: "OK", schema: z.array(AssessmentComponentSchema) } },
   },
+  "PATCH /api/assessment-components/:id": {
+    summary:
+      "Partially update an assessment component. Every field is optional; an absent field is left " +
+      "untouched. If maxScore changes and the session's components no longer sum to 100, the response " +
+      "carries an extra `warning` string rather than rejecting the edit — scores.service.ts's " +
+      "submitScores sums raw scores across every component and compares that total directly against " +
+      "grade bands calibrated for 0-100, so a non-100 total silently produces an out-of-scale grade on " +
+      "the next submit. Editing a component after results have already been computed from it also " +
+      "leaves those results stale until someone recomputes: FINALIZED results are immutable and won't " +
+      "pick up the edit at all, so a mid-term edit can leave a class with some report cards built from " +
+      "the old component set and some from the new. Recomputing affected classes is a manual admin " +
+      "follow-up this endpoint does not perform.",
+    requestParams: gradingIdParamsSchema,
+    requestBody: updateAssessmentComponentSchema,
+    responses: { 200: { description: "OK", schema: AssessmentComponentSchema } },
+  },
+  "DELETE /api/assessment-components/:id": {
+    summary:
+      "Delete an assessment component. 409 if any score has been recorded against it — unlike a " +
+      "class-subject assignment's timetable entries, a score is a teacher's recorded work and is never " +
+      "deleted as a side effect.",
+    requestParams: gradingIdParamsSchema,
+    responses: { 204: noContent },
+  },
   "POST /api/academic-sessions/:id/grading-scale": {
     summary:
       "Create the grading scale for an academic session, optionally choosing how SessionResult figures " +
@@ -500,10 +544,33 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     responses: { 200: { description: "OK", schema: GradingScaleWithBandsSchema } },
   },
   "POST /api/grading-scales/:id/bands": {
-    summary: "Add a grade band to a grading scale",
+    summary:
+      "Add a grade band to a grading scale. 400 if its range overlaps an existing band on the same " +
+      "scale. Gaps between bands (e.g. 0-39 and 50-100, leaving 40-49 ungraded) are allowed, not " +
+      "rejected — a score landing in one is handled gracefully at grading time (grade: null on that " +
+      "student's report card), not an error. Since it can't be blocked without breaking the ordinary " +
+      "one-band-at-a-time setup workflow, the response instead carries a `warning` string whenever the " +
+      "scale's bands (including this one) leave any part of 0-100 uncovered.",
     requestParams: gradingIdParamsSchema,
     requestBody: createGradeBandSchema,
     responses: { 201: { description: "Created", schema: GradeBandSchema } },
+  },
+  "PATCH /api/grade-bands/:id": {
+    summary:
+      "Partially update a grade band. Every field is optional; an absent field is left untouched, an " +
+      "explicit null clears remark or gradePoint. 400 if the resulting range (merged with whatever " +
+      "wasn't changed) is invalid or overlaps another band on the same scale — the same check " +
+      "POST /api/grading-scales/:id/bands applies on create. Same gap handling too: the response " +
+      "carries a `warning` string, never a rejection, whenever the scale's bands leave part of 0-100 " +
+      "uncovered after this edit.",
+    requestParams: gradingIdParamsSchema,
+    requestBody: updateGradeBandSchema,
+    responses: { 200: { description: "OK", schema: GradeBandSchema } },
+  },
+  "DELETE /api/grade-bands/:id": {
+    summary: "Delete a grade band",
+    requestParams: gradingIdParamsSchema,
+    responses: { 204: noContent },
   },
 
   // --- madrassah --------------------------------------------------------------
@@ -567,6 +634,16 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
   "GET /api/parents/:id": {
     summary: "Get one parent",
     requestParams: parentsIdParamsSchema,
+    responses: { 200: { description: "OK", schema: ParentSchema } },
+  },
+  "PATCH /api/parents/:id": {
+    summary:
+      "Partially update a parent's profile: firstName, lastName, phone, alternatePhone, address. An " +
+      "absent field is left untouched; an explicit null clears phone, alternatePhone, or address (all " +
+      "nullable). Login email is not editable here — it's the parent's loginId, and changing it changes " +
+      "how they sign in; that's a separate, audited endpoint, not folded into this profile edit.",
+    requestParams: parentsIdParamsSchema,
+    requestBody: updateParentSchema,
     responses: { 200: { description: "OK", schema: ParentSchema } },
   },
   "GET /api/parents/:id/children": {

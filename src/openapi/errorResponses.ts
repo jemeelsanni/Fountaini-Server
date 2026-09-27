@@ -53,6 +53,10 @@ export const CONFLICT_ROUTE_KEYS: ReadonlySet<string> = new Set([
   "DELETE /api/fee-structures/:id",
   "PUT /api/classes/:id/results/:termId/ratings",
   "POST /api/academic-sessions/:id/traits",
+  "DELETE /api/class-subject-assignments/:id",
+  "PATCH /api/assessment-components/:id",
+  "DELETE /api/assessment-components/:id",
+  "PATCH /api/grade-bands/:id",
 ]);
 
 /// Routes whose service layer can throw AppError.paymentRequired(...) — see
