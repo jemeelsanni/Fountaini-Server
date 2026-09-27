@@ -1,9 +1,12 @@
 import type { Request, Response } from "express";
+import { AppError } from "../../errors/AppError.js";
 import * as service from "./students.service.js";
 import type {
+  BulkUpdateStudentStatusBody,
   CreateEnrollmentBody,
   CreateStudentBody,
   IdParams,
+  TransferStudentBody,
   UpdateStudentBody,
 } from "./students.schemas.js";
 
@@ -22,8 +25,32 @@ export async function getStudent(req: Request, res: Response): Promise<void> {
 }
 
 export async function updateStudent(req: Request, res: Response): Promise<void> {
+  if (!req.principal) {
+    throw AppError.unauthorized();
+  }
   const { id } = req.params as unknown as IdParams;
-  res.status(200).json(await service.updateStudent(id, req.body as UpdateStudentBody));
+  res.status(200).json(await service.updateStudent(id, req.body as UpdateStudentBody, req.principal.userId));
+}
+
+export async function bulkUpdateStatus(req: Request, res: Response): Promise<void> {
+  if (!req.principal) {
+    throw AppError.unauthorized();
+  }
+  res
+    .status(200)
+    .json(
+      await service.bulkUpdateStudentStatus(
+        req.body as BulkUpdateStudentStatusBody,
+        req.principal.userId,
+        [...req.principal.roles],
+      ),
+    );
+}
+
+export async function transferStudent(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as unknown as IdParams;
+  const { classId } = req.body as TransferStudentBody;
+  res.status(200).json(await service.transferStudent(id, classId));
 }
 
 export async function reissueCredentials(req: Request, res: Response): Promise<void> {

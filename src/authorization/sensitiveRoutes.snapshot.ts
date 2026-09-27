@@ -36,6 +36,13 @@ export const SENSITIVE_ROUTE_ROLES: Readonly<Record<string, readonly Role[]>> = 
   // already-issued student login — ADMIN-only for the same account-
   // lifecycle reason as the three above.
   "POST /api/students/:id/reissue-credentials": ["ADMIN"],
+  // Bulk lifecycle: up to 500 students at once, and GRADUATED/WITHDRAWN
+  // also close each one's active enrollment(s) — same blast-radius class
+  // as the account-lifecycle rows above, just batched.
+  "PATCH /api/students/status": ["ADMIN"],
+  // Moves a student's current-session enrollment between classes —
+  // same account/enrollment-lifecycle blast radius as the rows above.
+  "POST /api/students/:id/transfer": ["ADMIN"],
 
   // --- Notifications: mass fee-reminder trigger ---
   "POST /api/notifications/fee-reminders/trigger": ["ADMIN", "BURSAR"],
@@ -54,6 +61,15 @@ export const SENSITIVE_ROUTE_ROLES: Readonly<Record<string, readonly Role[]>> = 
   "PATCH /api/academic-sessions/:id/set-current": ["ADMIN"],
   "POST /api/academic-sessions/:id/terms": ["ADMIN"],
   "PATCH /api/terms/:id/set-current": ["ADMIN"],
+
+  // --- Grading configuration: shared across every student in a session ---
+  // Same shape as the fee-structure rows above — a shared configuration
+  // entity with many dependent records (Score, SubjectResult) — pinned for
+  // the same reason.
+  "PATCH /api/assessment-components/:id": ["ADMIN"],
+  "DELETE /api/assessment-components/:id": ["ADMIN"],
+  "PATCH /api/grade-bands/:id": ["ADMIN"],
+  "DELETE /api/grade-bands/:id": ["ADMIN"],
 
   // --- Parent privacy: family structure ---
   // Not a mutation, but pinned like one anyway: this route enumerates a

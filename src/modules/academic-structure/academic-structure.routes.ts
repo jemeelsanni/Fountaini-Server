@@ -1,6 +1,8 @@
 import { Router } from "express";
-import { requireAuth, requireRole } from "../../authorization/middleware.js";
+import { requireAuth, requireRole, requireScope } from "../../authorization/middleware.js";
+import { canReadClassRoster } from "../../authorization/scopeResolvers.js";
 import { ALL_ROLES } from "../../authorization/types.js";
+import { prisma } from "../../db/client.js";
 import { auditMutation } from "../../http/middleware/auditMutation.js";
 import { validate } from "../../http/middleware/validate.js";
 import * as controller from "./academic-structure.controller.js";
@@ -12,6 +14,9 @@ import {
   createSubjectSchema,
   createTermSchema,
   idParamsSchema,
+  type IdParams,
+  type ListClassStudentsQuery,
+  listClassStudentsQuerySchema,
 } from "./academic-structure.schemas.js";
 
 export const academicStructureRouter = Router();
@@ -34,7 +39,9 @@ academicStructureRouter.patch(
   "/academic-sessions/:id/set-current",
   requireRole("ADMIN"),
   validate({ params: idParamsSchema }),
-  auditMutation("AcademicSession", "ACADEMIC_SESSION_SET_CURRENT"),
+  auditMutation("AcademicSession", "ACADEMIC_SESSION_SET_CURRENT", {
+    fetchBefore: (id) => prisma.academicSession.findUnique({ where: { id } }),
+  }),
   controller.setCurrentAcademicSession,
 );
 academicStructureRouter.post(
@@ -54,7 +61,9 @@ academicStructureRouter.patch(
   "/terms/:id/set-current",
   requireRole("ADMIN"),
   validate({ params: idParamsSchema }),
-  auditMutation("Term", "TERM_SET_CURRENT"),
+  auditMutation("Term", "TERM_SET_CURRENT", {
+    fetchBefore: (id) => prisma.term.findUnique({ where: { id } }),
+  }),
   controller.setCurrentTerm,
 );
 
@@ -66,6 +75,21 @@ academicStructureRouter.post(
   controller.createClass,
 );
 academicStructureRouter.get("/classes", requireRole(...ALL_ROLES), controller.listClasses);
+// Not parents — a parent seeing every child in their child's class is a
+// privacy decision nobody has made. requireRole gates out STUDENT/PARENT
+// entirely before the scope check ever runs, same split as every other
+// role+scope route in this codebase.
+academicStructureRouter.get(
+  "/classes/:id/students",
+  requireRole("ADMIN", "BURSAR", "TEACHER"),
+  validate({ params: idParamsSchema, query: listClassStudentsQuerySchema }),
+  requireScope((principal, req) => {
+    const { id } = req.params as unknown as IdParams;
+    const { academicSessionId } = req.query as unknown as ListClassStudentsQuery;
+    return canReadClassRoster(principal, id, academicSessionId);
+  }),
+  controller.listClassStudents,
+);
 
 academicStructureRouter.post(
   "/subjects",

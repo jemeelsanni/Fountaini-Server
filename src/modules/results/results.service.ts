@@ -1,8 +1,11 @@
-import { Prisma, type SessionAverageMethod } from "../../../generated/prisma/index.js";
+import { Prisma, type Result, type SessionAverageMethod } from "../../../generated/prisma/index.js";
 import { resolveStudentAccessLevel } from "../../authorization/scopeResolvers.js";
 import type { Principal } from "../../authorization/types.js";
+import { logger } from "../../config/logger.js";
 import { prisma } from "../../db/client.js";
 import { AppError } from "../../errors/AppError.js";
+import { fireAndForget } from "../../lib/fireAndForget.js";
+import { writeAuditLog } from "../audit/audit.service.js";
 import { withBalance } from "../fees/fees.service.js";
 import type { ComputeResultsBody, ComputeSessionResultsBody, OverrideResultBody } from "./results.schemas.js";
 
@@ -125,18 +128,26 @@ export async function computeResultsForClass(input: ComputeResultsBody) {
     throw AppError.badRequest("No students are actively enrolled in this class for this session");
   }
 
-  const assignments = await prisma.classSubjectAssignment.findMany({
-    where: { classId: input.classId, academicSessionId: term.academicSessionId },
-  });
-  const assignmentIds = assignments.map((a) => a.id);
   const studentIds = enrollments.map((e) => e.studentId);
 
+  // Scoped by studentId + termId, not by "this class's own assignment ids"
+  // — the latter was a latent bug on its own, not just a transfer-support
+  // gap: it can only ever see subject work computed against THIS class's
+  // assignments, so a student who did any of their scored work through a
+  // different class's assignment this term (a mid-term arm transfer being
+  // the concrete case that surfaced it) has that work silently excluded
+  // from their total/average here, in both the old and the new class's
+  // compute — not double-counted, just gone. Still scoped to the right
+  // academic session (via the assignment's own academicSessionId, joined
+  // through the relation rather than pre-fetched into an id list) so a
+  // stale SubjectResult from a different session's assignment can't leak
+  // in.
   const subjectResults = await prisma.subjectResult.findMany({
     where: {
-      classSubjectAssignmentId: { in: assignmentIds },
-      termId: input.termId,
       studentId: { in: studentIds },
+      termId: input.termId,
       status: "SUBMITTED",
+      classSubjectAssignment: { academicSessionId: term.academicSessionId },
     },
   });
 
@@ -334,26 +345,31 @@ export function listResultsForClass(classId: string, termId: string) {
 /// PRESENT + LATE both count as "the student was at school that day" — only
 /// ABSENT doesn't. Scoped to CLOSED AttendanceSessions only: an OPEN session
 /// that never closed is an incomplete record, not a real school day.
+///
+/// Scoped by studentId, not classId — deliberately not "every CLOSED
+/// session in this ONE class," which would silently drop every day a
+/// student attended under a DIFFERENT class this term (the concrete case:
+/// a mid-term arm transfer). This works precisely BECAUSE of how
+/// closeSession() (attendance.service.ts) works: closing a session gives
+/// every student actively enrolled in that class AT CLOSE TIME exactly one
+/// AttendanceRecord (scanned, or auto-filled ABSENT) — so "how many CLOSED-
+/// session records does this student have this term" is already the
+/// correct per-student day count, however many different classes' sessions
+/// contributed to it, with no risk of double-counting a single calendar
+/// day the way summing multiple classes' own AttendanceSession rows
+/// directly would (two classes each closing their own session on the same
+/// day are two different records for two different students, not two
+/// records for the same one).
 async function computeAttendanceSnapshot(
   studentId: string,
-  classId: string,
   termId: string,
 ): Promise<{ daysPresent: number; daysSchoolOpened: number }> {
-  const sessions = await prisma.attendanceSession.findMany({
-    where: { classId, termId, status: "CLOSED" },
-    select: { id: true },
+  const records = await prisma.attendanceRecord.findMany({
+    where: { studentId, attendanceSession: { termId, status: "CLOSED" } },
+    select: { status: true },
   });
-  const daysSchoolOpened = sessions.length;
-  if (daysSchoolOpened === 0) {
-    return { daysPresent: 0, daysSchoolOpened: 0 };
-  }
-  const daysPresent = await prisma.attendanceRecord.count({
-    where: {
-      studentId,
-      attendanceSessionId: { in: sessions.map((s) => s.id) },
-      status: { in: ["PRESENT", "LATE"] },
-    },
-  });
+  const daysSchoolOpened = records.length;
+  const daysPresent = records.filter((r) => r.status === "PRESENT" || r.status === "LATE").length;
   return { daysPresent, daysSchoolOpened };
 }
 
@@ -383,23 +399,37 @@ async function isClassFullyFinalized(
 /// Results with a null averageScore (never had a submitted subject) are
 /// excluded from ranking entirely, same as computeResultsForClass's own
 /// live ranking.
-async function rankFinalizedResults(tx: Prisma.TransactionClient, classId: string, termId: string): Promise<void> {
+/// Returns, per Result it actually updated, both its prior position/outOf
+/// (read as part of computing the new ranking, not a separate query — this
+/// is the "before" half rankClassResults' audit trail uses) and the full
+/// updated row (Prisma's update() already returns it — collected here
+/// rather than re-queried, the "after" half). Callers that need to know
+/// exactly what changed, not just "ranking ran," use this instead of
+/// guessing it from a separate read.
+async function rankFinalizedResults(
+  tx: Prisma.TransactionClient,
+  classId: string,
+  termId: string,
+): Promise<Array<{ before: { id: string; position: number | null; outOf: number | null }; after: Result }>> {
   const finalized = await tx.result.findMany({
     where: { termId, status: "FINALIZED", enrollment: { classId }, averageScore: { not: null } },
-    select: { id: true, averageScore: true },
+    select: { id: true, averageScore: true, position: true, outOf: true },
     orderBy: { averageScore: "desc" },
   });
 
   const outOf = finalized.length;
   let lastScore: string | null = null;
   let lastPosition = 0;
+  const updated: Array<{ before: { id: string; position: number | null; outOf: number | null }; after: Result }> = [];
   for (const [i, row] of finalized.entries()) {
     const scoreKey = row.averageScore?.toString() ?? null;
     const position = scoreKey === lastScore ? lastPosition : i + 1;
     lastScore = scoreKey;
     lastPosition = position;
-    await tx.result.update({ where: { id: row.id }, data: { position, outOf } });
+    const after = await tx.result.update({ where: { id: row.id }, data: { position, outOf } });
+    updated.push({ before: { id: row.id, position: row.position, outOf: row.outOf }, after });
   }
+  return updated;
 }
 
 /// Serializes the "check completeness, then rank" sequence against a racing
@@ -426,11 +456,7 @@ export async function finalizeResult(id: string, actorUserId: string) {
     throw AppError.conflict("This result is already finalized");
   }
 
-  const { daysPresent, daysSchoolOpened } = await computeAttendanceSnapshot(
-    result.studentId,
-    result.enrollment.classId,
-    result.termId,
-  );
+  const { daysPresent, daysSchoolOpened } = await computeAttendanceSnapshot(result.studentId, result.termId);
 
   const finalized = await prisma.result.update({
     where: { id },
@@ -459,7 +485,20 @@ export async function finalizeResult(id: string, actorUserId: string) {
 /// actively-enrolled student to be done. Shares the same advisory lock key
 /// as finalizeResult's automatic pass, so the two can never race each other
 /// into an inconsistent double-write.
-export async function rankClassResults(classId: string, termId: string) {
+/// Not wrapped in the generic auditMutation() middleware, unlike every other
+/// Result action — that middleware writes exactly one row, keyed by
+/// req.params.id or the response body's own id, and neither fits here: this
+/// route's :id is the CLASS being ranked, and the response is an array with
+/// no id of its own (redact()'s {...body} spread would also mangle it into
+/// a numeric-keyed object, not a JSON array). A History panel keyed by
+/// Result id could never find a RESULT_RANKED entry written that way.
+/// Instead, one audit row is written explicitly per Result this pass
+/// actually updated — not per Result in the class; most of a class's
+/// Results (still DRAFT, or FINALIZED with no submitted subject and so
+/// excluded from ranking) are untouched and get no entry. Fire-and-forget,
+/// same posture as auditMutation itself: a slow or failing audit write must
+/// not hold up or fail the request.
+export async function rankClassResults(classId: string, termId: string, principal: Principal) {
   const klass = await prisma.class.findUnique({ where: { id: classId } });
   if (!klass) {
     throw AppError.notFound("Class not found");
@@ -469,7 +508,36 @@ export async function rankClassResults(classId: string, termId: string) {
     throw AppError.notFound("Term not found");
   }
 
-  await withPositionFillLock(classId, termId, (tx) => rankFinalizedResults(tx, classId, termId));
+  const ranked = await withPositionFillLock(classId, termId, (tx) => rankFinalizedResults(tx, classId, termId));
+
+  if (ranked.length > 0) {
+    fireAndForget(
+      Promise.all(
+        ranked.map(({ before, after }) =>
+          writeAuditLog({
+            actorUserId: principal.userId,
+            actorRoles: [...principal.roles],
+            action: "RESULT_RANKED",
+            entityType: "Result",
+            entityId: after.id,
+            // Unlike every route wired through auditMutation's fetchBefore
+            // (a fresh read before the mutation), this "before" comes free
+            // as a side effect of the ranking pass itself — it already had
+            // to read each Result's prior position/outOf to compute the
+            // new one, so no extra query is spent capturing it. No
+            // redaction needed on either side (unlike a User row, nothing
+            // on Result is password-shaped) — round-tripped through JSON
+            // regardless, same as every other action's afterData, since a
+            // raw Result row's Decimal fields aren't themselves a valid
+            // Prisma.InputJsonValue.
+            beforeData: JSON.parse(JSON.stringify(before)) as Prisma.InputJsonValue,
+            afterData: JSON.parse(JSON.stringify(after)) as Prisma.InputJsonValue,
+          }),
+        ),
+      ),
+      (err) => logger.error({ err, classId, termId }, "Failed to write RESULT_RANKED audit log"),
+    );
+  }
 
   return prisma.result.findMany({ where: { termId, enrollment: { classId } }, orderBy: [{ position: "asc" }] });
 }

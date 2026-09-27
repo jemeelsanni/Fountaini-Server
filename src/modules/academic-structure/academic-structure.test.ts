@@ -5,11 +5,17 @@ import { prisma } from "../../db/client.js";
 import { setCurrentAcademicSession, setCurrentTerm } from "./academic-structure.service.js";
 import {
   createAdmin,
+  createAssessmentComponent,
+  createAssignment,
   createBursar,
   createClass,
+  createCurrentAcademicSession,
   createParent,
+  createStudentWithLogin,
   createSubject,
   createTeacher,
+  createTermForSession,
+  enrollStudent,
 } from "../../test/factories.js";
 import { resetDb } from "../../test/resetDb.js";
 
@@ -352,6 +358,98 @@ describe("class-subject-teacher assignments", () => {
   });
 });
 
+describe("deleting a class-subject-teacher assignment", () => {
+  async function buildAssignment() {
+    const { token } = await createAdmin("admin@test.local");
+    const { staff } = await createTeacher("teacher@test.local");
+    const klass = await createClass("JSS1", "A");
+    const subject = await createSubject("Mathematics", "MTH");
+    const session = await createCurrentAcademicSession("2026/2027");
+    const term = await createTermForSession(session.id, "First Term", 1);
+    const assignment = await createAssignment(klass.id, subject.id, staff.id, session.id);
+    return { token, staff, klass, subject, session, term, assignment };
+  }
+
+  async function attachTimetableEntry(assignment: { id: string; classId: string; teacherId: string }, sessionId: string) {
+    const timeSlot = await prisma.timeSlot.create({
+      data: { name: "Period 1", startTime: "08:00", endTime: "08:40", order: 1 },
+    });
+    return prisma.timetableEntry.create({
+      data: {
+        classSubjectAssignmentId: assignment.id,
+        classId: assignment.classId,
+        teacherId: assignment.teacherId,
+        academicSessionId: sessionId,
+        timeSlotId: timeSlot.id,
+        dayOfWeek: "MONDAY",
+      },
+    });
+  }
+
+  it("204s and removes the assignment when nothing is attached", async () => {
+    const { token, assignment } = await buildAssignment();
+
+    const res = await request(app)
+      .delete(`/api/class-subject-assignments/${assignment.id}`)
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(204);
+    expect(await prisma.classSubjectAssignment.findUnique({ where: { id: assignment.id } })).toBeNull();
+  });
+
+  it("204s and removes its timetable entries along with it when only timetable entries are attached", async () => {
+    const { token, assignment, session } = await buildAssignment();
+    const entry = await attachTimetableEntry(assignment, session.id);
+
+    const res = await request(app)
+      .delete(`/api/class-subject-assignments/${assignment.id}`)
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(204);
+    expect(await prisma.classSubjectAssignment.findUnique({ where: { id: assignment.id } })).toBeNull();
+    expect(await prisma.timetableEntry.findUnique({ where: { id: entry.id } })).toBeNull();
+  });
+
+  it("409s naming the blocker when scores exist, even alongside timetable entries — and deletes nothing", async () => {
+    const { token, staff, assignment, session, term } = await buildAssignment();
+    const entry = await attachTimetableEntry(assignment, session.id);
+    const component = await createAssessmentComponent(session.id, "CA1", "CA", 40, 1);
+    const { student } = await createStudentWithLogin("scored-student@test.local", "STU-DEL-001");
+    await prisma.score.create({
+      data: {
+        studentId: student.id,
+        classSubjectAssignmentId: assignment.id,
+        termId: term.id,
+        assessmentComponentId: component.id,
+        rawScore: 30,
+        enteredByUserId: staff.userId,
+      },
+    });
+
+    const res = await request(app)
+      .delete(`/api/class-subject-assignments/${assignment.id}`)
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.message).toContain("1 recorded score");
+    // The whole operation aborted — nothing was cleaned up, not even the
+    // timetable entry that would otherwise be deleted on its own.
+    expect(await prisma.classSubjectAssignment.findUnique({ where: { id: assignment.id } })).not.toBeNull();
+    expect(await prisma.timetableEntry.findUnique({ where: { id: entry.id } })).not.toBeNull();
+  });
+
+  it("rejects a non-admin caller", async () => {
+    const { assignment } = await buildAssignment();
+    const { token: otherTeacherToken } = await createTeacher("other-teacher@test.local");
+
+    const res = await request(app)
+      .delete(`/api/class-subject-assignments/${assignment.id}`)
+      .set("Authorization", `Bearer ${otherTeacherToken}`);
+
+    expect(res.status).toBe(403);
+  });
+});
+
 describe("class form teachers", () => {
   it("assigns a form teacher and rejects a non-teaching staff role", async () => {
     const { token } = await createAdmin("admin@test.local");
@@ -470,6 +568,82 @@ describe("class form teachers", () => {
 
     const stillThere = await prisma.classFormTeacher.findUnique({ where: { id: assignment.id } });
     expect(stillThere).toBeNull();
+  });
+});
+
+describe("GET /api/classes/:id/students", () => {
+  async function buildClassWithStudents() {
+    const session = await createCurrentAcademicSession("2026/2027");
+    const klass = await createClass("JSS1", "A");
+    const otherClass = await createClass("JSS1", "B");
+    const subject = await createSubject("Mathematics", "MTH");
+    const { staff: assignedTeacher, token: assignedTeacherToken } = await createTeacher("assigned@test.local");
+    await createAssignment(klass.id, subject.id, assignedTeacher.id, session.id);
+    const { token: otherTeacherToken } = await createTeacher("other-teacher@test.local");
+    await createAssignment(otherClass.id, subject.id, (await createTeacher("filler@test.local")).staff.id, session.id);
+
+    const { student: activeStudent } = await createStudentWithLogin("active@test.local", "ADM-ROSTER-001");
+    await enrollStudent(activeStudent.id, klass.id, session.id);
+
+    // A student who transferred out — an Enrollment row exists (so it
+    // would show up if the roster query didn't filter by status) but it's
+    // not ACTIVE.
+    const { student: transferredStudent } = await createStudentWithLogin("transferred@test.local", "ADM-ROSTER-002");
+    await prisma.enrollment.create({
+      data: { studentId: transferredStudent.id, classId: klass.id, academicSessionId: session.id, status: "TRANSFERRED_OUT" },
+    });
+
+    return { session, klass, otherClass, assignedTeacherToken, otherTeacherToken, activeStudent, transferredStudent };
+  }
+
+  it("returns only actively-enrolled students — a transferred-out student doesn't appear", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const { klass, activeStudent, transferredStudent } = await buildClassWithStudents();
+
+    const res = await request(app)
+      .get(`/api/classes/${klass.id}/students`)
+      .set("Authorization", `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(200);
+    const studentIds = (res.body as Array<{ student: { id: string } }>).map((row) => row.student.id);
+    expect(studentIds).toContain(activeStudent.id);
+    expect(studentIds).not.toContain(transferredStudent.id);
+    // { student, enrollment }[], not bare students.
+    const activeRow = (res.body as Array<{ student: { id: string }; enrollment: { status: string } }>).find(
+      (row) => row.student.id === activeStudent.id,
+    );
+    expect(activeRow?.enrollment.status).toBe("ACTIVE");
+  });
+
+  it("200s for an assigned teacher, 403s for a teacher of a different class, 403s for a parent", async () => {
+    const { klass, assignedTeacherToken, otherTeacherToken } = await buildClassWithStudents();
+    const { token: parentToken } = await createParent("parent@test.local");
+
+    const asAssigned = await request(app)
+      .get(`/api/classes/${klass.id}/students`)
+      .set("Authorization", `Bearer ${assignedTeacherToken}`);
+    expect(asAssigned.status).toBe(200);
+
+    const asOtherTeacher = await request(app)
+      .get(`/api/classes/${klass.id}/students`)
+      .set("Authorization", `Bearer ${otherTeacherToken}`);
+    expect(asOtherTeacher.status).toBe(403);
+
+    const asParent = await request(app)
+      .get(`/api/classes/${klass.id}/students`)
+      .set("Authorization", `Bearer ${parentToken}`);
+    expect(asParent.status).toBe(403);
+  });
+
+  it("allows BURSAR too", async () => {
+    const { token: bursarToken } = await createBursar("bursar@test.local");
+    const { klass } = await buildClassWithStudents();
+
+    const res = await request(app)
+      .get(`/api/classes/${klass.id}/students`)
+      .set("Authorization", `Bearer ${bursarToken}`);
+
+    expect(res.status).toBe(200);
   });
 });
 

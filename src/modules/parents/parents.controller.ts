@@ -6,6 +6,7 @@ import type {
   IdParams,
   LinkChildBody,
   ParentChildParams,
+  UpdateParentBody,
 } from "./parents.schemas.js";
 
 export async function createParent(req: Request, res: Response): Promise<void> {
@@ -20,6 +21,11 @@ export async function listParents(_req: Request, res: Response): Promise<void> {
 export async function getParent(req: Request, res: Response): Promise<void> {
   const { id } = req.params as unknown as IdParams;
   res.status(200).json(await service.getParentById(id));
+}
+
+export async function updateParent(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as unknown as IdParams;
+  res.status(200).json(await service.updateParent(id, req.body as UpdateParentBody));
 }
 
 export async function listChildrenForParentId(req: Request, res: Response): Promise<void> {

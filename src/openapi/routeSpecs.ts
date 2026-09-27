@@ -2,7 +2,7 @@ import type { RouteParameter } from "@asteasolutions/zod-to-openapi/dist/openapi
 import type { ZodTypeAny } from "zod";
 import { z } from "zod";
 import "./zodSetup.js";
-import { createAcademicSessionSchema, createClassFormTeacherSchema, createClassSchema, createClassSubjectAssignmentSchema, createSubjectSchema, createTermSchema, idParamsSchema as academicStructureIdParamsSchema } from "../modules/academic-structure/academic-structure.schemas.js";
+import { createAcademicSessionSchema, createClassFormTeacherSchema, createClassSchema, createClassSubjectAssignmentSchema, createSubjectSchema, createTermSchema, idParamsSchema as academicStructureIdParamsSchema, listClassStudentsQuerySchema } from "../modules/academic-structure/academic-structure.schemas.js";
 import { convertEnquirySchema, createEnquirySchema, idParamsSchema as admissionsIdParamsSchema, listEnquiriesQuerySchema, updateEnquirySchema } from "../modules/admissions/admissions.schemas.js";
 import {
   changePasswordSchema,
@@ -14,13 +14,13 @@ import {
 import { classAttendanceQuerySchema, correctAttendanceSchema, idParamsSchema as attendanceIdParamsSchema, openSessionSchema, scanSchema } from "../modules/attendance/attendance.schemas.js";
 import { listAuditLogQuerySchema } from "../modules/audit/audit.schemas.js";
 import { createFeeStructureSchema, idParamsSchema as feesIdParamsSchema, recordPaymentSchema, updateFeeObligationSchema, updateFeeStructureSchema } from "../modules/fees/fees.schemas.js";
-import { createAssessmentComponentSchema, createGradeBandSchema, createGradingScaleSchema, idParamsSchema as gradingIdParamsSchema } from "../modules/grading/grading.schemas.js";
+import { createAssessmentComponentSchema, createGradeBandSchema, createGradingScaleSchema, idParamsSchema as gradingIdParamsSchema, updateAssessmentComponentSchema, updateGradeBandSchema } from "../modules/grading/grading.schemas.js";
 import { createProgressSchema, idParamsSchema as madrassahIdParamsSchema } from "../modules/madrassah/madrassah.schemas.js";
 import {
   idParamsSchema as notificationsIdParamsSchema,
   triggerFeeRemindersSchema,
 } from "../modules/notifications/notifications.schemas.js";
-import { createParentSchema, idParamsSchema as parentsIdParamsSchema, linkChildSchema, parentChildParamsSchema } from "../modules/parents/parents.schemas.js";
+import { createParentSchema, idParamsSchema as parentsIdParamsSchema, linkChildSchema, parentChildParamsSchema, updateParentSchema } from "../modules/parents/parents.schemas.js";
 import {
   bulkUpsertRatingsSchema,
   classTermParamsSchema as ratingsClassTermParamsSchema,
@@ -42,7 +42,7 @@ import {
 import { createSchoolSchema, updateSchoolSchema } from "../modules/school/school.schemas.js";
 import { bulkUpsertScoresSchema, idParamsSchema as scoresIdParamsSchema, scoresForAssignmentQuerySchema, submitScoresSchema } from "../modules/scores/scores.schemas.js";
 import { createStaffSchema, idParamsSchema as staffIdParamsSchema, updateStaffSchema } from "../modules/staff/staff.schemas.js";
-import { createEnrollmentSchema, createStudentSchema, idParamsSchema as studentsIdParamsSchema, updateStudentSchema } from "../modules/students/students.schemas.js";
+import { bulkUpdateStudentStatusSchema, createEnrollmentSchema, createStudentSchema, idParamsSchema as studentsIdParamsSchema, transferStudentSchema, updateStudentSchema } from "../modules/students/students.schemas.js";
 import { createTimeSlotSchema, createTimetableEntrySchema, idParamsSchema as timetableIdParamsSchema } from "../modules/timetable/timetable.schemas.js";
 import { createUserSchema, userIdParamsSchema } from "../modules/users/users.schemas.js";
 import {
@@ -62,8 +62,10 @@ import {
   ClassSubjectAssignmentSchema,
   ClassSubjectAssignmentWithRelationsSchema,
   ConvertEnquiryResultSchema,
+  BulkStudentStatusResultSchema,
   EnrollmentSchema,
   EnrollmentWithRelationsSchema,
+  EnrollmentWithStudentSchema,
   FeeObligationSchema,
   FeeObligationWithBalanceSchema,
   FeeStructureSchema,
@@ -172,6 +174,10 @@ const SCOPE_NOTES = {
     "linked PARENT scoped to a class they, or their child, are actually and currently enrolled in.",
   canManageOwnNotification: "ADMIN, or the notification's own recipient.",
   canWriteClassRatings: "ADMIN, or that class's form teacher — not a subject teacher assigned to the class.",
+  canReadClassRoster:
+    "ADMIN, BURSAR, or a TEACHER assigned to teach some subject in this class for the resolved session — " +
+    "not any teacher unconditionally (unlike GET /api/classes/:id/timetable's own rule), and not the " +
+    "form teacher specifically (unlike GET /api/classes/:id/results/:termId's).",
 } as const;
 
 /// One entry per route in the live route inventory ("METHOD /path", exactly
@@ -219,6 +225,17 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     summary: "List classes",
     responses: { 200: { description: "OK", schema: z.array(ClassSchema) } },
   },
+  "GET /api/classes/:id/students": {
+    summary:
+      "List students actively enrolled in a class. Defaults to the current academic session when " +
+      "academicSessionId is omitted. Returns { student, enrollment }[] rather than bare students — the " +
+      "enrollment carries the join date and status. Not readable by PARENT or STUDENT: a parent seeing " +
+      "every child in their child's class is a privacy decision nobody has made.",
+    requestParams: academicStructureIdParamsSchema,
+    requestQuery: listClassStudentsQuerySchema,
+    responses: { 200: { description: "OK", schema: z.array(EnrollmentWithStudentSchema) } },
+    scopeNote: SCOPE_NOTES.canReadClassRoster,
+  },
   "POST /api/subjects": {
     summary: "Create a subject",
     requestBody: createSubjectSchema,
@@ -239,7 +256,11 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     responses: { 200: { description: "OK", schema: z.array(ClassSubjectAssignmentWithRelationsSchema) } },
   },
   "DELETE /api/class-subject-assignments/:id": {
-    summary: "Remove a class-subject-teacher assignment",
+    summary:
+      "Remove a class-subject-teacher assignment. Its timetable entries are removed along with it " +
+      "(pure scheduling data, recreated in seconds). Recorded scores or computed subject results block " +
+      "the whole operation with 409 instead — those are a teacher's work and are never deleted as a " +
+      "side effect of this route.",
     requestParams: academicStructureIdParamsSchema,
     responses: { 204: noContent },
   },
@@ -341,7 +362,36 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
 
   // --- audit ------------------------------------------------------------------
   "GET /api/audit-log": {
-    summary: "List audit log entries",
+    summary:
+      "List audit log entries. beforeData is populated only for actions whose route opted into " +
+      "auditMutation()'s fetchBefore (a pre-mutation read of the entity, keyed by req.params.id) — " +
+      "everything else still gets afterData only (a snapshot of the route's own response body), same " +
+      "as before fetchBefore existed. It's opt-in, not automatic from entityType, because the entity " +
+      "isn't always knowable from the route before the handler runs: a bulk-mutation route has no " +
+      "single row's id to key on, and a nested-collection create has :id naming the parent, not the " +
+      "(not-yet-existing) thing being created — see RESULT_RANKED below for a route that structurally " +
+      "can't use it. A throwing fetchBefore never fails the mutation it documents: caught and logged, " +
+      "beforeData just comes back null for that row. For entityType \"Result\", all six mutation " +
+      "actions are audited equally — RESULT_FINALIZED, RESULT_RANKED, RESULT_OVERRIDDEN, " +
+      "RESULT_WITHHOLDING_RELEASED, CLASS_TEACHER_COMMENT_WRITTEN, PRINCIPAL_COMMENT_WRITTEN — none is " +
+      "skipped, and every one carries afterData shaped as a single updated Result row, keyed by that " +
+      "Result's own id. RESULT_FINALIZED and RESULT_WITHHOLDING_RELEASED carry a real beforeData " +
+      "snapshot (fetchBefore wired on their routes); CLASS_TEACHER_COMMENT_WRITTEN and " +
+      "PRINCIPAL_COMMENT_WRITTEN don't (not wired — a routine, low-stakes edit while the result is " +
+      "still DRAFT). RESULT_OVERRIDDEN deliberately has none either: it already has a more precise " +
+      "before/after pair in the dedicated ResultOverride table (fieldName/oldValue/newValue/reason, " +
+      "queryable by resultId) — a second, vaguer copy here would only be worse than none. " +
+      "RESULT_RANKED is written explicitly by rankClassResults() rather than the generic middleware " +
+      "(its route, POST /api/classes/:id/results/:termId/rank, has no single Result id of its own to " +
+      "key on): one audit row per Result the ranking pass actually updated, never one row for the " +
+      "whole class — most of a class's Results (still DRAFT, or FINALIZED with no submitted subject) " +
+      "are untouched by ranking and get no row. Its beforeData (each Result's prior position/outOf) " +
+      "comes free as a side effect of the ranking pass itself, which already has to read those values " +
+      "to compute the new ones — no extra query spent capturing it, unlike every fetchBefore-wired " +
+      "route above. Outside \"Result\": USER_ACTIVATED, USER_DEACTIVATED, PAYMENT_CONFIRMED, " +
+      "PAYMENT_REJECTED, FEE_STRUCTURE_UPDATED, FEE_STRUCTURE_DELETED, FEE_OBLIGATION_UPDATED, " +
+      "ACADEMIC_SESSION_SET_CURRENT and TERM_SET_CURRENT all carry real beforeData too; every create " +
+      "action (nothing existed before it) and every other route not listed here still has none.",
     requestQuery: listAuditLogQuerySchema,
     responses: { 200: { description: "OK", schema: z.array(AuditLogSchema) } },
   },
@@ -398,7 +448,11 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
 
   // --- fees -----------------------------------------------------------------
   "POST /api/fee-structures": {
-    summary: "Create a fee structure",
+    summary:
+      "Create a fee structure. Targets exactly one of classId (a specific class), gradeName (every " +
+      "class at that grade level, e.g. \"JSS1\" — resolved fresh each time obligations are generated, " +
+      "not baked in here, so a class added later is still covered), or neither (school-wide). 400 if " +
+      "both classId and gradeName are set.",
     requestBody: createFeeStructureSchema,
     responses: { 201: { description: "Created", schema: FeeStructureSchema } },
   },
@@ -409,8 +463,11 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
   },
   "PATCH /api/fee-structures/:id": {
     summary:
-      "Edit a fee structure's name or amount. Never retroactively alters obligations already generated " +
-      "from it — only the next generate-obligations run sees the new amount.",
+      "Edit a fee structure's name, amount, or targeting (classId/gradeName — see the create route's " +
+      "own summary for the targeting rules; 400 if the edit would leave both set, whether both are set " +
+      "in this same request or one is set here and the other is already on the row from before). " +
+      "Never retroactively alters obligations already generated from it — only the next " +
+      "generate-obligations run sees the new amount or targeting.",
     requestParams: feesIdParamsSchema,
     requestBody: updateFeeStructureSchema,
     responses: { 200: { description: "OK", schema: FeeStructureSchema } },
@@ -423,7 +480,12 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     responses: { 204: noContent },
   },
   "POST /api/fee-structures/:id/generate-obligations": {
-    summary: "Generate a fee obligation for every actively-enrolled student against this fee structure",
+    summary:
+      "Generate a fee obligation for every actively-enrolled student matching this fee structure's " +
+      "scope — a specific class, every class at a grade level, or school-wide (see " +
+      "POST /api/fee-structures). Targeting is resolved fresh on every call against the live Class " +
+      "table, not fixed at the structure's creation time — a class added to a targeted grade level " +
+      "after the structure existed is still covered the next time this runs.",
     requestParams: feesIdParamsSchema,
     responses: { 201: { description: "Created", schema: z.array(FeeObligationSchema) } },
   },
@@ -486,6 +548,30 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     requestParams: gradingIdParamsSchema,
     responses: { 200: { description: "OK", schema: z.array(AssessmentComponentSchema) } },
   },
+  "PATCH /api/assessment-components/:id": {
+    summary:
+      "Partially update an assessment component. Every field is optional; an absent field is left " +
+      "untouched. If maxScore changes and the session's components no longer sum to 100, the response " +
+      "carries an extra `warning` string rather than rejecting the edit — scores.service.ts's " +
+      "submitScores sums raw scores across every component and compares that total directly against " +
+      "grade bands calibrated for 0-100, so a non-100 total silently produces an out-of-scale grade on " +
+      "the next submit. Editing a component after results have already been computed from it also " +
+      "leaves those results stale until someone recomputes: FINALIZED results are immutable and won't " +
+      "pick up the edit at all, so a mid-term edit can leave a class with some report cards built from " +
+      "the old component set and some from the new. Recomputing affected classes is a manual admin " +
+      "follow-up this endpoint does not perform.",
+    requestParams: gradingIdParamsSchema,
+    requestBody: updateAssessmentComponentSchema,
+    responses: { 200: { description: "OK", schema: AssessmentComponentSchema } },
+  },
+  "DELETE /api/assessment-components/:id": {
+    summary:
+      "Delete an assessment component. 409 if any score has been recorded against it — unlike a " +
+      "class-subject assignment's timetable entries, a score is a teacher's recorded work and is never " +
+      "deleted as a side effect.",
+    requestParams: gradingIdParamsSchema,
+    responses: { 204: noContent },
+  },
   "POST /api/academic-sessions/:id/grading-scale": {
     summary:
       "Create the grading scale for an academic session, optionally choosing how SessionResult figures " +
@@ -500,10 +586,33 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     responses: { 200: { description: "OK", schema: GradingScaleWithBandsSchema } },
   },
   "POST /api/grading-scales/:id/bands": {
-    summary: "Add a grade band to a grading scale",
+    summary:
+      "Add a grade band to a grading scale. 400 if its range overlaps an existing band on the same " +
+      "scale. Gaps between bands (e.g. 0-39 and 50-100, leaving 40-49 ungraded) are allowed, not " +
+      "rejected — a score landing in one is handled gracefully at grading time (grade: null on that " +
+      "student's report card), not an error. Since it can't be blocked without breaking the ordinary " +
+      "one-band-at-a-time setup workflow, the response instead carries a `warning` string whenever the " +
+      "scale's bands (including this one) leave any part of 0-100 uncovered.",
     requestParams: gradingIdParamsSchema,
     requestBody: createGradeBandSchema,
     responses: { 201: { description: "Created", schema: GradeBandSchema } },
+  },
+  "PATCH /api/grade-bands/:id": {
+    summary:
+      "Partially update a grade band. Every field is optional; an absent field is left untouched, an " +
+      "explicit null clears remark or gradePoint. 400 if the resulting range (merged with whatever " +
+      "wasn't changed) is invalid or overlaps another band on the same scale — the same check " +
+      "POST /api/grading-scales/:id/bands applies on create. Same gap handling too: the response " +
+      "carries a `warning` string, never a rejection, whenever the scale's bands leave part of 0-100 " +
+      "uncovered after this edit.",
+    requestParams: gradingIdParamsSchema,
+    requestBody: updateGradeBandSchema,
+    responses: { 200: { description: "OK", schema: GradeBandSchema } },
+  },
+  "DELETE /api/grade-bands/:id": {
+    summary: "Delete a grade band",
+    requestParams: gradingIdParamsSchema,
+    responses: { 204: noContent },
   },
 
   // --- madrassah --------------------------------------------------------------
@@ -567,6 +676,16 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
   "GET /api/parents/:id": {
     summary: "Get one parent",
     requestParams: parentsIdParamsSchema,
+    responses: { 200: { description: "OK", schema: ParentSchema } },
+  },
+  "PATCH /api/parents/:id": {
+    summary:
+      "Partially update a parent's profile: firstName, lastName, phone, alternatePhone, address. An " +
+      "absent field is left untouched; an explicit null clears phone, alternatePhone, or address (all " +
+      "nullable). Login email is not editable here — it's the parent's loginId, and changing it changes " +
+      "how they sign in; that's a separate, audited endpoint, not folded into this profile edit.",
+    requestParams: parentsIdParamsSchema,
+    requestBody: updateParentSchema,
     responses: { 200: { description: "OK", schema: ParentSchema } },
   },
   "GET /api/parents/:id/children": {
@@ -833,10 +952,30 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
       "student's login is issued exactly once, automatically, by the first " +
       "POST /api/parents/:id/children call that links them with isPrimaryContact: true — never " +
       "through this route. Changing admissionNumber still updates the linked User.loginId, in the " +
-      "same transaction, when a login exists.",
+      "same transaction, when a login exists. Setting status to GRADUATED or WITHDRAWN also closes " +
+      "every currently-active enrollment this student holds (see PATCH /api/students/status, which " +
+      "shares this exact behavior). Setting status to INACTIVE does NOT: it's a label only — it does " +
+      "not end enrollment, does not remove the student from a class roster or score sheet, and does " +
+      "not stop billing. WITHDRAWN is the status that does all of that.",
     requestParams: studentsIdParamsSchema,
     requestBody: updateStudentSchema,
     responses: { 200: { description: "OK", schema: StudentSchema } },
+  },
+  "PATCH /api/students/status": {
+    summary:
+      "Bulk status update: { ids, status }, up to 500 at once. Partial success, not all-or-nothing — " +
+      "returns 200 with { updated: string[], failed: { id, message }[] } always; one bad id never " +
+      "blocks a graduation run for the rest of the class. Setting status to GRADUATED or WITHDRAWN " +
+      "also closes every currently-active enrollment each affected student holds — not just the " +
+      "current session's, since nothing has ever closed a stale one from a past session either. " +
+      "Setting status to INACTIVE does NOT close anything: it's a label only, exactly like " +
+      "PATCH /api/students/:id's own status field — it does not end enrollment, does not remove the " +
+      "student from a class roster or score sheet, and does not stop billing. WITHDRAWN is the status " +
+      "that does all of that. Setting status back to ACTIVE never reopens a closed enrollment either — " +
+      "re-enrollment is POST /api/students/:id/enrollments, a deliberate action that picks a specific " +
+      "class.",
+    requestBody: bulkUpdateStudentStatusSchema,
+    responses: { 200: { description: "OK", schema: BulkStudentStatusResultSchema } },
   },
   "POST /api/students/:id/reissue-credentials": {
     summary:
@@ -868,6 +1007,20 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     requestParams: studentsIdParamsSchema,
     responses: { 200: { description: "OK", schema: z.array(EnrollmentWithRelationsSchema) } },
     scopeNote: SCOPE_NOTES.canReadStudent,
+  },
+  "POST /api/students/:id/transfer": {
+    summary:
+      "Move a student's current-session enrollment to a different class — in place, not a new " +
+      "enrollment: scores, subject results, and attendance already recorded stay exactly where they " +
+      "are (never repointed to the new class), and remain correctly counted because the compute path " +
+      "is scoped by student, not by one class. 400 if the target class is at a different grade level " +
+      "than the student's current one (e.g. JSS1 to JSS2) — this endpoint only covers arms of the same " +
+      "grade level (e.g. JSS1 A to JSS1 B); a cross-grade move is POST /api/students/:id/enrollments " +
+      "instead. No partial-term awareness: a result already FINALIZED before the move is re-ranked " +
+      "against its new class's cohort the next time that class is ranked, same as any other re-rank.",
+    requestParams: studentsIdParamsSchema,
+    requestBody: transferStudentSchema,
+    responses: { 200: { description: "OK", schema: EnrollmentSchema } },
   },
 
   // --- timetable --------------------------------------------------------------

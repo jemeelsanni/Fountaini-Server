@@ -8,6 +8,7 @@ import type {
   CreateSubjectBody,
   CreateTermBody,
   IdParams,
+  ListClassStudentsQuery,
 } from "./academic-structure.schemas.js";
 
 export async function createAcademicSession(req: Request, res: Response): Promise<void> {
@@ -47,6 +48,12 @@ export async function createClass(req: Request, res: Response): Promise<void> {
 
 export async function listClasses(_req: Request, res: Response): Promise<void> {
   res.status(200).json(await service.listClasses());
+}
+
+export async function listClassStudents(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as unknown as IdParams;
+  const { academicSessionId } = req.query as unknown as ListClassStudentsQuery;
+  res.status(200).json(await service.listActiveStudentsForClass(id, academicSessionId));
 }
 
 export async function createSubject(req: Request, res: Response): Promise<void> {

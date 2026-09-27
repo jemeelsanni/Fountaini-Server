@@ -4,6 +4,7 @@ import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
 import { bulkUpsertScores, submitScores } from "./scores.service.js";
 import {
+  createAdmin,
   createAssessmentComponent,
   createAssignment,
   createBareStudent,
@@ -313,5 +314,45 @@ describe("POST .../scores/submit", () => {
       .set("Authorization", `Bearer ${token}`)
       .send({ termId: term.id, entries: [{ studentId: student.id, assessmentComponentId: ca1.id, rawScore: 19 }] });
     expect(editAttempt.status).toBe(409);
+  });
+
+  it("snapshots maxScore from the session's components at submit time, and a later component edit doesn't change it", async () => {
+    const { session, term, klass, subject, ca1, exam } = await setupClassroom(); // ca1: 20, exam: 80
+    const { staff, token } = await createTeacher("teacher@test.local");
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const assignment = await createAssignment(klass.id, subject.id, staff.id, session.id);
+    const student = await createBareStudent("ADM-001");
+    await enrollStudent(student.id, klass.id, session.id);
+
+    await request(app)
+      .put(`/api/class-subject-assignments/${assignment.id}/scores`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        termId: term.id,
+        entries: [
+          { studentId: student.id, assessmentComponentId: ca1.id, rawScore: 18 },
+          { studentId: student.id, assessmentComponentId: exam.id, rawScore: 60 },
+        ],
+      });
+
+    const submitRes = await request(app)
+      .post(`/api/class-subject-assignments/${assignment.id}/scores/submit`)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ termId: term.id });
+    expect(submitRes.status).toBe(200);
+    expect(Number(submitRes.body[0].maxScore)).toBe(100); // 20 + 80
+
+    // Rebalance the exam's weight after the fact — the already-computed
+    // SubjectResult must not move.
+    const patchRes = await request(app)
+      .patch(`/api/assessment-components/${exam.id}`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ maxScore: 50 });
+    expect(patchRes.status).toBe(200);
+
+    const subjectResult = await prisma.subjectResult.findFirstOrThrow({
+      where: { studentId: student.id, classSubjectAssignmentId: assignment.id, termId: term.id },
+    });
+    expect(subjectResult.maxScore?.toNumber()).toBe(100);
   });
 });

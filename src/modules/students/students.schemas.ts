@@ -38,12 +38,36 @@ export const updateStudentSchema = z.object({
   otherNames: z.string().min(1).optional(),
   dateOfBirth: z.coerce.date().optional(),
   gender: z.enum(["MALE", "FEMALE"]).optional(),
+  // Setting GRADUATED or WITHDRAWN here also closes this student's active
+  // enrollment(s), same as PATCH /api/students/status — see
+  // students.service.ts's ENROLLMENT_CLOSING_STATUS for exactly which
+  // values do that and why INACTIVE deliberately doesn't.
   status: z.enum(["ACTIVE", "GRADUATED", "WITHDRAWN", "INACTIVE"]).optional(),
 });
 export type UpdateStudentBody = z.infer<typeof updateStudentSchema>;
+
+// A few hundred, not unbounded — a large single grade-level cohort's worth
+// of headroom for a graduation/withdrawal run, without accepting an
+// arbitrarily large payload.
+const MAX_BULK_STATUS_IDS = 500;
+
+export const bulkUpdateStudentStatusSchema = z.object({
+  ids: z.array(z.string().min(1)).min(1).max(MAX_BULK_STATUS_IDS),
+  status: z.enum(["ACTIVE", "INACTIVE", "GRADUATED", "WITHDRAWN"]),
+});
+export type BulkUpdateStudentStatusBody = z.infer<typeof bulkUpdateStudentStatusSchema>;
 
 export const createEnrollmentSchema = z.object({
   classId: z.string().min(1),
   academicSessionId: z.string().min(1),
 });
 export type CreateEnrollmentBody = z.infer<typeof createEnrollmentSchema>;
+
+// In-place move between arms of the SAME grade level (e.g. JSS1 A to
+// JSS1 B) in the student's current-session enrollment — see
+// transferStudent's own comment (students.service.ts) for why a cross-
+// grade move is rejected rather than handled here.
+export const transferStudentSchema = z.object({
+  classId: z.string().min(1),
+});
+export type TransferStudentBody = z.infer<typeof transferStudentSchema>;

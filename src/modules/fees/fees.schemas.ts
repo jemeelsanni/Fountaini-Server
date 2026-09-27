@@ -3,23 +3,51 @@ import { z } from "zod";
 export const idParamsSchema = z.object({ id: z.string().min(1) });
 export type IdParams = z.infer<typeof idParamsSchema>;
 
-export const createFeeStructureSchema = z.object({
-  name: z.string().min(1),
-  category: z.enum(["TUITION", "REGISTRATION", "EXAM", "UNIFORM", "OTHER"]),
-  classId: z.string().min(1).optional(),
-  academicSessionId: z.string().min(1),
-  termId: z.string().min(1).optional(),
-  amountKobo: z.coerce.number().int().positive(),
-});
+// A structure targets exactly one of classId, gradeName, or neither
+// (school-wide) — this refine catches the same-request case (both set in
+// one payload); updateFeeStructure's own merge check catches the other
+// case a partial update can produce (this request sets one, the row
+// already has the other from before) — see that function's comment for
+// why Zod alone can't catch that half.
+function targetsAtMostOne(classId: string | undefined, gradeName: string | undefined): boolean {
+  return !(classId !== undefined && gradeName !== undefined);
+}
+
+export const createFeeStructureSchema = z
+  .object({
+    name: z.string().min(1),
+    category: z.enum(["TUITION", "REGISTRATION", "EXAM", "UNIFORM", "OTHER"]),
+    classId: z.string().min(1).optional(),
+    gradeName: z.string().min(1).optional(),
+    academicSessionId: z.string().min(1),
+    termId: z.string().min(1).optional(),
+    amountKobo: z.coerce.number().int().positive(),
+  })
+  .refine((data) => targetsAtMostOne(data.classId, data.gradeName), {
+    message: "A fee structure may target a specific class or a grade level, not both",
+    path: ["gradeName"],
+  });
 export type CreateFeeStructureBody = z.infer<typeof createFeeStructureSchema>;
 
 // dueDate is deliberately not here: FeeStructure has no dueDate field in
 // the schema (it lives per-obligation, on FeeObligation, set at
-// generation time) — only name/amountKobo are real, editable columns.
-export const updateFeeStructureSchema = z.object({
-  name: z.string().min(1).optional(),
-  amountKobo: z.coerce.number().int().positive().optional(),
-});
+// generation time). classId/gradeName became editable specifically to
+// make their exclusivity meaningful on update (a Zod-level check needs
+// both fields possibly present in the same payload to check anything at
+// all) — not a general "retarget an existing structure" feature request;
+// nullable so either can be explicitly cleared back to unset, matching the
+// undefined-(leave alone)-vs-null-(clear) convention used elsewhere.
+export const updateFeeStructureSchema = z
+  .object({
+    name: z.string().min(1).optional(),
+    classId: z.string().min(1).nullable().optional(),
+    gradeName: z.string().min(1).nullable().optional(),
+    amountKobo: z.coerce.number().int().positive().optional(),
+  })
+  .refine((data) => targetsAtMostOne(data.classId ?? undefined, data.gradeName ?? undefined), {
+    message: "A fee structure may target a specific class or a grade level, not both",
+    path: ["gradeName"],
+  });
 export type UpdateFeeStructureBody = z.infer<typeof updateFeeStructureSchema>;
 
 export const updateFeeObligationSchema = z.object({

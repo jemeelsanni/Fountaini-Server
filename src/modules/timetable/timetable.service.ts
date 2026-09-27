@@ -50,11 +50,18 @@ export async function createTimetableEntry(input: CreateTimetableEntryBody) {
 }
 
 export async function deleteTimetableEntry(id: string) {
-  const entry = await prisma.timetableEntry.findUnique({ where: { id } });
-  if (!entry) {
+  // deleteMany + count rather than findUnique-then-delete: a concurrent
+  // delete of the same id racing in between would make delete-by-id throw
+  // P2025 (unhandled -> 500) once the row it found is already gone —
+  // deleteMany matches fresh at delete time and just reports 0 affected
+  // rows instead of erroring, which cleanly becomes the same 404. Same
+  // pattern as deleteClassFormTeacher/unlinkChild/deleteGradeBand; nothing
+  // references TimetableEntry as a parent, so there's no FK-on-delete gap
+  // to guard against here, only this race.
+  const { count } = await prisma.timetableEntry.deleteMany({ where: { id } });
+  if (count === 0) {
     throw AppError.notFound("Timetable entry not found");
   }
-  await prisma.timetableEntry.delete({ where: { id } });
 }
 
 export function getTimetableForClass(classId: string) {

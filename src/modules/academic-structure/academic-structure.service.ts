@@ -127,6 +127,34 @@ export function listClasses() {
   return prisma.class.findMany({ orderBy: [{ order: "asc" }, { arm: "asc" }] });
 }
 
+/// { student, enrollment }[] rather than bare students — same shape as
+/// scores.service.ts's getRoster's underlying query (actively-enrolled
+/// students, matching enrollment.status: "ACTIVE" exactly), just returning
+/// the enrollment alongside instead of mapping it away, and parameterized
+/// directly by classId+academicSessionId rather than derived from a
+/// ClassSubjectAssignment. Defaults to the current session when
+/// academicSessionId is omitted, via the same academicSession: {isCurrent}
+/// relation filter used elsewhere (e.g. isTeacherAssignedToStudent) rather
+/// than a separate resolve-then-query round trip.
+export async function listActiveStudentsForClass(classId: string, academicSessionId?: string) {
+  const klass = await prisma.class.findUnique({ where: { id: classId } });
+  if (!klass) {
+    throw AppError.notFound("Class not found");
+  }
+
+  const enrollments = await prisma.enrollment.findMany({
+    where: {
+      classId,
+      status: "ACTIVE",
+      ...(academicSessionId ? { academicSessionId } : { academicSession: { isCurrent: true } }),
+    },
+    include: { student: true },
+    orderBy: { student: { lastName: "asc" } },
+  });
+
+  return enrollments.map(({ student, ...enrollment }) => ({ student, enrollment }));
+}
+
 // ---------------------------------------------------------------------------
 // Subjects
 // ---------------------------------------------------------------------------
@@ -187,16 +215,63 @@ export function listClassSubjectAssignments(filter: { teacherId?: string; classI
   });
 }
 
+/// Score, SubjectResult and TimetableEntry all reference a
+/// ClassSubjectAssignment with ON DELETE RESTRICT (see schema.prisma) — a
+/// plain delete with dependents still pointing at it throws an unhandled
+/// Postgres FK violation (P2003), not the P2025 the old deleteMany-then-
+/// count-only version guarded against (that pattern only ever covered a
+/// concurrent double-delete race, a different bug — see
+/// concurrency500Cluster.test.ts, which never touched this case).
+///
+/// Timetable entries are pure scheduling — recreated in seconds — so they're
+/// deleted along with the assignment rather than blocking it. Scores and
+/// subject results are a teacher's recorded work, so those block deletion
+/// with a 409 naming the actual counts; the whole thing (existence check,
+/// score/result check, timetable cleanup, delete) happens in one
+/// transaction so an assignment is never left half-cleaned-up.
 export async function deleteClassSubjectAssignment(id: string) {
-  // deleteMany rather than findUnique-then-delete: a concurrent delete of
-  // the same id racing in between would make delete-by-id throw P2025
-  // (unhandled -> 500) once the row it found is already gone. deleteMany
-  // matches fresh at delete time and just reports 0 affected rows instead
-  // of erroring, which cleanly becomes the same 404.
-  const { count } = await prisma.classSubjectAssignment.deleteMany({ where: { id } });
-  if (count === 0) {
-    throw AppError.notFound("Assignment not found");
-  }
+  await prisma.$transaction(async (tx) => {
+    const assignment = await tx.classSubjectAssignment.findUnique({
+      where: { id },
+      include: { subject: true, class: true },
+    });
+    if (!assignment) {
+      throw AppError.notFound("Assignment not found");
+    }
+
+    const [scoreCount, subjectResultCount, timetableCount] = await Promise.all([
+      tx.score.count({ where: { classSubjectAssignmentId: id } }),
+      tx.subjectResult.count({ where: { classSubjectAssignmentId: id } }),
+      tx.timetableEntry.count({ where: { classSubjectAssignmentId: id } }),
+    ]);
+
+    if (scoreCount > 0 || subjectResultCount > 0) {
+      const className = `${assignment.class.gradeName}${assignment.class.arm ? ` ${assignment.class.arm}` : ""}`;
+      const blockers = [
+        scoreCount > 0 ? `${scoreCount} recorded score${scoreCount === 1 ? "" : "s"}` : undefined,
+        subjectResultCount > 0
+          ? `${subjectResultCount} computed subject result${subjectResultCount === 1 ? "" : "s"}`
+          : undefined,
+      ].filter((part): part is string => part !== undefined);
+      throw AppError.conflict(
+        `${assignment.subject.name} for ${className} still has ${blockers.join(" and ")} — ` +
+          "remove them before deleting this assignment.",
+      );
+    }
+
+    if (timetableCount > 0) {
+      await tx.timetableEntry.deleteMany({ where: { classSubjectAssignmentId: id } });
+    }
+
+    // deleteMany + count re-check, same reasoning as the old version: turns
+    // a concurrent double-delete into the same 404 instead of an unhandled
+    // P2025, now just alongside the FK-dependent checks above rather than
+    // being the only guard in the function.
+    const { count } = await tx.classSubjectAssignment.deleteMany({ where: { id } });
+    if (count === 0) {
+      throw AppError.notFound("Assignment not found");
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------

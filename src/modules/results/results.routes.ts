@@ -5,6 +5,7 @@ import {
   canReadStudent,
   canWriteClassTeacherComment,
 } from "../../authorization/scopeResolvers.js";
+import { prisma } from "../../db/client.js";
 import { auditMutation } from "../../http/middleware/auditMutation.js";
 import { validate } from "../../http/middleware/validate.js";
 import * as controller from "./results.controller.js";
@@ -63,18 +64,23 @@ resultsRouter.post(
   "/results/:id/finalize",
   requireRole("ADMIN"),
   validate({ params: idParamsSchema }),
-  auditMutation("Result", "RESULT_FINALIZED"),
+  auditMutation("Result", "RESULT_FINALIZED", {
+    fetchBefore: (id) => prisma.result.findUnique({ where: { id } }),
+  }),
   controller.finalizeResult,
 );
 // Admin escape hatch: a class that never reaches 100% finalized (a student
 // withdrew mid-term, say) never gets the automatic class-wide position pass
 // finalizeResult triggers on its own — this ranks whatever's currently
 // FINALIZED unconditionally so report cards aren't stuck without a position.
+// No auditMutation() here — this route's :id is the class, not any Result,
+// and its response is an array with no id of its own; rankClassResults
+// writes its own per-Result RESULT_RANKED audit rows explicitly instead
+// (see that function's comment).
 resultsRouter.post(
   "/classes/:id/results/:termId/rank",
   requireRole("ADMIN"),
   validate({ params: classTermParamsSchema }),
-  auditMutation("Result", "RESULT_RANKED"),
   controller.rankClassResults,
 );
 resultsRouter.post(
@@ -88,7 +94,9 @@ resultsRouter.post(
   "/results/:id/release-withholding",
   requireRole("ADMIN"),
   validate({ params: idParamsSchema, body: releaseWithholdingSchema }),
-  auditMutation("Result", "RESULT_WITHHOLDING_RELEASED"),
+  auditMutation("Result", "RESULT_WITHHOLDING_RELEASED", {
+    fetchBefore: (id) => prisma.result.findUnique({ where: { id } }),
+  }),
   controller.releaseWithholding,
 );
 resultsRouter.post(

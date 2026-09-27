@@ -35,6 +35,11 @@ export const createClassSchema = z.object({
 });
 export type CreateClassBody = z.infer<typeof createClassSchema>;
 
+export const listClassStudentsQuerySchema = z.object({
+  academicSessionId: z.string().min(1).optional(),
+});
+export type ListClassStudentsQuery = z.infer<typeof listClassStudentsQuerySchema>;
+
 export const createSubjectSchema = z.object({
   name: z.string().min(1),
   code: z.string().min(1),

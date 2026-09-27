@@ -25,6 +25,24 @@ export const createParentSchema = z.object({
 });
 export type CreateParentBody = z.infer<typeof createParentSchema>;
 
+// firstName/lastName stay non-nullable (the Parent model requires both) —
+// only .optional(), so an absent key leaves the field untouched and there's
+// no way to null them out. phone/alternatePhone/address are nullable on the
+// model, so each is .nullable().optional(): an absent key parses to
+// undefined (Prisma's update() treats an undefined field as "don't touch"),
+// an explicit null parses to literal null (Prisma sets the column to NULL) —
+// the two are never conflated because .optional() alone would only ever
+// produce undefined, never null, for a JSON body. Email/loginId is
+// deliberately not here — see parents.routes.ts's route comment.
+export const updateParentSchema = z.object({
+  firstName: z.string().min(1).optional(),
+  lastName: z.string().min(1).optional(),
+  phone: z.string().min(1).nullable().optional(),
+  alternatePhone: z.string().min(1).nullable().optional(),
+  address: z.string().min(1).nullable().optional(),
+});
+export type UpdateParentBody = z.infer<typeof updateParentSchema>;
+
 export const linkChildSchema = z.object({
   studentId: z.string().min(1),
   relationship: z.enum(["FATHER", "MOTHER", "GUARDIAN", "OTHER"]),

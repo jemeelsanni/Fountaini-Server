@@ -2,7 +2,7 @@ import request from "supertest";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
-import { createAdmin, createTeacher } from "../../test/factories.js";
+import { createAdmin, createBursar, createParent, createStudentWithLogin, createTeacher } from "../../test/factories.js";
 import { resetDb } from "../../test/resetDb.js";
 
 const app = createApp();
@@ -34,10 +34,26 @@ describe("GET /api/school", () => {
     expect(res.body.name).toBe("Fountaini International School");
   });
 
-  it("rejects a non-admin caller", async () => {
-    const { token } = await createTeacher("teacher@test.local");
-    const res = await request(app).get("/api/school").set("Authorization", `Bearer ${token}`);
-    expect(res.status).toBe(403);
+  // Widened to every authenticated role — school-wide name/address/contact
+  // info carries nothing a parent or student shouldn't see (see
+  // school.routes.ts's own comment); only the writes (POST/PATCH) stay
+  // ADMIN-only, covered separately below.
+  it("allows every authenticated role to read it", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    await request(app)
+      .post("/api/school")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ name: "Fountaini International School" });
+
+    const { token: teacherToken } = await createTeacher("teacher@test.local");
+    const { token: bursarToken } = await createBursar("bursar@test.local");
+    const { token: parentToken } = await createParent("parent@test.local");
+    const { token: studentToken } = await createStudentWithLogin("student@test.local", "SCH-STU-001");
+
+    for (const token of [teacherToken, bursarToken, parentToken, studentToken]) {
+      const res = await request(app).get("/api/school").set("Authorization", `Bearer ${token}`);
+      expect(res.status).toBe(200);
+    }
   });
 
   it("rejects an unauthenticated caller", async () => {

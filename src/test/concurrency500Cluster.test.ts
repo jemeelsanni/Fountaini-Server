@@ -9,6 +9,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { deleteClassSubjectAssignment } from "../modules/academic-structure/academic-structure.service.js";
 import { generateObligations, rejectPayment } from "../modules/fees/fees.service.js";
 import { createParent, unlinkChild } from "../modules/parents/parents.service.js";
+import { deleteTimetableEntry } from "../modules/timetable/timetable.service.js";
 import { createUser } from "../modules/users/users.service.js";
 import { prisma } from "../db/client.js";
 import {
@@ -195,6 +196,33 @@ describe("500-instead-of-409/404 cluster: concurrent duplicate handling", () => 
     expectOneSuccessRestFailedWith([a, b], 404);
 
     const remaining = await prisma.classSubjectAssignment.findUnique({ where: { id: assignment.id } });
+    expect(remaining).toBeNull();
+  });
+
+  it("deleteTimetableEntry: two concurrent deletes of the same entry resolve as one success and one 404, never a 500", async () => {
+    const session = await createCurrentAcademicSession("2026/2027");
+    const klass = await createClass("JSS1", "A");
+    const subject = await createSubject("Mathematics", "MTH");
+    const { staff: teacher } = await createTeacher("teacher@test.local");
+    const assignment = await createAssignment(klass.id, subject.id, teacher.id, session.id);
+    const timeSlot = await prisma.timeSlot.create({
+      data: { name: "Period 1", startTime: "08:00", endTime: "08:40", order: 1 },
+    });
+    const entry = await prisma.timetableEntry.create({
+      data: {
+        classSubjectAssignmentId: assignment.id,
+        classId: klass.id,
+        teacherId: teacher.id,
+        academicSessionId: session.id,
+        timeSlotId: timeSlot.id,
+        dayOfWeek: "MONDAY",
+      },
+    });
+
+    const [a, b] = await Promise.all([settle(deleteTimetableEntry(entry.id)), settle(deleteTimetableEntry(entry.id))]);
+    expectOneSuccessRestFailedWith([a, b], 404);
+
+    const remaining = await prisma.timetableEntry.findUnique({ where: { id: entry.id } });
     expect(remaining).toBeNull();
   });
 });

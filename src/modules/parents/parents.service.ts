@@ -6,7 +6,7 @@ import { fireAndForget } from "../../lib/fireAndForget.js";
 import { generateTemporaryPassword, hashPassword } from "../auth/password.js";
 import { createNotification, suppressCredentialNotifications } from "../notifications/notifications.service.js";
 import { issueFirstLoginForStudent } from "../students/students.service.js";
-import type { CreateParentBody, LinkChildBody } from "./parents.schemas.js";
+import type { CreateParentBody, LinkChildBody, UpdateParentBody } from "./parents.schemas.js";
 
 function isUniqueConstraintError(err: unknown): boolean {
   return err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002";
@@ -93,6 +93,20 @@ export async function getParentById(id: string) {
     throw AppError.notFound("Parent not found");
   }
   return parent;
+}
+
+/// data: input passed straight through, not manually merged field-by-field —
+/// Prisma's own update() already treats an undefined field as "don't touch"
+/// and an explicit null as "set to null", which is exactly the distinction
+/// updateParentSchema's .nullable().optional() fields preserve from the
+/// request body. Login email/loginId is never touched here — see
+/// parents.routes.ts's route comment on why that's a separate concern.
+export async function updateParent(id: string, input: UpdateParentBody) {
+  const parent = await prisma.parent.findUnique({ where: { id } });
+  if (!parent) {
+    throw AppError.notFound("Parent not found");
+  }
+  return prisma.parent.update({ where: { id }, data: input });
 }
 
 export async function linkChild(parentId: string, input: LinkChildBody) {

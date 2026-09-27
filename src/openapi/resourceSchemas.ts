@@ -289,6 +289,10 @@ export const EnrollmentSchema = z
     academicSessionId: id(),
     status: EnrollmentStatusSchema,
     enrolledAt: isoDateTime(),
+    closedAt: isoDateTime().nullable().openapi({
+      description: "Set together with closedByUserId when status moves off ACTIVE",
+    }),
+    closedByUserId: id().nullable(),
     createdAt: isoDateTime(),
   })
   .openapi("Enrollment");
@@ -297,6 +301,20 @@ export const EnrollmentWithRelationsSchema = EnrollmentSchema.extend({
   class: ClassSchema,
   academicSession: AcademicSessionSchema,
 }).openapi("EnrollmentWithRelations");
+
+export const EnrollmentWithStudentSchema = z
+  .object({
+    student: StudentSchema,
+    enrollment: EnrollmentSchema,
+  })
+  .openapi("EnrollmentWithStudent");
+
+export const BulkStudentStatusResultSchema = z
+  .object({
+    updated: z.array(id()),
+    failed: z.array(z.object({ id: id(), message: z.string() })),
+  })
+  .openapi("BulkStudentStatusResult");
 
 // ---------------------------------------------------------------------------
 // Grading configuration, scores, results
@@ -312,6 +330,10 @@ export const AssessmentComponentSchema = z
     maxScore: decimalString(),
     order: z.number().int(),
     createdAt: isoDateTime(),
+    // Present only on PATCH /api/assessment-components/:id, and only when
+    // the edit leaves the session's components no longer summing to 100 —
+    // see that route's own summary.
+    warning: z.string().optional(),
   })
   .openapi("AssessmentComponent");
 
@@ -372,6 +394,10 @@ export const GradeBandSchema = z
     maxScore: decimalString(),
     remark: z.string().nullable(),
     gradePoint: decimalString().nullable(),
+    // Present only on POST .../bands and PATCH /api/grade-bands/:id, and
+    // only when the scale's bands (after this write) leave a gap in 0-100 —
+    // see those routes' own summaries.
+    warning: z.string().optional(),
   })
   .openapi("GradeBand");
 
@@ -395,6 +421,12 @@ export const SubjectResultSchema = z
     classSubjectAssignmentId: id(),
     termId: id(),
     totalScore: decimalString(),
+    maxScore: decimalString().nullable().openapi({
+      description:
+        "Snapshotted at compute time from the sum of that session's assessment components — never " +
+        "recomputed on read, so a later component edit doesn't change an already-computed result. Null " +
+        "only for a pre-existing row backfilled from a session that had zero components configured.",
+    }),
     grade: z.string().nullable(),
     gradePoint: decimalString().nullable(),
     remark: z.string().nullable(),
@@ -662,7 +694,12 @@ export const FeeStructureSchema = z
     id: id(),
     name: z.string(),
     category: FeeCategorySchema,
-    classId: id().nullable().openapi({ description: "null = applies to all classes" }),
+    classId: id().nullable().openapi({ description: "Targets one class. Mutually exclusive with gradeName." }),
+    gradeName: z.string().nullable().openapi({
+      description:
+        "Targets every class at this grade level, resolved fresh each time obligations are generated " +
+        "(so a class added later is still covered). Mutually exclusive with classId.",
+    }),
     academicSessionId: id(),
     termId: id().nullable().openapi({ description: "null = session-wide, not tied to one term" }),
     amountKobo: kobo(),

@@ -3,6 +3,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
 import { hashPassword } from "../auth/password.js";
+import { drainFireAndForget } from "../../lib/fireAndForget.js";
 import { resetDb } from "../../test/resetDb.js";
 import { waitForNotification } from "../../test/waitForNotification.js";
 
@@ -147,6 +148,41 @@ describe("user activation lifecycle", () => {
       .post("/api/auth/login")
       .send({ identifier: "teacher@test.local", password: "teacher-password-123" });
     expect(loginAfterReactivate.status).toBe(200);
+  });
+
+  // Mirrors students.test.ts's "never persists the reissued password into
+  // the audit log" test, on the new path: activate/deactivate's fetchBefore
+  // reads a full, unprojected User row (unlike userListSelect, which every
+  // response in this module goes through) specifically so beforeData
+  // carries more than just isActive — but that same raw row is the first
+  // thing in this codebase to put passwordHash in front of auditMutation()
+  // at all. Proves redact() actually strips it before it's persisted, not
+  // just that userListSelect coincidentally never included it.
+  it("never persists passwordHash into the audit log's beforeData, for either activate or deactivate", async () => {
+    const adminToken = await createAdminAndLogin();
+    const teacherToken = await createTeacherAndLogin();
+    const meBefore = await request(app).get("/api/auth/me").set("Authorization", `Bearer ${teacherToken}`);
+    const teacherId = meBefore.body.principal.userId as string;
+    const { passwordHash } = await prisma.user.findUniqueOrThrow({ where: { id: teacherId } });
+    expect(passwordHash).toBeTruthy();
+
+    await request(app).post(`/api/users/${teacherId}/deactivate`).set("Authorization", `Bearer ${adminToken}`);
+    await request(app).post(`/api/users/${teacherId}/activate`).set("Authorization", `Bearer ${adminToken}`);
+    await drainFireAndForget();
+
+    const entries = await prisma.auditLog.findMany({
+      where: { entityType: "User", entityId: teacherId, action: { in: ["USER_DEACTIVATED", "USER_ACTIVATED"] } },
+    });
+    expect(entries).toHaveLength(2);
+    for (const entry of entries) {
+      const beforeData = entry.beforeData as Record<string, unknown> | null;
+      expect(beforeData, `${entry.action} must still capture a beforeData snapshot`).not.toBeNull();
+      expect(beforeData?.passwordHash).toBeUndefined();
+      // Belt and suspenders, same as the reissue-credentials test: the raw
+      // hash must not appear anywhere in the persisted row, not just under
+      // the expected key name.
+      expect(JSON.stringify(beforeData)).not.toContain(passwordHash);
+    }
   });
 });
 
