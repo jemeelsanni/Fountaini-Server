@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { phoneSchema } from "../../lib/phone.js";
 
 export const idParamsSchema = z.object({ id: z.string().min(1) });
 export type IdParams = z.infer<typeof idParamsSchema>;
@@ -19,8 +20,8 @@ export const createParentSchema = z.object({
   email: z.string().email(),
   firstName: z.string().min(1),
   lastName: z.string().min(1),
-  phone: z.string().min(1).optional(),
-  alternatePhone: z.string().min(1).optional(),
+  phone: phoneSchema.optional(),
+  alternatePhone: phoneSchema.optional(),
   address: z.string().min(1).optional(),
 });
 export type CreateParentBody = z.infer<typeof createParentSchema>;
@@ -37,8 +38,8 @@ export type CreateParentBody = z.infer<typeof createParentSchema>;
 export const updateParentSchema = z.object({
   firstName: z.string().min(1).optional(),
   lastName: z.string().min(1).optional(),
-  phone: z.string().min(1).nullable().optional(),
-  alternatePhone: z.string().min(1).nullable().optional(),
+  phone: phoneSchema.nullable().optional(),
+  alternatePhone: phoneSchema.nullable().optional(),
   address: z.string().min(1).nullable().optional(),
 });
 export type UpdateParentBody = z.infer<typeof updateParentSchema>;

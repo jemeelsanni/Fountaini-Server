@@ -61,6 +61,7 @@ import {
   ClassSchema,
   ClassSubjectAssignmentSchema,
   ClassSubjectAssignmentWithRelationsSchema,
+  ContactGapSchema,
   ConvertEnquiryResultSchema,
   BulkStudentStatusResultSchema,
   EnrollmentSchema,
@@ -394,6 +395,14 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
       "action (nothing existed before it) and every other route not listed here still has none.",
     requestQuery: listAuditLogQuerySchema,
     responses: { 200: { description: "OK", schema: z.array(AuditLogSchema) } },
+  },
+
+  "GET /api/admin/contact-gaps": {
+    summary:
+      "List parents with no phone number on file, so the school can chase them before an SMS " +
+      "broadcast rather than after paying to send to nobody. Parents only for now — Staff has no " +
+      "phone field anywhere in the schema (see src/modules/admin/admin.service.ts's own comment).",
+    responses: { 200: { description: "OK", schema: z.array(ContactGapSchema) } },
   },
 
   // --- auth ---------------------------------------------------------------

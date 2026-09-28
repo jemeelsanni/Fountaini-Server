@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { phoneSchema } from "../../lib/phone.js";
 
 export const idParamsSchema = z.object({ id: z.string().min(1) });
 export type IdParams = z.infer<typeof idParamsSchema>;
@@ -9,7 +10,10 @@ export const createEnquirySchema = z.object({
   dateOfBirth: z.coerce.date().optional(),
   desiredClassId: z.string().min(1).optional(),
   parentFullName: z.string().min(1).max(200),
-  parentPhone: z.string().min(1).max(30),
+  // Normalised to E.164 by phoneSchema's own transform — the old .max(30)
+  // free-text cap is redundant once structural validation is in place:
+  // nothing that could pass it would also match the accepted shapes.
+  parentPhone: phoneSchema,
   parentEmail: z.email().max(200).optional(),
   message: z.string().min(1).max(2000).optional(),
   source: z.string().min(1).max(100).optional(),

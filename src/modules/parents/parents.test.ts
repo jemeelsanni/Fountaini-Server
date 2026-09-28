@@ -97,6 +97,33 @@ describe("POST /api/parents", () => {
 
     expect(res.status).toBe(409);
   });
+
+  it("normalises a validly-formatted phone number to E.164", async () => {
+    const { token } = await createAdmin("admin@test.local");
+
+    const res = await request(server)
+      .post("/api/parents")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ email: "phoneok@test.local", firstName: "Grace", lastName: "Hopper", phone: "0801 234 5678" });
+
+    expect(res.status).toBe(201);
+    expect(res.body.phone).toBe("+2348012345678");
+  });
+
+  it("rejects a badly formatted phone number with a 400 and a useful message", async () => {
+    const { token } = await createAdmin("admin@test.local");
+
+    const res = await request(server)
+      .post("/api/parents")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ email: "badphone@test.local", firstName: "Grace", lastName: "Hopper", phone: "801234 5678" });
+
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toMatch(/Nigerian phone number/i);
+
+    const created = await prisma.user.findUnique({ where: { email: "badphone@test.local" } });
+    expect(created).toBeNull();
+  });
 });
 
 describe("PATCH /api/parents/:id", () => {
@@ -105,23 +132,23 @@ describe("PATCH /api/parents/:id", () => {
     const { parent } = await createParent("parent@test.local");
     await prisma.parent.update({
       where: { id: parent.id },
-      data: { phone: "080-original", alternatePhone: "080-alt", address: "Original Address" },
+      data: { phone: "+2348011112222", alternatePhone: "+2348022223333", address: "Original Address" },
     });
 
     const res = await request(server)
       .patch(`/api/parents/${parent.id}`)
       .set("Authorization", `Bearer ${adminToken}`)
-      // phone: set to a new value. alternatePhone: explicitly cleared.
-      // address: absent entirely — must survive untouched.
-      .send({ phone: "080-updated", alternatePhone: null });
+      // phone: set to a new value (normalised by the route). alternatePhone:
+      // explicitly cleared. address: absent entirely — must survive untouched.
+      .send({ phone: "0810 000 1111", alternatePhone: null });
 
     expect(res.status).toBe(200);
-    expect(res.body.phone).toBe("080-updated");
+    expect(res.body.phone).toBe("+2348100001111");
     expect(res.body.alternatePhone).toBeNull();
     expect(res.body.address).toBe("Original Address");
 
     const stored = await prisma.parent.findUniqueOrThrow({ where: { id: parent.id } });
-    expect(stored.phone).toBe("080-updated");
+    expect(stored.phone).toBe("+2348100001111");
     expect(stored.alternatePhone).toBeNull();
     expect(stored.address).toBe("Original Address");
   });

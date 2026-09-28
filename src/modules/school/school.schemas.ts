@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { phoneSchema } from "../../lib/phone.js";
 
 // currentAcademicSessionId is deliberately not exposed here: it exists on
 // the School model but nothing in this codebase actually reads it — "the
@@ -11,7 +12,7 @@ export const createSchoolSchema = z.object({
   name: z.string().min(1),
   address: z.string().min(1).optional(),
   contactEmail: z.email().optional(),
-  contactPhone: z.string().min(1).optional(),
+  contactPhone: phoneSchema.optional(),
 });
 export type CreateSchoolBody = z.infer<typeof createSchoolSchema>;
 
@@ -19,6 +20,6 @@ export const updateSchoolSchema = z.object({
   name: z.string().min(1).optional(),
   address: z.string().min(1).optional(),
   contactEmail: z.email().optional(),
-  contactPhone: z.string().min(1).optional(),
+  contactPhone: phoneSchema.optional(),
 });
 export type UpdateSchoolBody = z.infer<typeof updateSchoolSchema>;

@@ -976,6 +976,15 @@ export const PrincipalSchema = z
 
 export const MeResponseSchema = z.object({ principal: PrincipalSchema }).openapi("MeResponse");
 
+export const ContactGapSchema = z
+  .object({
+    id: id(),
+    name: z.string(),
+    role: z.literal("PARENT"),
+    missingField: z.literal("phone"),
+  })
+  .openapi("ContactGap");
+
 // Registering every schema with the shared registry happens implicitly via
 // `.openapi("Name")` above (that's what names+registers a schema in this
 // library — see zod-to-openapi's README, "Defining schemas"). This

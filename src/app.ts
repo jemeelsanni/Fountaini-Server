@@ -8,6 +8,7 @@ import { logger } from "./config/logger.js";
 import { prisma } from "./db/client.js";
 import { AppError } from "./errors/AppError.js";
 import { academicStructureRouter } from "./modules/academic-structure/academic-structure.routes.js";
+import { adminRouter } from "./modules/admin/admin.routes.js";
 import { admissionsRouter } from "./modules/admissions/admissions.routes.js";
 import { attendanceRouter } from "./modules/attendance/attendance.routes.js";
 import { auditRouter } from "./modules/audit/audit.routes.js";
@@ -43,6 +44,7 @@ export const routeMounts: RouteMount[] = [
   { prefix: "/api/parents", router: parentsRouter },
   { prefix: "/api/staff", router: staffRouter },
   { prefix: "/api/audit-log", router: auditRouter },
+  { prefix: "/api/admin", router: adminRouter },
   { prefix: "/api/school", router: schoolRouter },
   // admissionsRouter must be mounted before any other router sharing the bare
   // "/api" prefix: it's the only one with a public route, and every other
