@@ -392,7 +392,7 @@ describe("scan/close concurrency", () => {
         ).toBe("ABSENT");
       }
     }
-  }, 120_000);
+  });
 });
 
 describe("PATCH /api/attendance-records/:id (manual correction)", () => {
