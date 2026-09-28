@@ -1,5 +1,6 @@
+import type { Server } from "node:http";
 import request from "supertest";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
 import {
@@ -16,6 +17,17 @@ import { resetDb } from "../../test/resetDb.js";
 import { waitForAuditLog } from "../../test/waitForAuditLog.js";
 
 const app = createApp();
+let server: Server;
+
+beforeAll(async () => {
+  server = await new Promise<Server>((resolve) => {
+    const s = app.listen(0, "127.0.0.1", () => resolve(s));
+  });
+});
+
+afterAll(() => {
+  server.close();
+});
 
 async function setupClass() {
   const session = await createCurrentAcademicSession("2026/2027");
@@ -25,7 +37,7 @@ async function setupClass() {
 }
 
 async function openSession(token: string, classId: string, academicSessionId: string, termId: string) {
-  const res = await request(app)
+  const res = await request(server)
     .post("/api/attendance-sessions")
     .set("Authorization", `Bearer ${token}`)
     .send({ classId, academicSessionId, termId });
@@ -33,7 +45,7 @@ async function openSession(token: string, classId: string, academicSessionId: st
 }
 
 async function issueQrCode(adminToken: string, studentId: string) {
-  const res = await request(app)
+  const res = await request(server)
     .post(`/api/students/${studentId}/qr-code/rotate`)
     .set("Authorization", `Bearer ${adminToken}`);
   return res.body as { code: string; version: number };
@@ -74,7 +86,7 @@ describe("QR code issuance and rotation", () => {
     // only asserts the final invariant, not that every request succeeds.
     await Promise.all(
       Array.from({ length: concurrency }, () =>
-        request(app)
+        request(server)
           .post(`/api/students/${student.id}/qr-code/rotate`)
           .set("Authorization", `Bearer ${token}`),
       ),
@@ -90,22 +102,22 @@ describe("QR code issuance and rotation", () => {
     const { student: self, token: selfToken } = await createStudentWithLogin("self@test.local", "ADM-SELF");
     const { student: other } = await createStudentWithLogin("other@test.local", "ADM-OTHER");
 
-    const rotateOwn = await request(app)
+    const rotateOwn = await request(server)
       .post(`/api/students/${self.id}/qr-code/rotate`)
       .set("Authorization", `Bearer ${selfToken}`);
     expect(rotateOwn.status).toBe(201);
 
-    const readOwn = await request(app)
+    const readOwn = await request(server)
       .get(`/api/students/${self.id}/qr-code`)
       .set("Authorization", `Bearer ${selfToken}`);
     expect(readOwn.status).toBe(200);
 
-    const rotateOther = await request(app)
+    const rotateOther = await request(server)
       .post(`/api/students/${other.id}/qr-code/rotate`)
       .set("Authorization", `Bearer ${selfToken}`);
     expect(rotateOther.status).toBe(403);
 
-    const readOther = await request(app)
+    const readOther = await request(server)
       .get(`/api/students/${other.id}/qr-code`)
       .set("Authorization", `Bearer ${selfToken}`);
     expect(readOther.status).toBe(403);
@@ -117,11 +129,11 @@ describe("opening attendance sessions", () => {
     const { token } = await createAdmin("admin@test.local");
     const { session, term, klass } = await setupClass();
 
-    await request(app)
+    await request(server)
       .post("/api/attendance-sessions")
       .set("Authorization", `Bearer ${token}`)
       .send({ classId: klass.id, academicSessionId: session.id, termId: term.id });
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/attendance-sessions")
       .set("Authorization", `Bearer ${token}`)
       .send({ classId: klass.id, academicSessionId: session.id, termId: term.id });
@@ -140,7 +152,7 @@ describe("POST .../scan", () => {
     const qr = await issueQrCode(adminToken, student.id);
     const attendanceSession = await openSession(teacherToken, klass.id, session.id, term.id);
 
-    const first = await request(app)
+    const first = await request(server)
       .post(`/api/attendance-sessions/${attendanceSession.id}/scan`)
       .set("Authorization", `Bearer ${teacherToken}`)
       .send({ code: qr.code });
@@ -148,7 +160,7 @@ describe("POST .../scan", () => {
     expect(first.body.alreadyMarked).toBe(false);
     expect(first.body.record.status).toBe("PRESENT");
 
-    const second = await request(app)
+    const second = await request(server)
       .post(`/api/attendance-sessions/${attendanceSession.id}/scan`)
       .set("Authorization", `Bearer ${teacherToken}`)
       .send({ code: qr.code });
@@ -174,7 +186,7 @@ describe("POST .../scan", () => {
     const concurrency = 20;
     const responses = await Promise.all(
       Array.from({ length: concurrency }, () =>
-        request(app)
+        request(server)
           .post(`/api/attendance-sessions/${attendanceSession.id}/scan`)
           .set("Authorization", `Bearer ${teacherToken}`)
           .send({ code: qr.code }),
@@ -197,7 +209,7 @@ describe("POST .../scan", () => {
     const { session, term, klass } = await setupClass();
     const attendanceSession = await openSession(teacherToken, klass.id, session.id, term.id);
 
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/attendance-sessions/${attendanceSession.id}/scan`)
       .set("Authorization", `Bearer ${teacherToken}`)
       .send({ code: "not-a-real-code" });
@@ -213,7 +225,7 @@ describe("POST .../scan", () => {
     const qr = await issueQrCode(adminToken, unenrolledStudent.id);
     const attendanceSession = await openSession(teacherToken, klass.id, session.id, term.id);
 
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/attendance-sessions/${attendanceSession.id}/scan`)
       .set("Authorization", `Bearer ${teacherToken}`)
       .send({ code: qr.code });
@@ -230,11 +242,11 @@ describe("POST .../scan", () => {
     const qr = await issueQrCode(adminToken, student.id);
     const attendanceSession = await openSession(teacherToken, klass.id, session.id, term.id);
 
-    await request(app)
+    await request(server)
       .post(`/api/attendance-sessions/${attendanceSession.id}/close`)
       .set("Authorization", `Bearer ${teacherToken}`);
 
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/attendance-sessions/${attendanceSession.id}/scan`)
       .set("Authorization", `Bearer ${teacherToken}`)
       .send({ code: qr.code });
@@ -251,7 +263,7 @@ describe("POST .../scan", () => {
     const qr = await issueQrCode(adminToken, student.id);
     const attendanceSession = await openSession(teacherToken, klass.id, session.id, term.id);
 
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/attendance-sessions/${attendanceSession.id}/scan`)
       .set("Authorization", `Bearer ${teacherToken}`)
       .send({ code: qr.code, late: true });
@@ -272,12 +284,12 @@ describe("POST .../close", () => {
     const qr = await issueQrCode(adminToken, scannedStudent.id);
     const attendanceSession = await openSession(teacherToken, klass.id, session.id, term.id);
 
-    await request(app)
+    await request(server)
       .post(`/api/attendance-sessions/${attendanceSession.id}/scan`)
       .set("Authorization", `Bearer ${teacherToken}`)
       .send({ code: qr.code });
 
-    const closeRes = await request(app)
+    const closeRes = await request(server)
       .post(`/api/attendance-sessions/${attendanceSession.id}/close`)
       .set("Authorization", `Bearer ${teacherToken}`);
     expect(closeRes.status).toBe(200);
@@ -297,10 +309,10 @@ describe("POST .../close", () => {
     const { session, term, klass } = await setupClass();
     const attendanceSession = await openSession(teacherToken, klass.id, session.id, term.id);
 
-    await request(app)
+    await request(server)
       .post(`/api/attendance-sessions/${attendanceSession.id}/close`)
       .set("Authorization", `Bearer ${teacherToken}`);
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/attendance-sessions/${attendanceSession.id}/close`)
       .set("Authorization", `Bearer ${teacherToken}`);
 
@@ -342,11 +354,11 @@ describe("scan/close concurrency", () => {
       // used to let close's unprotected reads run between a scan's create()
       // and its own writes.
       const [scanRes] = await Promise.all([
-        request(app)
+        request(server)
           .post(`/api/attendance-sessions/${attendanceSession.id}/scan`)
           .set("Authorization", `Bearer ${teacherToken}`)
           .send({ code: qr.code }),
-        request(app)
+        request(server)
           .post(`/api/attendance-sessions/${attendanceSession.id}/close`)
           .set("Authorization", `Bearer ${teacherToken}`),
       ]);
@@ -391,7 +403,7 @@ describe("PATCH /api/attendance-records/:id (manual correction)", () => {
     const student = await createBareStudent("ADM-001");
     await enrollStudent(student.id, klass.id, session.id);
     const attendanceSession = await openSession(teacherToken, klass.id, session.id, term.id);
-    await request(app)
+    await request(server)
       .post(`/api/attendance-sessions/${attendanceSession.id}/close`)
       .set("Authorization", `Bearer ${teacherToken}`);
 
@@ -400,7 +412,7 @@ describe("PATCH /api/attendance-records/:id (manual correction)", () => {
     });
     expect(absentRecord.status).toBe("ABSENT");
 
-    const correctRes = await request(app)
+    const correctRes = await request(server)
       .patch(`/api/attendance-records/${absentRecord.id}`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ status: "PRESENT", reason: "Student was present; scanner was offline at the gate" });
@@ -427,11 +439,11 @@ describe("GET /api/students/:id/attendance — data-scoped", () => {
     const { student, token: studentToken } = await createStudentWithLogin("student@test.local", "ADM-001");
     await enrollStudent(student.id, klass.id, session.id);
     const attendanceSession = await openSession(teacherToken, klass.id, session.id, term.id);
-    await request(app)
+    await request(server)
       .post(`/api/attendance-sessions/${attendanceSession.id}/close`)
       .set("Authorization", `Bearer ${teacherToken}`);
 
-    const asSelf = await request(app)
+    const asSelf = await request(server)
       .get(`/api/students/${student.id}/attendance`)
       .set("Authorization", `Bearer ${studentToken}`);
     expect(asSelf.status).toBe(200);

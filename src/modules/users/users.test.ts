@@ -1,5 +1,6 @@
+import type { Server } from "node:http";
 import request from "supertest";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
 import { hashPassword } from "../auth/password.js";
@@ -8,6 +9,17 @@ import { resetDb } from "../../test/resetDb.js";
 import { waitForNotification } from "../../test/waitForNotification.js";
 
 const app = createApp();
+let server: Server;
+
+beforeAll(async () => {
+  server = await new Promise<Server>((resolve) => {
+    const s = app.listen(0, "127.0.0.1", () => resolve(s));
+  });
+});
+
+afterAll(() => {
+  server.close();
+});
 
 async function createUserAndLogin(email: string, password: string, role: "ADMIN" | "TEACHER") {
   const passwordHash = await hashPassword(password);
@@ -21,7 +33,7 @@ async function createUserAndLogin(email: string, password: string, role: "ADMIN"
       data: { userId: user.id, staffNumber: "FIA/ST2026/001", firstName: "Test", lastName: "Teacher" },
     });
   }
-  const loginRes = await request(app).post("/api/auth/login").send({ identifier: email, password });
+  const loginRes = await request(server).post("/api/auth/login").send({ identifier: email, password });
   return loginRes.body.accessToken as string;
 }
 
@@ -41,7 +53,7 @@ describe("POST /api/users", () => {
   it("allows an admin to create a bare ADMIN account with a generated, unrecoverable-by-admin password", async () => {
     const adminToken = await createAdminAndLogin();
 
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/users")
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ email: "new.admin@test.local", role: "ADMIN" });
@@ -66,7 +78,7 @@ describe("POST /api/users", () => {
   });
 
   it("rejects an unauthenticated request", async () => {
-    const res = await request(app).post("/api/users").send({ email: "x@test.local", role: "ADMIN" });
+    const res = await request(server).post("/api/users").send({ email: "x@test.local", role: "ADMIN" });
 
     expect(res.status).toBe(401);
   });
@@ -74,13 +86,13 @@ describe("POST /api/users", () => {
   it("rejects a duplicate email", async () => {
     const adminToken = await createAdminAndLogin();
 
-    const first = await request(app)
+    const first = await request(server)
       .post("/api/users")
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ email: "dupe@test.local", role: "ADMIN" });
     await waitForNotification(first.body.id as string, "User", first.body.id as string);
 
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/users")
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ email: "dupe@test.local", role: "ADMIN" });
@@ -91,7 +103,7 @@ describe("POST /api/users", () => {
   it("rejects an invalid role", async () => {
     const adminToken = await createAdminAndLogin();
 
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/users")
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ email: "x@test.local", role: "NOT_A_ROLE" });
@@ -108,7 +120,7 @@ describe("POST /api/users", () => {
     const adminToken = await createAdminAndLogin();
 
     for (const role of ["TEACHER", "PARENT", "BURSAR", "STUDENT"]) {
-      const res = await request(app)
+      const res = await request(server)
         .post("/api/users")
         .set("Authorization", `Bearer ${adminToken}`)
         .send({ email: `${role.toLowerCase()}@test.local`, role });
@@ -122,29 +134,29 @@ describe("user activation lifecycle", () => {
     const adminToken = await createAdminAndLogin();
     const teacherToken = await createTeacherAndLogin();
 
-    const meBefore = await request(app)
+    const meBefore = await request(server)
       .get("/api/auth/me")
       .set("Authorization", `Bearer ${teacherToken}`);
     const teacherId = meBefore.body.principal.userId as string;
 
-    const deactivateRes = await request(app)
+    const deactivateRes = await request(server)
       .post(`/api/users/${teacherId}/deactivate`)
       .set("Authorization", `Bearer ${adminToken}`);
     expect(deactivateRes.status).toBe(200);
     expect(deactivateRes.body.isActive).toBe(false);
 
-    const loginAfterDeactivate = await request(app)
+    const loginAfterDeactivate = await request(server)
       .post("/api/auth/login")
       .send({ identifier: "teacher@test.local", password: "teacher-password-123" });
     expect(loginAfterDeactivate.status).toBe(401);
 
-    const reactivateRes = await request(app)
+    const reactivateRes = await request(server)
       .post(`/api/users/${teacherId}/activate`)
       .set("Authorization", `Bearer ${adminToken}`);
     expect(reactivateRes.status).toBe(200);
     expect(reactivateRes.body.isActive).toBe(true);
 
-    const loginAfterReactivate = await request(app)
+    const loginAfterReactivate = await request(server)
       .post("/api/auth/login")
       .send({ identifier: "teacher@test.local", password: "teacher-password-123" });
     expect(loginAfterReactivate.status).toBe(200);
@@ -161,13 +173,13 @@ describe("user activation lifecycle", () => {
   it("never persists passwordHash into the audit log's beforeData, for either activate or deactivate", async () => {
     const adminToken = await createAdminAndLogin();
     const teacherToken = await createTeacherAndLogin();
-    const meBefore = await request(app).get("/api/auth/me").set("Authorization", `Bearer ${teacherToken}`);
+    const meBefore = await request(server).get("/api/auth/me").set("Authorization", `Bearer ${teacherToken}`);
     const teacherId = meBefore.body.principal.userId as string;
     const { passwordHash } = await prisma.user.findUniqueOrThrow({ where: { id: teacherId } });
     expect(passwordHash).toBeTruthy();
 
-    await request(app).post(`/api/users/${teacherId}/deactivate`).set("Authorization", `Bearer ${adminToken}`);
-    await request(app).post(`/api/users/${teacherId}/activate`).set("Authorization", `Bearer ${adminToken}`);
+    await request(server).post(`/api/users/${teacherId}/deactivate`).set("Authorization", `Bearer ${adminToken}`);
+    await request(server).post(`/api/users/${teacherId}/activate`).set("Authorization", `Bearer ${adminToken}`);
     await drainFireAndForget();
 
     const entries = await prisma.auditLog.findMany({
@@ -190,7 +202,7 @@ describe("GET /api/users/:id", () => {
   it("returns 404 for a nonexistent user", async () => {
     const adminToken = await createAdminAndLogin();
 
-    const res = await request(app)
+    const res = await request(server)
       .get("/api/users/does-not-exist")
       .set("Authorization", `Bearer ${adminToken}`);
 

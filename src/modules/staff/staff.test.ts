@@ -1,5 +1,6 @@
+import type { Server } from "node:http";
 import request from "supertest";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
 import { createAdmin, createCurrentAcademicSession, createTeacher } from "../../test/factories.js";
@@ -7,6 +8,17 @@ import { resetDb } from "../../test/resetDb.js";
 import { waitForNotification } from "../../test/waitForNotification.js";
 
 const app = createApp();
+let server: Server;
+
+beforeAll(async () => {
+  server = await new Promise<Server>((resolve) => {
+    const s = app.listen(0, "127.0.0.1", () => resolve(s));
+  });
+});
+
+afterAll(() => {
+  server.close();
+});
 
 beforeEach(async () => {
   await resetDb();
@@ -27,7 +39,7 @@ describe("POST /api/staff", () => {
     const { token } = await createAdmin("admin@test.local");
     await createCurrentAcademicSession("2026/2027");
 
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/staff")
       .set("Authorization", `Bearer ${token}`)
       .send({ role: "TEACHER", email: "rosalind@test.local", firstName: "Rosalind", lastName: "Franklin" });
@@ -50,7 +62,7 @@ describe("POST /api/staff", () => {
     const { token } = await createAdmin("admin@test.local");
     await createCurrentAcademicSession("2026/2027");
 
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/staff")
       .set("Authorization", `Bearer ${token}`)
       .send({ role: "PARENT", email: "x@test.local", firstName: "X", lastName: "Y" });
@@ -62,13 +74,13 @@ describe("POST /api/staff", () => {
     const { token } = await createAdmin("admin@test.local");
     await createCurrentAcademicSession("2026/2027");
 
-    const first = await request(app)
+    const first = await request(server)
       .post("/api/staff")
       .set("Authorization", `Bearer ${token}`)
       .send({ role: "TEACHER", email: "dupe@test.local", firstName: "A", lastName: "One" });
     await waitForNotification(first.body.userId as string, "Staff", first.body.id as string);
 
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/staff")
       .set("Authorization", `Bearer ${token}`)
       .send({ role: "BURSAR", email: "dupe@test.local", firstName: "B", lastName: "Two" });
@@ -80,13 +92,13 @@ describe("POST /api/staff", () => {
     const { token } = await createAdmin("admin@test.local");
     await createCurrentAcademicSession("2026/2027");
 
-    const first = await request(app)
+    const first = await request(server)
       .post("/api/staff")
       .set("Authorization", `Bearer ${token}`)
       .send({ role: "TEACHER", email: "a@test.local", staffNumber: "FIA/ST2019/010", firstName: "A", lastName: "One" });
     await waitForNotification(first.body.userId as string, "Staff", first.body.id as string);
 
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/staff")
       .set("Authorization", `Bearer ${token}`)
       .send({ role: "TEACHER", email: "b@test.local", staffNumber: "FIA/ST2019/010", firstName: "B", lastName: "Two" });
@@ -100,7 +112,7 @@ describe("PATCH /api/staff/:id — staffNumber sync", () => {
     const { token } = await createAdmin("admin@test.local");
     const { staff } = await createTeacher("teacher@test.local");
 
-    const res = await request(app)
+    const res = await request(server)
       .patch(`/api/staff/${staff.id}`)
       .set("Authorization", `Bearer ${token}`)
       .send({ staffNumber: "FIA/ST2026/099" });
@@ -118,7 +130,7 @@ describe("GET /api/staff/:id", () => {
     const { token: adminToken } = await createAdmin("admin@test.local");
     const { staff } = await createTeacher("teacher@test.local");
 
-    const res = await request(app).get(`/api/staff/${staff.id}`).set("Authorization", `Bearer ${adminToken}`);
+    const res = await request(server).get(`/api/staff/${staff.id}`).set("Authorization", `Bearer ${adminToken}`);
     expect(res.status).toBe(200);
   });
 });

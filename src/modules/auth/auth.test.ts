@@ -1,5 +1,6 @@
+import type { Server } from "node:http";
 import request from "supertest";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
 import {
@@ -13,6 +14,17 @@ import { resetDb } from "../../test/resetDb.js";
 import { hashPassword } from "./password.js";
 
 const app = createApp();
+let server: Server;
+
+beforeAll(async () => {
+  server = await new Promise<Server>((resolve) => {
+    const s = app.listen(0, "127.0.0.1", () => resolve(s));
+  });
+});
+
+afterAll(() => {
+  server.close();
+});
 
 type Role = "ADMIN" | "TEACHER" | "PARENT" | "STUDENT" | "BURSAR";
 
@@ -49,7 +61,7 @@ describe("POST /api/auth/login", () => {
   it("issues an access and refresh token for correct credentials", async () => {
     const { email, password } = await createTestUser();
 
-    const res = await request(app).post("/api/auth/login").send({ identifier: email, password });
+    const res = await request(server).post("/api/auth/login").send({ identifier: email, password });
 
     expect(res.status).toBe(200);
     expect(typeof res.body.accessToken).toBe("string");
@@ -59,7 +71,7 @@ describe("POST /api/auth/login", () => {
   it("rejects an incorrect password", async () => {
     const { email } = await createTestUser({ password: "correct-password" });
 
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/auth/login")
       .send({ identifier: email, password: "wrong-password" });
 
@@ -70,20 +82,20 @@ describe("POST /api/auth/login", () => {
     const { user, email, password } = await createTestUser();
     await prisma.user.update({ where: { id: user.id }, data: { isActive: false } });
 
-    const res = await request(app).post("/api/auth/login").send({ identifier: email, password });
+    const res = await request(server).post("/api/auth/login").send({ identifier: email, password });
 
     expect(res.status).toBe(401);
   });
 
   it("rejects an unknown email", async () => {
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/auth/login")
       .send({ identifier: "nobody@test.local", password: "x" });
     expect(res.status).toBe(401);
   });
 
   it("rejects a malformed request body", async () => {
-    const res = await request(app).post("/api/auth/login").send({ identifier: "not-an-email" });
+    const res = await request(server).post("/api/auth/login").send({ identifier: "not-an-email" });
     expect(res.status).toBe(400);
   });
 
@@ -92,7 +104,7 @@ describe("POST /api/auth/login", () => {
     const password = "correct-horse-battery-staple";
     await createRolelessUser(email, password);
 
-    const res = await request(app).post("/api/auth/login").send({ identifier: email, password });
+    const res = await request(server).post("/api/auth/login").send({ identifier: email, password });
 
     expect(res.status).toBe(403);
     expect(res.body.error.code).toBe("NO_ROLES_ASSIGNED");
@@ -108,19 +120,19 @@ describe("POST /api/auth/login — identifier resolution", () => {
     const { staff, token: expectedTeacherToken } = await createTeacher("teacher@test.local");
     const { parent } = await createParent("parent@test.local");
 
-    const asStudent = await request(app)
+    const asStudent = await request(server)
       .post("/api/auth/login")
       .send({ identifier: "FIA/2026/001", password: "password-123456" });
     expect(asStudent.status).toBe(200);
 
     const staffUser = await prisma.user.findUniqueOrThrow({ where: { id: staff.userId } });
-    const asStaff = await request(app)
+    const asStaff = await request(server)
       .post("/api/auth/login")
       .send({ identifier: staffUser.loginId, password: "password-123456" });
     expect(asStaff.status).toBe(200);
 
     const parentUser = await prisma.user.findUniqueOrThrow({ where: { id: parent.userId } });
-    const asParent = await request(app)
+    const asParent = await request(server)
       .post("/api/auth/login")
       .send({ identifier: parentUser.loginId, password: "password-123456" });
     expect(asParent.status).toBe(200);
@@ -135,12 +147,12 @@ describe("POST /api/auth/login — identifier resolution", () => {
     const { staff } = await createStaffParent("staffparent@test.local");
     const user = await prisma.user.findUniqueOrThrow({ where: { id: staff.userId } });
 
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/auth/login")
       .send({ identifier: user.loginId, password: "password-123456" });
     expect(res.status).toBe(200);
 
-    const meRes = await request(app)
+    const meRes = await request(server)
       .get("/api/auth/me")
       .set("Authorization", `Bearer ${res.body.accessToken}`);
     expect(meRes.body.principal.roles.sort()).toEqual(["PARENT", "TEACHER"]);
@@ -167,12 +179,12 @@ describe("POST /api/auth/login — identifier resolution", () => {
       data: { loginId: shared, email: "user-b@test.local", passwordHash, roles: { create: [{ role: "ADMIN" }] } },
     });
 
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/auth/login")
       .send({ identifier: shared, password: "password-123456" });
     expect(res.status).toBe(200);
 
-    const meRes = await request(app)
+    const meRes = await request(server)
       .get("/api/auth/me")
       .set("Authorization", `Bearer ${res.body.accessToken}`);
     expect(meRes.body.principal.userId).toBe(userB.id);
@@ -193,28 +205,28 @@ describe("mustChangePassword gate", () => {
         roles: { create: [{ role: "ADMIN" }] },
       },
     });
-    const loginRes = await request(app)
+    const loginRes = await request(server)
       .post("/api/auth/login")
       .send({ identifier: email, password: "temporary-pw-123" });
     expect(loginRes.status).toBe(200);
     const accessToken = loginRes.body.accessToken as string;
 
-    const blocked = await request(app)
+    const blocked = await request(server)
       .get("/api/students")
       .set("Authorization", `Bearer ${accessToken}`);
     expect(blocked.status).toBe(403);
     expect(blocked.body.error.code).toBe("MUST_CHANGE_PASSWORD");
 
-    const meRes = await request(app).get("/api/auth/me").set("Authorization", `Bearer ${accessToken}`);
+    const meRes = await request(server).get("/api/auth/me").set("Authorization", `Bearer ${accessToken}`);
     expect(meRes.status).toBe(200);
 
-    const changeRes = await request(app)
+    const changeRes = await request(server)
       .post("/api/auth/change-password")
       .set("Authorization", `Bearer ${accessToken}`)
       .send({ currentPassword: "temporary-pw-123", newPassword: "a-real-password-now" });
     expect(changeRes.status).toBe(204);
 
-    const afterChange = await request(app)
+    const afterChange = await request(server)
       .get("/api/students")
       .set("Authorization", `Bearer ${accessToken}`);
     expect(afterChange.status).toBe(200);
@@ -227,9 +239,9 @@ describe("mustChangePassword gate", () => {
 describe("POST /api/auth/refresh", () => {
   it("rotates the refresh token and issues a new access token", async () => {
     const { email, password } = await createTestUser();
-    const loginRes = await request(app).post("/api/auth/login").send({ identifier: email, password });
+    const loginRes = await request(server).post("/api/auth/login").send({ identifier: email, password });
 
-    const refreshRes = await request(app)
+    const refreshRes = await request(server)
       .post("/api/auth/refresh")
       .send({ refreshToken: loginRes.body.refreshToken });
 
@@ -245,21 +257,21 @@ describe("POST /api/auth/refresh", () => {
 
   it("rejects reuse of an already-rotated refresh token and revokes the session", async () => {
     const { email, password } = await createTestUser();
-    const loginRes = await request(app).post("/api/auth/login").send({ identifier: email, password });
+    const loginRes = await request(server).post("/api/auth/login").send({ identifier: email, password });
     const originalRefreshToken = loginRes.body.refreshToken as string;
 
-    const firstRefresh = await request(app)
+    const firstRefresh = await request(server)
       .post("/api/auth/refresh")
       .send({ refreshToken: originalRefreshToken });
     expect(firstRefresh.status).toBe(200);
 
-    const replay = await request(app)
+    const replay = await request(server)
       .post("/api/auth/refresh")
       .send({ refreshToken: originalRefreshToken });
     expect(replay.status).toBe(401);
 
     // Reuse must have revoked the token that came out of the first rotation too.
-    const secondRefreshAttempt = await request(app)
+    const secondRefreshAttempt = await request(server)
       .post("/api/auth/refresh")
       .send({ refreshToken: firstRefresh.body.refreshToken });
     expect(secondRefreshAttempt.status).toBe(401);
@@ -267,12 +279,12 @@ describe("POST /api/auth/refresh", () => {
 
   it("handles concurrent refresh attempts on the same token with exactly one winner", async () => {
     const { email, password } = await createTestUser();
-    const loginRes = await request(app).post("/api/auth/login").send({ identifier: email, password });
+    const loginRes = await request(server).post("/api/auth/login").send({ identifier: email, password });
     const refreshToken = loginRes.body.refreshToken as string;
 
     const [a, b] = await Promise.all([
-      request(app).post("/api/auth/refresh").send({ refreshToken }),
-      request(app).post("/api/auth/refresh").send({ refreshToken }),
+      request(server).post("/api/auth/refresh").send({ refreshToken }),
+      request(server).post("/api/auth/refresh").send({ refreshToken }),
     ]);
 
     const statuses = [a.status, b.status].sort((x, y) => x - y);
@@ -280,7 +292,7 @@ describe("POST /api/auth/refresh", () => {
   });
 
   it("rejects an unknown refresh token", async () => {
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/auth/refresh")
       .send({ refreshToken: "not-a-real-token" });
     expect(res.status).toBe(401);
@@ -288,12 +300,12 @@ describe("POST /api/auth/refresh", () => {
 
   it("rejects refresh once a user's last role is gone, and still consumes the old token", async () => {
     const { email, password, user } = await createTestUser();
-    const loginRes = await request(app).post("/api/auth/login").send({ identifier: email, password });
+    const loginRes = await request(server).post("/api/auth/login").send({ identifier: email, password });
     expect(loginRes.status).toBe(200);
 
     await prisma.userRole.deleteMany({ where: { userId: user.id } });
 
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/auth/refresh")
       .send({ refreshToken: loginRes.body.refreshToken });
     expect(res.status).toBe(403);
@@ -301,7 +313,7 @@ describe("POST /api/auth/refresh", () => {
 
     // The atomic claim on the refresh token happens before roles are
     // checked, so rejecting here must not leave the old token usable.
-    const retry = await request(app)
+    const retry = await request(server)
       .post("/api/auth/refresh")
       .send({ refreshToken: loginRes.body.refreshToken });
     expect(retry.status).toBe(401);
@@ -311,13 +323,13 @@ describe("POST /api/auth/refresh", () => {
 describe("POST /api/auth/logout", () => {
   it("revokes the refresh token so it can no longer be used", async () => {
     const { email, password } = await createTestUser();
-    const loginRes = await request(app).post("/api/auth/login").send({ identifier: email, password });
+    const loginRes = await request(server).post("/api/auth/login").send({ identifier: email, password });
     const refreshToken = loginRes.body.refreshToken as string;
 
-    const logoutRes = await request(app).post("/api/auth/logout").send({ refreshToken });
+    const logoutRes = await request(server).post("/api/auth/logout").send({ refreshToken });
     expect(logoutRes.status).toBe(204);
 
-    const refreshAfterLogout = await request(app).post("/api/auth/refresh").send({ refreshToken });
+    const refreshAfterLogout = await request(server).post("/api/auth/refresh").send({ refreshToken });
     expect(refreshAfterLogout.status).toBe(401);
   });
 });
@@ -325,9 +337,9 @@ describe("POST /api/auth/logout", () => {
 describe("GET /api/auth/me", () => {
   it("returns the principal for a valid access token", async () => {
     const { email, password, user } = await createTestUser({ role: "ADMIN" });
-    const loginRes = await request(app).post("/api/auth/login").send({ identifier: email, password });
+    const loginRes = await request(server).post("/api/auth/login").send({ identifier: email, password });
 
-    const meRes = await request(app)
+    const meRes = await request(server)
       .get("/api/auth/me")
       .set("Authorization", `Bearer ${loginRes.body.accessToken}`);
 
@@ -337,12 +349,12 @@ describe("GET /api/auth/me", () => {
   });
 
   it("rejects a missing Authorization header", async () => {
-    const res = await request(app).get("/api/auth/me");
+    const res = await request(server).get("/api/auth/me");
     expect(res.status).toBe(401);
   });
 
   it("rejects a malformed access token", async () => {
-    const res = await request(app).get("/api/auth/me").set("Authorization", "Bearer not-a-real-jwt");
+    const res = await request(server).get("/api/auth/me").set("Authorization", "Bearer not-a-real-jwt");
     expect(res.status).toBe(401);
   });
 });
@@ -350,21 +362,21 @@ describe("GET /api/auth/me", () => {
 describe("POST /api/auth/change-password", () => {
   it("changes the password and revokes existing sessions", async () => {
     const { email, password } = await createTestUser();
-    const loginRes = await request(app).post("/api/auth/login").send({ identifier: email, password });
+    const loginRes = await request(server).post("/api/auth/login").send({ identifier: email, password });
     const accessToken = loginRes.body.accessToken as string;
     const refreshToken = loginRes.body.refreshToken as string;
 
-    const changeRes = await request(app)
+    const changeRes = await request(server)
       .post("/api/auth/change-password")
       .set("Authorization", `Bearer ${accessToken}`)
       .send({ currentPassword: password, newPassword: "a-brand-new-password" });
 
     expect(changeRes.status).toBe(204);
 
-    const refreshAfterChange = await request(app).post("/api/auth/refresh").send({ refreshToken });
+    const refreshAfterChange = await request(server).post("/api/auth/refresh").send({ refreshToken });
     expect(refreshAfterChange.status).toBe(401);
 
-    const newLogin = await request(app)
+    const newLogin = await request(server)
       .post("/api/auth/login")
       .send({ identifier: email, password: "a-brand-new-password" });
     expect(newLogin.status).toBe(200);
@@ -372,9 +384,9 @@ describe("POST /api/auth/change-password", () => {
 
   it("rejects an incorrect current password", async () => {
     const { email, password } = await createTestUser();
-    const loginRes = await request(app).post("/api/auth/login").send({ identifier: email, password });
+    const loginRes = await request(server).post("/api/auth/login").send({ identifier: email, password });
 
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/auth/change-password")
       .set("Authorization", `Bearer ${loginRes.body.accessToken}`)
       .send({ currentPassword: "wrong", newPassword: "a-brand-new-password" });
@@ -406,7 +418,7 @@ describe("POST /api/auth/forgot-password", () => {
   it("creates a reset token and delivers it through the notification provider for a real, active account", async () => {
     const { user, email } = await createTestUser();
 
-    const res = await request(app).post("/api/auth/forgot-password").send({ identifier: email });
+    const res = await request(server).post("/api/auth/forgot-password").send({ identifier: email });
     expect(res.status).toBe(204);
 
     const tokenRow = await prisma.passwordResetToken.findFirst({ where: { userId: user.id } });
@@ -421,7 +433,7 @@ describe("POST /api/auth/forgot-password", () => {
   });
 
   it("responds identically (204, no body) for an email that doesn't belong to any account", async () => {
-    const res = await request(app).post("/api/auth/forgot-password").send({ identifier: "nobody@test.local" });
+    const res = await request(server).post("/api/auth/forgot-password").send({ identifier: "nobody@test.local" });
     expect(res.status).toBe(204);
     expect(res.body).toEqual({});
 
@@ -433,7 +445,7 @@ describe("POST /api/auth/forgot-password", () => {
     const { user, email } = await createTestUser();
     await prisma.user.update({ where: { id: user.id }, data: { isActive: false } });
 
-    const res = await request(app).post("/api/auth/forgot-password").send({ identifier: email });
+    const res = await request(server).post("/api/auth/forgot-password").send({ identifier: email });
     expect(res.status).toBe(204);
 
     const tokens = await prisma.passwordResetToken.count({ where: { userId: user.id } });
@@ -452,7 +464,7 @@ describe("POST /api/auth/forgot-password", () => {
       data: { studentId: student.id, parentId: parent.id, relationship: "MOTHER", isPrimaryContact: true },
     });
 
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/auth/forgot-password")
       .send({ identifier: student.admissionNumber });
     expect(res.status).toBe(204);
@@ -485,7 +497,7 @@ describe("POST /api/auth/forgot-password", () => {
       data: { studentId: student.id, parentId: laterParent.id, relationship: "FATHER" },
     });
 
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/auth/forgot-password")
       .send({ identifier: student.admissionNumber });
     expect(res.status).toBe(204);
@@ -508,7 +520,7 @@ describe("POST /api/auth/forgot-password", () => {
   // identifier, correctly indistinguishable from any other unknown one
   // (see the 204 test above).
   it("rejects an empty identifier", async () => {
-    const res = await request(app).post("/api/auth/forgot-password").send({ identifier: "" });
+    const res = await request(server).post("/api/auth/forgot-password").send({ identifier: "" });
     expect(res.status).toBe(400);
   });
 });
@@ -516,24 +528,24 @@ describe("POST /api/auth/forgot-password", () => {
 describe("POST /api/auth/reset-password", () => {
   it("sets a new password, allows login with it, and revokes every existing refresh token", async () => {
     const { user, email, password } = await createTestUser();
-    const loginRes = await request(app).post("/api/auth/login").send({ identifier: email, password });
+    const loginRes = await request(server).post("/api/auth/login").send({ identifier: email, password });
     const oldRefreshToken = loginRes.body.refreshToken as string;
 
-    await request(app).post("/api/auth/forgot-password").send({ identifier: email });
+    await request(server).post("/api/auth/forgot-password").send({ identifier: email });
     const token = await readResetTokenFromNotification(user.id);
 
-    const resetRes = await request(app)
+    const resetRes = await request(server)
       .post("/api/auth/reset-password")
       .send({ token, newPassword: "a-brand-new-password" });
     expect(resetRes.status).toBe(204);
 
-    const oldRefreshAttempt = await request(app).post("/api/auth/refresh").send({ refreshToken: oldRefreshToken });
+    const oldRefreshAttempt = await request(server).post("/api/auth/refresh").send({ refreshToken: oldRefreshToken });
     expect(oldRefreshAttempt.status, "the reset must revoke sessions that predate it").toBe(401);
 
-    const oldPasswordLogin = await request(app).post("/api/auth/login").send({ identifier: email, password });
+    const oldPasswordLogin = await request(server).post("/api/auth/login").send({ identifier: email, password });
     expect(oldPasswordLogin.status).toBe(401);
 
-    const newPasswordLogin = await request(app)
+    const newPasswordLogin = await request(server)
       .post("/api/auth/login")
       .send({ identifier: email, password: "a-brand-new-password" });
     expect(newPasswordLogin.status).toBe(200);
@@ -541,15 +553,15 @@ describe("POST /api/auth/reset-password", () => {
 
   it("is single-use — a second attempt with the same token is rejected even with a valid new password", async () => {
     const { user, email } = await createTestUser();
-    await request(app).post("/api/auth/forgot-password").send({ identifier: email });
+    await request(server).post("/api/auth/forgot-password").send({ identifier: email });
     const token = await readResetTokenFromNotification(user.id);
 
-    const first = await request(app)
+    const first = await request(server)
       .post("/api/auth/reset-password")
       .send({ token, newPassword: "first-new-password" });
     expect(first.status).toBe(204);
 
-    const second = await request(app)
+    const second = await request(server)
       .post("/api/auth/reset-password")
       .send({ token, newPassword: "second-new-password" });
     expect(second.status).toBe(401);
@@ -557,12 +569,12 @@ describe("POST /api/auth/reset-password", () => {
 
   it("resolves two concurrent uses of the same token as exactly one winner", async () => {
     const { user, email } = await createTestUser();
-    await request(app).post("/api/auth/forgot-password").send({ identifier: email });
+    await request(server).post("/api/auth/forgot-password").send({ identifier: email });
     const token = await readResetTokenFromNotification(user.id);
 
     const [a, b] = await Promise.all([
-      request(app).post("/api/auth/reset-password").send({ token, newPassword: "candidate-password-a" }),
-      request(app).post("/api/auth/reset-password").send({ token, newPassword: "candidate-password-b" }),
+      request(server).post("/api/auth/reset-password").send({ token, newPassword: "candidate-password-a" }),
+      request(server).post("/api/auth/reset-password").send({ token, newPassword: "candidate-password-b" }),
     ]);
 
     const statuses = [a.status, b.status].sort((x, y) => x - y);
@@ -570,7 +582,7 @@ describe("POST /api/auth/reset-password", () => {
   });
 
   it("rejects an unknown token", async () => {
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/auth/reset-password")
       .send({ token: "not-a-real-token", newPassword: "a-brand-new-password" });
     expect(res.status).toBe(401);
@@ -578,7 +590,7 @@ describe("POST /api/auth/reset-password", () => {
 
   it("rejects an expired token", async () => {
     const { user, email } = await createTestUser();
-    await request(app).post("/api/auth/forgot-password").send({ identifier: email });
+    await request(server).post("/api/auth/forgot-password").send({ identifier: email });
     const token = await readResetTokenFromNotification(user.id);
 
     await prisma.passwordResetToken.updateMany({
@@ -586,14 +598,14 @@ describe("POST /api/auth/reset-password", () => {
       data: { expiresAt: new Date(Date.now() - 1000) },
     });
 
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/auth/reset-password")
       .send({ token, newPassword: "a-brand-new-password" });
     expect(res.status).toBe(401);
   });
 
   it("rejects a malformed request body", async () => {
-    const res = await request(app).post("/api/auth/reset-password").send({ token: "x", newPassword: "short" });
+    const res = await request(server).post("/api/auth/reset-password").send({ token: "x", newPassword: "short" });
     expect(res.status).toBe(400);
   });
 });

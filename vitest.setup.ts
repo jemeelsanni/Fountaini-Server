@@ -1,5 +1,16 @@
 import { config } from "dotenv";
 
+// Diagnostic instrumentation for transport-level test flakes (hard
+// timeouts, socket hang ups, malformed responses) — off unless
+// FLAKE_DIAGNOSTICS=1, a no-op otherwise. This is what found the root cause
+// documented in docs/concurrency.md's "2026-09-28 — Root cause found and
+// fixed" entry; kept for the next time something in this shape shows up.
+// See src/test/flakeInstrument.mjs for what it captures and FLAKE_LOG_PATH
+// for where it writes.
+if (process.env.FLAKE_DIAGNOSTICS === "1") {
+  await import("./src/test/flakeInstrument.mjs");
+}
+
 // .env.test is the portable, committed default (matches docker-compose.yml).
 // .env.test.local (gitignored) lets this machine override it — e.g. a local
 // Postgres.app install with different credentials — without touching the

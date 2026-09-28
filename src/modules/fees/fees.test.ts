@@ -1,5 +1,6 @@
+import type { Server } from "node:http";
 import request from "supertest";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
 import {
@@ -16,6 +17,17 @@ import {
 import { resetDb } from "../../test/resetDb.js";
 
 const app = createApp();
+let server: Server;
+
+beforeAll(async () => {
+  server = await new Promise<Server>((resolve) => {
+    const s = app.listen(0, "127.0.0.1", () => resolve(s));
+  });
+});
+
+afterAll(() => {
+  server.close();
+});
 
 beforeEach(async () => {
   await resetDb();
@@ -36,7 +48,7 @@ describe("fee structures and obligation generation", () => {
     await enrollStudent(student1.id, klass.id, session.id);
     await enrollStudent(student2.id, klass.id, session.id);
 
-    const structureRes = await request(app)
+    const structureRes = await request(server)
       .post("/api/fee-structures")
       .set("Authorization", `Bearer ${adminToken}`)
       .send({
@@ -48,7 +60,7 @@ describe("fee structures and obligation generation", () => {
       });
     expect(structureRes.status).toBe(201);
 
-    const generateRes = await request(app)
+    const generateRes = await request(server)
       .post(`/api/fee-structures/${structureRes.body.id}/generate-obligations`)
       .set("Authorization", `Bearer ${adminToken}`);
     expect(generateRes.status).toBe(201);
@@ -63,7 +75,7 @@ describe("fee structures and obligation generation", () => {
     expect(studentIds).not.toContain(unenrolledStudent.id);
 
     // Re-running does not create duplicates.
-    await request(app)
+    await request(server)
       .post(`/api/fee-structures/${structureRes.body.id}/generate-obligations`)
       .set("Authorization", `Bearer ${adminToken}`);
     const count = await prisma.feeObligation.count({ where: { feeStructureId: structureRes.body.id } });
@@ -80,7 +92,7 @@ describe("fee structures and obligation generation", () => {
     await enrollStudent(studentA.id, armA.id, session.id);
     await enrollStudent(studentB.id, armB.id, session.id);
 
-    const structureRes = await request(app)
+    const structureRes = await request(server)
       .post("/api/fee-structures")
       .set("Authorization", `Bearer ${adminToken}`)
       .send({
@@ -98,7 +110,7 @@ describe("fee structures and obligation generation", () => {
     const studentC = await createBareStudent("ADM-GRADE-003");
     await enrollStudent(studentC.id, armC.id, session.id);
 
-    const generateRes = await request(app)
+    const generateRes = await request(server)
       .post(`/api/fee-structures/${structureRes.body.id}/generate-obligations`)
       .set("Authorization", `Bearer ${adminToken}`);
     expect(generateRes.status).toBe(201);
@@ -115,7 +127,7 @@ describe("fee structures and obligation generation", () => {
     const session = await createCurrentAcademicSession("2026/2027");
     const klass = await createClass("JSS1", "A");
 
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/fee-structures")
       .set("Authorization", `Bearer ${adminToken}`)
       .send({
@@ -135,7 +147,7 @@ describe("fee structures and obligation generation", () => {
     const session = await createCurrentAcademicSession("2026/2027");
     const klass = await createClass("JSS1", "A");
 
-    const structureRes = await request(app)
+    const structureRes = await request(server)
       .post("/api/fee-structures")
       .set("Authorization", `Bearer ${adminToken}`)
       .send({
@@ -150,7 +162,7 @@ describe("fee structures and obligation generation", () => {
     // Existing row already has classId — this update sets only gradeName,
     // but the schema-level check alone can't see that; the merge check in
     // updateFeeStructure is what catches this half.
-    const res = await request(app)
+    const res = await request(server)
       .patch(`/api/fee-structures/${structureRes.body.id}`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ gradeName: "JSS1" });
@@ -169,11 +181,11 @@ describe("payment recording, confirmation, and balance math", () => {
     const student = await createBareStudent("ADM-001");
     await enrollStudent(student.id, klass.id, session.id);
 
-    const structureRes = await request(app)
+    const structureRes = await request(server)
       .post("/api/fee-structures")
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ name: "Tuition", category: "TUITION", classId: klass.id, academicSessionId: session.id, amountKobo: 10_000_000 });
-    await request(app)
+    await request(server)
       .post(`/api/fee-structures/${structureRes.body.id}/generate-obligations`)
       .set("Authorization", `Bearer ${adminToken}`);
     const obligation = await prisma.feeObligation.findFirstOrThrow({ where: { studentId: student.id } });
@@ -185,41 +197,41 @@ describe("payment recording, confirmation, and balance math", () => {
     const { adminToken, bursarToken, student, obligation } = await setupObligation();
 
     // Recorded and confirmed by BURSAR — proving that role, not just ADMIN, works here.
-    const payment1 = await request(app)
+    const payment1 = await request(server)
       .post(`/api/fee-obligations/${obligation.id}/payments`)
       .set("Authorization", `Bearer ${bursarToken}`)
       .send({ amountKobo: 4_000_000, paymentDate: "2026-09-10", bankReference: "TXN-001" });
     expect(payment1.status).toBe(201);
     expect(payment1.body.status).toBe("PENDING");
 
-    const confirm1 = await request(app)
+    const confirm1 = await request(server)
       .post(`/api/payments/${payment1.body.id}/confirm`)
       .set("Authorization", `Bearer ${bursarToken}`);
     expect(confirm1.status).toBe(200);
     expect(confirm1.body.status).toBe("CONFIRMED");
 
-    const receipt1 = await request(app)
+    const receipt1 = await request(server)
       .get(`/api/payments/${payment1.body.id}/receipt`)
       .set("Authorization", `Bearer ${adminToken}`);
     expect(receipt1.status).toBe(200);
     expect(typeof receipt1.body.receiptNumber).toBe("string");
 
-    let balances = await request(app)
+    let balances = await request(server)
       .get(`/api/students/${student.id}/fee-obligations`)
       .set("Authorization", `Bearer ${adminToken}`);
     expect(balances.body[0].status).toBe("PARTIALLY_PAID");
     expect(balances.body[0].totalPaidKobo).toBe(4_000_000);
     expect(balances.body[0].outstandingKobo).toBe(6_000_000);
 
-    const payment2 = await request(app)
+    const payment2 = await request(server)
       .post(`/api/fee-obligations/${obligation.id}/payments`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ amountKobo: 6_000_000, paymentDate: "2026-10-01" });
-    await request(app)
+    await request(server)
       .post(`/api/payments/${payment2.body.id}/confirm`)
       .set("Authorization", `Bearer ${adminToken}`);
 
-    balances = await request(app)
+    balances = await request(server)
       .get(`/api/students/${student.id}/fee-obligations`)
       .set("Authorization", `Bearer ${adminToken}`);
     expect(balances.body[0].status).toBe("PAID");
@@ -230,12 +242,12 @@ describe("payment recording, confirmation, and balance math", () => {
   it("a rejected payment does not count toward the balance", async () => {
     const { adminToken, obligation } = await setupObligation();
 
-    const payment = await request(app)
+    const payment = await request(server)
       .post(`/api/fee-obligations/${obligation.id}/payments`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ amountKobo: 10_000_000, paymentDate: "2026-09-10" });
 
-    const rejectRes = await request(app)
+    const rejectRes = await request(server)
       .post(`/api/payments/${payment.body.id}/reject`)
       .set("Authorization", `Bearer ${adminToken}`);
     expect(rejectRes.status).toBe(200);
@@ -244,7 +256,7 @@ describe("payment recording, confirmation, and balance math", () => {
     const refreshedObligation = await prisma.feeObligation.findUniqueOrThrow({ where: { id: obligation.id } });
     expect(refreshedObligation.status).toBe("PENDING");
 
-    const receiptAttempt = await request(app)
+    const receiptAttempt = await request(server)
       .get(`/api/payments/${payment.body.id}/receipt`)
       .set("Authorization", `Bearer ${adminToken}`);
     expect(receiptAttempt.status).toBe(404);
@@ -252,18 +264,18 @@ describe("payment recording, confirmation, and balance math", () => {
 
   it("rejects confirming or rejecting a payment that isn't PENDING anymore", async () => {
     const { adminToken, obligation } = await setupObligation();
-    const payment = await request(app)
+    const payment = await request(server)
       .post(`/api/fee-obligations/${obligation.id}/payments`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ amountKobo: 1_000_000, paymentDate: "2026-09-10" });
 
-    await request(app).post(`/api/payments/${payment.body.id}/confirm`).set("Authorization", `Bearer ${adminToken}`);
-    const secondConfirm = await request(app)
+    await request(server).post(`/api/payments/${payment.body.id}/confirm`).set("Authorization", `Bearer ${adminToken}`);
+    const secondConfirm = await request(server)
       .post(`/api/payments/${payment.body.id}/confirm`)
       .set("Authorization", `Bearer ${adminToken}`);
     expect(secondConfirm.status).toBe(409);
 
-    const rejectAfterConfirm = await request(app)
+    const rejectAfterConfirm = await request(server)
       .post(`/api/payments/${payment.body.id}/reject`)
       .set("Authorization", `Bearer ${adminToken}`);
     expect(rejectAfterConfirm.status).toBe(409);
@@ -271,16 +283,16 @@ describe("payment recording, confirmation, and balance math", () => {
 
   it("resolves two concurrent confirms of the same payment as one 200 and one 409, with exactly one receipt", async () => {
     const { adminToken, bursarToken, obligation } = await setupObligation();
-    const payment = await request(app)
+    const payment = await request(server)
       .post(`/api/fee-obligations/${obligation.id}/payments`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ amountKobo: 1_000_000, paymentDate: "2026-09-10" });
 
     const [resA, resB] = await Promise.all([
-      request(app)
+      request(server)
         .post(`/api/payments/${payment.body.id}/confirm`)
         .set("Authorization", `Bearer ${adminToken}`),
-      request(app)
+      request(server)
         .post(`/api/payments/${payment.body.id}/confirm`)
         .set("Authorization", `Bearer ${bursarToken}`),
     ]);
@@ -305,41 +317,41 @@ describe("BURSAR has a working portal end to end", () => {
     const student = await createBareStudent("ADM-001");
     await enrollStudent(student.id, klass.id, session.id);
 
-    const structureRes = await request(app)
+    const structureRes = await request(server)
       .post("/api/fee-structures")
       .set("Authorization", `Bearer ${bursarToken}`)
       .send({ name: "Tuition", category: "TUITION", classId: klass.id, academicSessionId: session.id, amountKobo: 5_000_000 });
     expect(structureRes.status).toBe(201);
 
-    const generateRes = await request(app)
+    const generateRes = await request(server)
       .post(`/api/fee-structures/${structureRes.body.id}/generate-obligations`)
       .set("Authorization", `Bearer ${bursarToken}`);
     expect(generateRes.status).toBe(201);
     const obligationId = generateRes.body[0].id as string;
 
-    const getObligation = await request(app)
+    const getObligation = await request(server)
       .get(`/api/fee-obligations/${obligationId}`)
       .set("Authorization", `Bearer ${bursarToken}`);
     expect(getObligation.status).toBe(200);
     expect(getObligation.body.outstandingKobo).toBe(5_000_000);
 
-    const paymentRes = await request(app)
+    const paymentRes = await request(server)
       .post(`/api/fee-obligations/${obligationId}/payments`)
       .set("Authorization", `Bearer ${bursarToken}`)
       .send({ amountKobo: 5_000_000, paymentDate: "2026-09-10" });
     expect(paymentRes.status).toBe(201);
 
-    const confirmRes = await request(app)
+    const confirmRes = await request(server)
       .post(`/api/payments/${paymentRes.body.id}/confirm`)
       .set("Authorization", `Bearer ${bursarToken}`);
     expect(confirmRes.status).toBe(200);
 
-    const receiptRes = await request(app)
+    const receiptRes = await request(server)
       .get(`/api/payments/${paymentRes.body.id}/receipt`)
       .set("Authorization", `Bearer ${bursarToken}`);
     expect(receiptRes.status).toBe(200);
 
-    const patchStructureRes = await request(app)
+    const patchStructureRes = await request(server)
       .patch(`/api/fee-structures/${structureRes.body.id}`)
       .set("Authorization", `Bearer ${bursarToken}`)
       .send({ name: "Tuition (revised)" });
@@ -347,17 +359,17 @@ describe("BURSAR has a working portal end to end", () => {
     expect(patchStructureRes.body.name).toBe("Tuition (revised)");
 
     // This structure has a generated obligation — delete must refuse.
-    const deleteWithObligations = await request(app)
+    const deleteWithObligations = await request(server)
       .delete(`/api/fee-structures/${structureRes.body.id}`)
       .set("Authorization", `Bearer ${bursarToken}`);
     expect(deleteWithObligations.status).toBe(409);
 
     // A second, untouched structure has none — delete succeeds.
-    const secondStructureRes = await request(app)
+    const secondStructureRes = await request(server)
       .post("/api/fee-structures")
       .set("Authorization", `Bearer ${bursarToken}`)
       .send({ name: "Uniform", category: "UNIFORM", academicSessionId: session.id, amountKobo: 1_000_000 });
-    const deleteWithoutObligations = await request(app)
+    const deleteWithoutObligations = await request(server)
       .delete(`/api/fee-structures/${secondStructureRes.body.id}`)
       .set("Authorization", `Bearer ${bursarToken}`);
     expect(deleteWithoutObligations.status).toBe(204);
@@ -373,12 +385,12 @@ describe("BURSAR has a working portal end to end", () => {
     const term = await createTermForSession(session.id, "First Term", 1);
     const student = await createBareStudent("ADM-002");
 
-    const resultsRes = await request(app)
+    const resultsRes = await request(server)
       .get(`/api/results/${student.id}/${term.id}`)
       .set("Authorization", `Bearer ${bursarToken}`);
     expect(resultsRes.status).toBe(403);
 
-    const scoresRes = await request(app)
+    const scoresRes = await request(server)
       .get(`/api/students/${student.id}/scores`)
       .set("Authorization", `Bearer ${bursarToken}`);
     expect(scoresRes.status).toBe(403);
@@ -393,17 +405,17 @@ describe("PATCH /api/fee-structures/:id", () => {
     const student = await createBareStudent("ADM-001");
     await enrollStudent(student.id, klass.id, session.id);
 
-    const structureRes = await request(app)
+    const structureRes = await request(server)
       .post("/api/fee-structures")
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ name: "Tuition", category: "TUITION", classId: klass.id, academicSessionId: session.id, amountKobo: 5_000_000 });
-    await request(app)
+    await request(server)
       .post(`/api/fee-structures/${structureRes.body.id}/generate-obligations`)
       .set("Authorization", `Bearer ${adminToken}`);
     const obligation = await prisma.feeObligation.findFirstOrThrow({ where: { studentId: student.id } });
     expect(obligation.amountDueKobo).toBe(5_000_000);
 
-    const patchRes = await request(app)
+    const patchRes = await request(server)
       .patch(`/api/fee-structures/${structureRes.body.id}`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ amountKobo: 8_000_000 });
@@ -428,26 +440,26 @@ describe("GET /api/fee-obligations/:id", () => {
     });
     const { token: unrelatedParentToken } = await createParent("unrelated-parent@test.local");
 
-    const structureRes = await request(app)
+    const structureRes = await request(server)
       .post("/api/fee-structures")
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ name: "Tuition", category: "TUITION", classId: klass.id, academicSessionId: session.id, amountKobo: 5_000_000 });
-    const generateRes = await request(app)
+    const generateRes = await request(server)
       .post(`/api/fee-structures/${structureRes.body.id}/generate-obligations`)
       .set("Authorization", `Bearer ${adminToken}`);
     const obligationId = generateRes.body[0].id as string;
 
-    const asParent = await request(app)
+    const asParent = await request(server)
       .get(`/api/fee-obligations/${obligationId}`)
       .set("Authorization", `Bearer ${parentToken}`);
     expect(asParent.status).toBe(200);
 
-    const asStudent = await request(app)
+    const asStudent = await request(server)
       .get(`/api/fee-obligations/${obligationId}`)
       .set("Authorization", `Bearer ${studentToken}`);
     expect(asStudent.status).toBe(200);
 
-    const asUnrelatedParent = await request(app)
+    const asUnrelatedParent = await request(server)
       .get(`/api/fee-obligations/${obligationId}`)
       .set("Authorization", `Bearer ${unrelatedParentToken}`);
     expect(asUnrelatedParent.status).toBe(403);

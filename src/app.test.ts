@@ -1,15 +1,29 @@
+import type { Server } from "node:http";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
 import { createApp } from "./app.js";
 import { env } from "./config/env.js";
 
+async function withServer(app: ReturnType<typeof createApp>, run: (server: Server) => Promise<void>) {
+  const server = await new Promise<Server>((resolve) => {
+    const s = app.listen(0, "127.0.0.1", () => resolve(s));
+  });
+  try {
+    await run(server);
+  } finally {
+    server.close();
+  }
+}
+
 describe("GET /health", () => {
   it("returns 200 with status ok", async () => {
     const app = createApp();
-    const response = await request(app).get("/health");
+    await withServer(app, async (server) => {
+      const response = await request(server).get("/health");
 
-    expect(response.status).toBe(200);
-    expect(response.body).toEqual({ status: "ok" });
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ status: "ok" });
+    });
   });
 });
 
@@ -26,10 +40,12 @@ describe("CORS", () => {
     env.CORS_ORIGINS = ["https://allowed.example.com"];
     try {
       const app = createApp();
-      const response = await request(app).get("/health").set("Origin", "https://evil.example.com");
+      await withServer(app, async (server) => {
+        const response = await request(server).get("/health").set("Origin", "https://evil.example.com");
 
-      expect(response.status).toBe(403);
-      expect(response.body.error.code).toBe("FORBIDDEN");
+        expect(response.status).toBe(403);
+        expect(response.body.error.code).toBe("FORBIDDEN");
+      });
     } finally {
       env.CORS_ORIGINS = original;
     }
@@ -39,8 +55,10 @@ describe("CORS", () => {
 describe("unmatched routes", () => {
   it("returns 404 for an unknown path", async () => {
     const app = createApp();
-    const response = await request(app).get("/does-not-exist");
+    await withServer(app, async (server) => {
+      const response = await request(server).get("/does-not-exist");
 
-    expect(response.status).toBe(404);
+      expect(response.status).toBe(404);
+    });
   });
 });

@@ -1,5 +1,6 @@
+import type { Server } from "node:http";
 import request from "supertest";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
 import { bulkUpsertScores, submitScores } from "./scores.service.js";
@@ -20,6 +21,17 @@ import { awaitLockWaiter } from "../../test/awaitLockWaiter.js";
 import { resetDb } from "../../test/resetDb.js";
 
 const app = createApp();
+let server: Server;
+
+beforeAll(async () => {
+  server = await new Promise<Server>((resolve) => {
+    const s = app.listen(0, "127.0.0.1", () => resolve(s));
+  });
+});
+
+afterAll(() => {
+  server.close();
+});
 
 async function setupClassroom() {
   const session = await createCurrentAcademicSession("2026/2027");
@@ -50,7 +62,7 @@ describe("GET .../students (roster)", () => {
     const student = await createBareStudent("ADM-001");
     await enrollStudent(student.id, klass.id, session.id);
 
-    const res = await request(app)
+    const res = await request(server)
       .get(`/api/class-subject-assignments/${assignment.id}/students`)
       .set("Authorization", `Bearer ${tokenA}`);
     expect(res.status).toBe(200);
@@ -79,7 +91,7 @@ describe("GET .../scores (entry sheet read-back)", () => {
   it("returns DRAFT scores with the entered value and null for a not-yet-entered component", async () => {
     const { term, assignment, teacherToken, student, ca1, exam } = await setupWithOneEnteredScore();
 
-    const res = await request(app)
+    const res = await request(server)
       .get(`/api/class-subject-assignments/${assignment.id}/scores?termId=${term.id}`)
       .set("Authorization", `Bearer ${teacherToken}`);
 
@@ -100,12 +112,12 @@ describe("GET .../scores (entry sheet read-back)", () => {
     const { token: unassignedTeacherToken } = await createTeacher("unassigned-teacher@test.local");
     const { token: parentToken } = await createParent("parent@test.local");
 
-    const asUnassignedTeacher = await request(app)
+    const asUnassignedTeacher = await request(server)
       .get(`/api/class-subject-assignments/${assignment.id}/scores?termId=${term.id}`)
       .set("Authorization", `Bearer ${unassignedTeacherToken}`);
     expect(asUnassignedTeacher.status).toBe(403);
 
-    const asParent = await request(app)
+    const asParent = await request(server)
       .get(`/api/class-subject-assignments/${assignment.id}/scores?termId=${term.id}`)
       .set("Authorization", `Bearer ${parentToken}`);
     expect(asParent.status).toBe(403);
@@ -135,7 +147,7 @@ describe("PUT .../scores (bulk upsert)", () => {
     const student = await createBareStudent("ADM-001");
     await enrollStudent(student.id, klass.id, session.id);
 
-    const res = await request(app)
+    const res = await request(server)
       .put(`/api/class-subject-assignments/${assignment.id}/scores`)
       .set("Authorization", `Bearer ${token}`)
       .send({ termId: term.id, entries: [{ studentId: student.id, assessmentComponentId: ca1.id, rawScore: 25 }] });
@@ -149,7 +161,7 @@ describe("PUT .../scores (bulk upsert)", () => {
     const assignment = await createAssignment(klass.id, subject.id, staff.id, session.id);
     const unenrolledStudent = await createBareStudent("ADM-002");
 
-    const res = await request(app)
+    const res = await request(server)
       .put(`/api/class-subject-assignments/${assignment.id}/scores`)
       .set("Authorization", `Bearer ${token}`)
       .send({
@@ -167,7 +179,7 @@ describe("PUT .../scores (bulk upsert)", () => {
     const student = await createBareStudent("ADM-001");
     await enrollStudent(student.id, klass.id, session.id);
 
-    const res = await request(app)
+    const res = await request(server)
       .put(`/api/class-subject-assignments/${assignment.id}/scores`)
       .set("Authorization", `Bearer ${token}`)
       .send({ termId: term.id, entries: [{ studentId: student.id, assessmentComponentId: ca1.id, rawScore: 18 }] });
@@ -253,12 +265,12 @@ describe("POST .../scores/submit", () => {
     await enrollStudent(student.id, klass.id, session.id);
 
     // Only CA1 entered, EXAM missing.
-    await request(app)
+    await request(server)
       .put(`/api/class-subject-assignments/${assignment.id}/scores`)
       .set("Authorization", `Bearer ${token}`)
       .send({ termId: term.id, entries: [{ studentId: student.id, assessmentComponentId: ca1.id, rawScore: 18 }] });
 
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/class-subject-assignments/${assignment.id}/scores/submit`)
       .set("Authorization", `Bearer ${token}`)
       .send({ termId: term.id });
@@ -285,7 +297,7 @@ describe("POST .../scores/submit", () => {
     const student = await createBareStudent("ADM-001");
     await enrollStudent(student.id, klass.id, session.id);
 
-    await request(app)
+    await request(server)
       .put(`/api/class-subject-assignments/${assignment.id}/scores`)
       .set("Authorization", `Bearer ${token}`)
       .send({
@@ -296,7 +308,7 @@ describe("POST .../scores/submit", () => {
         ],
       });
 
-    const submitRes = await request(app)
+    const submitRes = await request(server)
       .post(`/api/class-subject-assignments/${assignment.id}/scores/submit`)
       .set("Authorization", `Bearer ${token}`)
       .send({ termId: term.id });
@@ -309,7 +321,7 @@ describe("POST .../scores/submit", () => {
     expect(submitRes.body[0].status).toBe("SUBMITTED");
 
     // Scores are now locked — editing through the bulk-upsert endpoint is rejected.
-    const editAttempt = await request(app)
+    const editAttempt = await request(server)
       .put(`/api/class-subject-assignments/${assignment.id}/scores`)
       .set("Authorization", `Bearer ${token}`)
       .send({ termId: term.id, entries: [{ studentId: student.id, assessmentComponentId: ca1.id, rawScore: 19 }] });
@@ -324,7 +336,7 @@ describe("POST .../scores/submit", () => {
     const student = await createBareStudent("ADM-001");
     await enrollStudent(student.id, klass.id, session.id);
 
-    await request(app)
+    await request(server)
       .put(`/api/class-subject-assignments/${assignment.id}/scores`)
       .set("Authorization", `Bearer ${token}`)
       .send({
@@ -335,7 +347,7 @@ describe("POST .../scores/submit", () => {
         ],
       });
 
-    const submitRes = await request(app)
+    const submitRes = await request(server)
       .post(`/api/class-subject-assignments/${assignment.id}/scores/submit`)
       .set("Authorization", `Bearer ${token}`)
       .send({ termId: term.id });
@@ -344,7 +356,7 @@ describe("POST .../scores/submit", () => {
 
     // Rebalance the exam's weight after the fact — the already-computed
     // SubjectResult must not move.
-    const patchRes = await request(app)
+    const patchRes = await request(server)
       .patch(`/api/assessment-components/${exam.id}`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ maxScore: 50 });

@@ -1,5 +1,6 @@
+import type { Server } from "node:http";
 import request from "supertest";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
 import { drainFireAndForget } from "../../lib/fireAndForget.js";
@@ -26,6 +27,17 @@ import { waitForAuditLog } from "../../test/waitForAuditLog.js";
 import { waitForNotification } from "../../test/waitForNotification.js";
 
 const app = createApp();
+let server: Server;
+
+beforeAll(async () => {
+  server = await new Promise<Server>((resolve) => {
+    const s = app.listen(0, "127.0.0.1", () => resolve(s));
+  });
+});
+
+afterAll(() => {
+  server.close();
+});
 
 /// createTermForSession (test/factories.ts) always sets isCurrent: true —
 /// fine for the vast majority of tests, which only ever need one term per
@@ -46,11 +58,11 @@ async function enterAndSubmit(
   termId: string,
   entries: Array<{ studentId: string; assessmentComponentId: string; rawScore: number }>,
 ) {
-  await request(app)
+  await request(server)
     .put(`/api/class-subject-assignments/${assignmentId}/scores`)
     .set("Authorization", `Bearer ${token}`)
     .send({ termId, entries });
-  return request(app)
+  return request(server)
     .post(`/api/class-subject-assignments/${assignmentId}/scores/submit`)
     .set("Authorization", `Bearer ${token}`)
     .send({ termId });
@@ -267,7 +279,7 @@ describe("full report card lifecycle", () => {
     // assigned subject has a submitted result yet, and that's fine.
 
     // --- Admin computes DRAFT results for the class/term, from Maths alone ---
-    const computeRes = await request(app)
+    const computeRes = await request(server)
       .post("/api/results/compute")
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ classId: klass.id, termId: term.id });
@@ -288,7 +300,7 @@ describe("full report card lifecycle", () => {
     expect(result1?.status).toBe("DRAFT");
 
     // --- Finalize student1's result ---
-    const finalizeRes = await request(app)
+    const finalizeRes = await request(server)
       .post(`/api/results/${(result1 as unknown as { id: string }).id}/finalize`)
       .set("Authorization", `Bearer ${adminToken}`);
     expect(finalizeRes.status).toBe(200);
@@ -298,7 +310,7 @@ describe("full report card lifecycle", () => {
     const resultId = finalizeRes.body.id as string;
 
     // --- Recomputing the class must not touch the now-finalized result ---
-    await request(app)
+    await request(server)
       .post("/api/results/compute")
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ classId: klass.id, termId: term.id });
@@ -306,14 +318,14 @@ describe("full report card lifecycle", () => {
     expect(untouchedFinalized.status).toBe("FINALIZED");
 
     // --- Cannot override a non-finalized result ---
-    const nonFinalizedOverride = await request(app)
+    const nonFinalizedOverride = await request(server)
       .post(`/api/results/${(result2 as unknown as { id: string }).id}/override`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ fieldName: "totalScore", newValue: "999", reason: "testing override on draft" });
     expect(nonFinalizedOverride.status).toBe(400);
 
     // --- Audited override on the finalized result ---
-    const overrideRes = await request(app)
+    const overrideRes = await request(server)
       .post(`/api/results/${resultId}/override`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({
@@ -337,13 +349,13 @@ describe("full report card lifecycle", () => {
 
     // --- Viewable report card (who else can/can't see it is covered by the
     // auth matrix, src/authorization/authMatrix.data.ts) ---
-    const asStudent = await request(app)
+    const asStudent = await request(server)
       .get(`/api/results/${student1.id}/${term.id}`)
       .set("Authorization", `Bearer ${student1Token}`);
     expect(asStudent.status).toBe(200);
     expect(Number(asStudent.body.totalScore)).toBe(85);
 
-    const asParent = await request(app)
+    const asParent = await request(server)
       .get(`/api/results/${student1.id}/${term.id}`)
       .set("Authorization", `Bearer ${parentToken}`);
     expect(asParent.status).toBe(200);
@@ -371,7 +383,7 @@ describe("class teacher / principal comments — normal (non-override) write pat
     const { result, formTeacherToken } = await buildDraftResultWithFormTeacher();
     expect(result.status).toBe("DRAFT");
 
-    const res = await request(app)
+    const res = await request(server)
       .patch(`/api/results/${result.id}/class-teacher-comment`)
       .set("Authorization", `Bearer ${formTeacherToken}`)
       .send({ comment: "A pleasure to teach this term." });
@@ -386,7 +398,7 @@ describe("class teacher / principal comments — normal (non-override) write pat
     const { result } = await buildDraftResultWithFormTeacher();
     const { token: adminToken } = await createAdmin("admin2@test.local");
 
-    const res = await request(app)
+    const res = await request(server)
       .patch(`/api/results/${result.id}/principal-comment`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ comment: "Keep up the good work." });
@@ -401,18 +413,18 @@ describe("class teacher / principal comments — normal (non-override) write pat
     const { result, formTeacherToken } = await buildDraftResultWithFormTeacher();
     const { token: adminToken, user: adminUser } = await createAdmin("admin3@test.local");
 
-    const finalizeRes = await request(app)
+    const finalizeRes = await request(server)
       .post(`/api/results/${result.id}/finalize`)
       .set("Authorization", `Bearer ${adminToken}`);
     expect(finalizeRes.status).toBe(200);
 
-    const classTeacherAttempt = await request(app)
+    const classTeacherAttempt = await request(server)
       .patch(`/api/results/${result.id}/class-teacher-comment`)
       .set("Authorization", `Bearer ${formTeacherToken}`)
       .send({ comment: "Too late now." });
     expect(classTeacherAttempt.status).toBe(400);
 
-    const principalAttempt = await request(app)
+    const principalAttempt = await request(server)
       .patch(`/api/results/${result.id}/principal-comment`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ comment: "Too late now." });
@@ -420,7 +432,7 @@ describe("class teacher / principal comments — normal (non-override) write pat
 
     // overrideResult's own FINALIZED-only behavior is unchanged: it's still
     // the one way to change either comment field once finalized.
-    const overrideRes = await request(app)
+    const overrideRes = await request(server)
       .post(`/api/results/${result.id}/override`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({
@@ -538,14 +550,14 @@ describe("non-finalized results are invisible to PARENT/STUDENT", () => {
   it("returns 404 for a DRAFT result and 200 once FINALIZED, for a linked parent", async () => {
     const { term, student, parentToken, result } = await buildDraftResultForLinkedParent();
 
-    const whileDraft = await request(app)
+    const whileDraft = await request(server)
       .get(`/api/results/${student.id}/${term.id}`)
       .set("Authorization", `Bearer ${parentToken}`);
     expect(whileDraft.status).toBe(404);
 
     await prisma.result.update({ where: { id: result.id }, data: { status: "FINALIZED" } });
 
-    const onceFinalized = await request(app)
+    const onceFinalized = await request(server)
       .get(`/api/results/${student.id}/${term.id}`)
       .set("Authorization", `Bearer ${parentToken}`);
     expect(onceFinalized.status).toBe(200);
@@ -555,7 +567,7 @@ describe("non-finalized results are invisible to PARENT/STUDENT", () => {
   it("same pair for GET /api/students/:id/results — the DRAFT result is absent from the list, present once FINALIZED", async () => {
     const { student, parentToken, result } = await buildDraftResultForLinkedParent();
 
-    const whileDraft = await request(app)
+    const whileDraft = await request(server)
       .get(`/api/students/${student.id}/results`)
       .set("Authorization", `Bearer ${parentToken}`);
     expect(whileDraft.status).toBe(200);
@@ -563,7 +575,7 @@ describe("non-finalized results are invisible to PARENT/STUDENT", () => {
 
     await prisma.result.update({ where: { id: result.id }, data: { status: "FINALIZED" } });
 
-    const onceFinalized = await request(app)
+    const onceFinalized = await request(server)
       .get(`/api/students/${student.id}/results`)
       .set("Authorization", `Bearer ${parentToken}`);
     expect(onceFinalized.status).toBe(200);
@@ -582,7 +594,7 @@ describe("non-finalized results are invisible to PARENT/STUDENT", () => {
       data: { studentId: student.id, enrollmentId: enrollment.id, termId: term.id, status: "DRAFT" },
     });
 
-    const res = await request(app)
+    const res = await request(server)
       .get(`/api/results/${student.id}/${term.id}`)
       .set("Authorization", `Bearer ${studentToken}`);
     expect(res.status).toBe(404);
@@ -603,13 +615,13 @@ describe("non-finalized results are invisible to PARENT/STUDENT", () => {
     const { token: adminToken } = await createAdmin("admin@test.local");
 
     for (const token of [adminToken, teacherToken]) {
-      const perTerm = await request(app)
+      const perTerm = await request(server)
         .get(`/api/results/${student.id}/${term.id}`)
         .set("Authorization", `Bearer ${token}`);
       expect(perTerm.status).toBe(200);
       expect(perTerm.body.status).toBe("DRAFT");
 
-      const list = await request(app)
+      const list = await request(server)
         .get(`/api/students/${student.id}/results`)
         .set("Authorization", `Bearer ${token}`);
       expect(list.status).toBe(200);
@@ -664,13 +676,13 @@ describe("non-finalized results are invisible to PARENT/STUDENT", () => {
     // collapsed by the PARENT branch also being checked on this principal
     // (it's just irrelevant to this student, since staffParent isn't
     // classStudent's parent at all).
-    const classDraftPerTerm = await request(app)
+    const classDraftPerTerm = await request(server)
       .get(`/api/results/${classStudent.id}/${term.id}`)
       .set("Authorization", `Bearer ${staffParent.token}`);
     expect(classDraftPerTerm.status).toBe(200);
     expect(classDraftPerTerm.body.status).toBe("DRAFT");
 
-    const classDraftList = await request(app)
+    const classDraftList = await request(server)
       .get(`/api/students/${classStudent.id}/results`)
       .set("Authorization", `Bearer ${staffParent.token}`);
     expect(classDraftList.status).toBe(200);
@@ -683,12 +695,12 @@ describe("non-finalized results are invisible to PARENT/STUDENT", () => {
     // must be checked here too, while still DRAFT, not just after
     // finalizing below — an empty array is the list's equivalent of the
     // per-term route's 404.
-    const childDraftPerTerm = await request(app)
+    const childDraftPerTerm = await request(server)
       .get(`/api/results/${childStudent.id}/${term.id}`)
       .set("Authorization", `Bearer ${staffParent.token}`);
     expect(childDraftPerTerm.status).toBe(404);
 
-    const childDraftList = await request(app)
+    const childDraftList = await request(server)
       .get(`/api/students/${childStudent.id}/results`)
       .set("Authorization", `Bearer ${staffParent.token}`);
     expect(childDraftList.status).toBe(200);
@@ -696,13 +708,13 @@ describe("non-finalized results are invisible to PARENT/STUDENT", () => {
 
     await prisma.result.update({ where: { id: childResult.id }, data: { status: "FINALIZED" } });
 
-    const childFinalizedPerTerm = await request(app)
+    const childFinalizedPerTerm = await request(server)
       .get(`/api/results/${childStudent.id}/${term.id}`)
       .set("Authorization", `Bearer ${staffParent.token}`);
     expect(childFinalizedPerTerm.status).toBe(200);
     expect(childFinalizedPerTerm.body.status).toBe("FINALIZED");
 
-    const childFinalizedList = await request(app)
+    const childFinalizedList = await request(server)
       .get(`/api/students/${childStudent.id}/results`)
       .set("Authorization", `Bearer ${staffParent.token}`);
     expect(childFinalizedList.body).toHaveLength(1);
@@ -712,12 +724,12 @@ describe("non-finalized results are invisible to PARENT/STUDENT", () => {
     // --- 3. disjointStudent: neither their child nor in any class they
     // teach — an ownership denial (403), not a visibility filter, on both
     // routes. Unaffected by status (still DRAFT here).
-    const disjointPerTerm = await request(app)
+    const disjointPerTerm = await request(server)
       .get(`/api/results/${disjointStudent.id}/${term.id}`)
       .set("Authorization", `Bearer ${staffParent.token}`);
     expect(disjointPerTerm.status).toBe(403);
 
-    const disjointList = await request(app)
+    const disjointList = await request(server)
       .get(`/api/students/${disjointStudent.id}/results`)
       .set("Authorization", `Bearer ${staffParent.token}`);
     expect(disjointList.status).toBe(403);
@@ -784,7 +796,7 @@ describe("GET /api/students/:id/results", () => {
       data: { studentId: student.id, enrollmentId: enrollEarlier.id, termId: earlierTerm2.id, status: "FINALIZED" },
     });
 
-    const res = await request(app)
+    const res = await request(server)
       .get(`/api/students/${student.id}/results`)
       .set("Authorization", `Bearer ${adminToken}`);
 
@@ -827,7 +839,7 @@ describe("GET /api/students/:id/results", () => {
       data: { studentId: student.id, enrollmentId: enrollB.id, termId: termB.id, status: "FINALIZED" },
     });
 
-    const res = await request(app)
+    const res = await request(server)
       .get(`/api/students/${student.id}/results?academicSessionId=${sessionA.id}`)
       .set("Authorization", `Bearer ${adminToken}`);
 
@@ -861,14 +873,14 @@ describe("GET /api/classes/:id/results/:termId", () => {
 
     await computeResultsForClass({ classId: klass.id, termId: term.id });
 
-    const asFormTeacher = await request(app)
+    const asFormTeacher = await request(server)
       .get(`/api/classes/${klass.id}/results/${term.id}`)
       .set("Authorization", `Bearer ${formTeacherToken}`);
     expect(asFormTeacher.status).toBe(200);
     expect(asFormTeacher.body).toHaveLength(1);
     expect(asFormTeacher.body[0].studentId).toBe(student.id);
 
-    const asSubjectTeacher = await request(app)
+    const asSubjectTeacher = await request(server)
       .get(`/api/classes/${klass.id}/results/${term.id}`)
       .set("Authorization", `Bearer ${subjectTeacherToken}`);
     expect(asSubjectTeacher.status).toBe(403);
@@ -933,14 +945,14 @@ describe("Session results (Feature A)", () => {
     await enterAndSubmit(world.englishToken, world.englishAssignment.id, term.id, [
       { studentId: world.student.id, assessmentComponentId: world.component.id, rawScore: englishScore },
     ]);
-    const computeRes = await request(app)
+    const computeRes = await request(server)
       .post("/api/results/compute")
       .set("Authorization", `Bearer ${world.adminToken}`)
       .send({ classId: world.klass.id, termId: term.id });
     const result = (computeRes.body as Array<{ id: string; studentId: string }>).find(
       (r) => r.studentId === world.student.id,
     );
-    await request(app)
+    await request(server)
       .post(`/api/results/${result?.id}/finalize`)
       .set("Authorization", `Bearer ${world.adminToken}`);
   }
@@ -955,7 +967,7 @@ describe("Session results (Feature A)", () => {
     await enterAndSubmit(world.mathsToken, world.mathsAssignment.id, term.id, [
       { studentId: world.student.id, assessmentComponentId: world.component.id, rawScore: mathsScore },
     ]);
-    await request(app)
+    await request(server)
       .post("/api/results/compute")
       .set("Authorization", `Bearer ${world.adminToken}`)
       .send({ classId: world.klass.id, termId: term.id });
@@ -967,7 +979,7 @@ describe("Session results (Feature A)", () => {
     await finalizeTermWithScores(world, world.term2, 80, 70);
     await finalizeTermWithScores(world, world.term3, 100, 90);
 
-    const computeRes = await request(app)
+    const computeRes = await request(server)
       .post("/api/session-results/compute")
       .set("Authorization", `Bearer ${world.adminToken}`)
       .send({ classId: world.klass.id, academicSessionId: world.session.id });
@@ -998,7 +1010,7 @@ describe("Session results (Feature A)", () => {
     // driven by Result.status, not by absence of data.
     await computeWithoutFinalizing(world, world.term3, 0);
 
-    const computeRes = await request(app)
+    const computeRes = await request(server)
       .post("/api/session-results/compute")
       .set("Authorization", `Bearer ${world.adminToken}`)
       .send({ classId: world.klass.id, academicSessionId: world.session.id });
@@ -1017,7 +1029,7 @@ describe("Session results (Feature A)", () => {
 
   it("uses the latest FINALIZED term's value, not an average, when sessionAverageMethod is FINAL_TERM_CARRIES", async () => {
     const world = await setupThreeTermSession();
-    await request(app)
+    await request(server)
       .post(`/api/academic-sessions/${world.session.id}/grading-scale`)
       .set("Authorization", `Bearer ${world.adminToken}`)
       .send({ sessionAverageMethod: "FINAL_TERM_CARRIES" });
@@ -1026,7 +1038,7 @@ describe("Session results (Feature A)", () => {
     await finalizeTermWithScores(world, world.term2, 80, 65);
     await finalizeTermWithScores(world, world.term3, 100, 95);
 
-    const computeRes = await request(app)
+    const computeRes = await request(server)
       .post("/api/session-results/compute")
       .set("Authorization", `Bearer ${world.adminToken}`)
       .send({ classId: world.klass.id, academicSessionId: world.session.id });
@@ -1079,7 +1091,7 @@ describe("Report card snapshots and class-relative position (Feature B)", () => 
       data: { studentId: student.id, enrollmentId: enrollment.id, termId: term.id, status: "DRAFT", averageScore: 80 },
     });
 
-    const finalizeRes = await request(app)
+    const finalizeRes = await request(server)
       .post(`/api/results/${result.id}/finalize`)
       .set("Authorization", `Bearer ${adminToken}`);
     expect(finalizeRes.status).toBe(200);
@@ -1128,7 +1140,7 @@ describe("Report card snapshots and class-relative position (Feature B)", () => 
       data: { studentId: student.id, enrollmentId: enrollment.id, termId: term.id, status: "DRAFT", averageScore: 80 },
     });
 
-    const finalizeRes = await request(app)
+    const finalizeRes = await request(server)
       .post(`/api/results/${result.id}/finalize`)
       .set("Authorization", `Bearer ${adminToken}`);
 
@@ -1162,14 +1174,14 @@ describe("Report card snapshots and class-relative position (Feature B)", () => 
     // Finalize three of the four first — the class isn't complete yet, so
     // no position-fill should fire.
     for (const { result } of [top, tiedA, tiedB]) {
-      await request(app).post(`/api/results/${result.id}/finalize`).set("Authorization", `Bearer ${adminToken}`);
+      await request(server).post(`/api/results/${result.id}/finalize`).set("Authorization", `Bearer ${adminToken}`);
     }
     const stillIncomplete = await prisma.result.findUniqueOrThrow({ where: { id: top.result.id } });
     expect(stillIncomplete.position).toBeNull();
 
     // The last student finalizes — this is the one that completes the class
     // and triggers the automatic class-wide ranking pass.
-    const lastFinalizeRes = await request(app)
+    const lastFinalizeRes = await request(server)
       .post(`/api/results/${last.result.id}/finalize`)
       .set("Authorization", `Bearer ${adminToken}`);
     expect(lastFinalizeRes.status).toBe(200);
@@ -1219,13 +1231,13 @@ describe("Report card snapshots and class-relative position (Feature B)", () => 
       },
     });
 
-    await request(app)
+    await request(server)
       .post(`/api/results/${finalizedResult.id}/finalize`)
       .set("Authorization", `Bearer ${adminToken}`);
     const stillNull = await prisma.result.findUniqueOrThrow({ where: { id: finalizedResult.id } });
     expect(stillNull.position).toBeNull();
 
-    const rankRes = await request(app)
+    const rankRes = await request(server)
       .post(`/api/classes/${klass.id}/results/${term.id}/rank`)
       .set("Authorization", `Bearer ${adminToken}`);
     expect(rankRes.status).toBe(200);
@@ -1285,7 +1297,7 @@ describe("Report card snapshots and class-relative position (Feature B)", () => 
       data: { studentId: untouched.id, enrollmentId: untouchedEnrollment.id, termId: term.id, status: "DRAFT" },
     });
 
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/classes/${klass.id}/results/${term.id}/rank`)
       .set("Authorization", `Bearer ${adminToken}`);
     expect(res.status).toBe(200);
@@ -1314,7 +1326,7 @@ describe("Report card snapshots and class-relative position (Feature B)", () => 
     // from the FIRST call (1 and 2), not null again — proving this is a
     // genuine read of whatever the row looked like just before THIS
     // mutation, not a static "always null" placeholder.
-    const secondRes = await request(app)
+    const secondRes = await request(server)
       .post(`/api/classes/${klass.id}/results/${term.id}/rank`)
       .set("Authorization", `Bearer ${adminToken}`);
     expect(secondRes.status).toBe(200);
@@ -1381,11 +1393,11 @@ describe("Fee withholding (Feature D)", () => {
   }
 
   async function confirmPayment(obligationId: string, amountKobo: number, adminToken: string, parentUserId: string) {
-    const payment = await request(app)
+    const payment = await request(server)
       .post(`/api/fee-obligations/${obligationId}/payments`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ amountKobo, paymentDate: "2026-09-10" });
-    await request(app).post(`/api/payments/${payment.body.id}/confirm`).set("Authorization", `Bearer ${adminToken}`);
+    await request(server).post(`/api/payments/${payment.body.id}/confirm`).set("Authorization", `Bearer ${adminToken}`);
     // Drain the fire-and-forget payment-confirmed notification this
     // triggers before returning — an unawaited one can otherwise land
     // mid-way through a later test's resetDb() and trip its FK.
@@ -1395,7 +1407,7 @@ describe("Fee withholding (Feature D)", () => {
   it("withholds a FINALIZED result from PARENT/STUDENT with a 402 while any balance is outstanding — even a partial payment", async () => {
     const world = await setupWithholdingWorld();
 
-    const asParentUnpaid = await request(app)
+    const asParentUnpaid = await request(server)
       .get(`/api/results/${world.result.studentId}/${world.term.id}`)
       .set("Authorization", `Bearer ${world.parentToken}`);
     expect(asParentUnpaid.status).toBe(402);
@@ -1403,19 +1415,19 @@ describe("Fee withholding (Feature D)", () => {
     expect(asParentUnpaid.body.error.details.outstandingKobo).toBe(100_000);
 
     await confirmPayment(world.obligation.id, 40_000, world.adminToken, world.parentUserId);
-    const asParentPartial = await request(app)
+    const asParentPartial = await request(server)
       .get(`/api/results/${world.result.studentId}/${world.term.id}`)
       .set("Authorization", `Bearer ${world.parentToken}`);
     expect(asParentPartial.status).toBe(402);
     expect(asParentPartial.body.error.details.outstandingKobo).toBe(60_000);
 
-    const asStudentPartial = await request(app)
+    const asStudentPartial = await request(server)
       .get(`/api/results/${world.result.studentId}/${world.term.id}`)
       .set("Authorization", `Bearer ${world.studentToken}`);
     expect(asStudentPartial.status).toBe(402);
 
     await confirmPayment(world.obligation.id, 60_000, world.adminToken, world.parentUserId);
-    const asParentPaid = await request(app)
+    const asParentPaid = await request(server)
       .get(`/api/results/${world.result.studentId}/${world.term.id}`)
       .set("Authorization", `Bearer ${world.parentToken}`);
     expect(asParentPaid.status).toBe(200);
@@ -1434,7 +1446,7 @@ describe("Fee withholding (Feature D)", () => {
   it("ADMIN always sees the result regardless of fee status — withholding is parent-facing, not an authorization rule", async () => {
     const world = await setupWithholdingWorld();
 
-    const asAdmin = await request(app)
+    const asAdmin = await request(server)
       .get(`/api/results/${world.result.studentId}/${world.term.id}`)
       .set("Authorization", `Bearer ${world.adminToken}`);
     expect(asAdmin.status).toBe(200);
@@ -1443,14 +1455,14 @@ describe("Fee withholding (Feature D)", () => {
   it("ADMIN release makes it visible to the parent again, with the balance still outstanding — audited with a required reason, and idempotent on a second release", async () => {
     const world = await setupWithholdingWorld();
 
-    const releaseRes = await request(app)
+    const releaseRes = await request(server)
       .post(`/api/results/${world.result.id}/release-withholding`)
       .set("Authorization", `Bearer ${world.adminToken}`)
       .send({ reason: "Bursar approved a payment plan for this family" });
     expect(releaseRes.status).toBe(200);
     expect(releaseRes.body.feeWithholdingReleased).toBe(true);
 
-    const asParent = await request(app)
+    const asParent = await request(server)
       .get(`/api/results/${world.result.studentId}/${world.term.id}`)
       .set("Authorization", `Bearer ${world.parentToken}`);
     expect(asParent.status).toBe(200);
@@ -1465,7 +1477,7 @@ describe("Fee withholding (Feature D)", () => {
 
     // Releasing an already-released result is idempotent — 200, not 409,
     // and no second audit row.
-    const secondReleaseRes = await request(app)
+    const secondReleaseRes = await request(server)
       .post(`/api/results/${world.result.id}/release-withholding`)
       .set("Authorization", `Bearer ${world.adminToken}`)
       .send({ reason: "Confirming the release again" });
@@ -1477,12 +1489,12 @@ describe("Fee withholding (Feature D)", () => {
   it("holds on all three withholding-checked read paths: the per-term read, the cross-term list, and the session-result read", async () => {
     const world = await setupWithholdingWorld();
 
-    const perTerm = await request(app)
+    const perTerm = await request(server)
       .get(`/api/results/${world.result.studentId}/${world.term.id}`)
       .set("Authorization", `Bearer ${world.parentToken}`);
     expect(perTerm.status).toBe(402);
 
-    const crossTermList = await request(app)
+    const crossTermList = await request(server)
       .get(`/api/students/${world.result.studentId}/results`)
       .set("Authorization", `Bearer ${world.parentToken}`);
     expect(crossTermList.status).toBe(200);
@@ -1491,12 +1503,12 @@ describe("Fee withholding (Feature D)", () => {
     expect(crossTermList.body[0].outstandingKobo).toBe(100_000);
     expect(crossTermList.body[0].totalScore).toBeUndefined(); // reduced shape, not the full Result
 
-    await request(app)
+    await request(server)
       .post("/api/session-results/compute")
       .set("Authorization", `Bearer ${world.adminToken}`)
       .send({ classId: world.klass.id, academicSessionId: world.session.id });
 
-    const sessionResultRead = await request(app)
+    const sessionResultRead = await request(server)
       .get(`/api/session-results/${world.result.studentId}/${world.session.id}`)
       .set("Authorization", `Bearer ${world.parentToken}`);
     expect(sessionResultRead.status).toBe(402);
@@ -1525,7 +1537,7 @@ describe("a graduated student's historical results", () => {
       },
     });
 
-    const graduateRes = await request(app)
+    const graduateRes = await request(server)
       .patch("/api/students/status")
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ ids: [student.id], status: "GRADUATED" });
@@ -1533,13 +1545,13 @@ describe("a graduated student's historical results", () => {
     const closedEnrollment = await prisma.enrollment.findUniqueOrThrow({ where: { id: enrollment.id } });
     expect(closedEnrollment.status).toBe("GRADUATED");
 
-    const perTerm = await request(app)
+    const perTerm = await request(server)
       .get(`/api/results/${student.id}/${term.id}`)
       .set("Authorization", `Bearer ${adminToken}`);
     expect(perTerm.status).toBe(200);
     expect(perTerm.body.averageScore).toBeTruthy();
 
-    const list = await request(app)
+    const list = await request(server)
       .get(`/api/students/${student.id}/results`)
       .set("Authorization", `Bearer ${adminToken}`);
     expect(list.status).toBe(200);

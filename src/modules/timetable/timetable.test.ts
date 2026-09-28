@@ -1,5 +1,6 @@
+import type { Server } from "node:http";
 import request from "supertest";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
 import {
@@ -13,6 +14,17 @@ import {
 import { resetDb } from "../../test/resetDb.js";
 
 const app = createApp();
+let server: Server;
+
+beforeAll(async () => {
+  server = await new Promise<Server>((resolve) => {
+    const s = app.listen(0, "127.0.0.1", () => resolve(s));
+  });
+});
+
+afterAll(() => {
+  server.close();
+});
 
 beforeEach(async () => {
   await resetDb();
@@ -26,13 +38,13 @@ describe("time slots", () => {
   it("creates a time slot and rejects endTime before startTime", async () => {
     const { token } = await createAdmin("admin@test.local");
 
-    const ok = await request(app)
+    const ok = await request(server)
       .post("/api/time-slots")
       .set("Authorization", `Bearer ${token}`)
       .send({ name: "Period 1", startTime: "08:00", endTime: "08:40", order: 1 });
     expect(ok.status).toBe(201);
 
-    const bad = await request(app)
+    const bad = await request(server)
       .post("/api/time-slots")
       .set("Authorization", `Bearer ${token}`)
       .send({ name: "Period 2", startTime: "09:40", endTime: "09:00", order: 2 });
@@ -52,7 +64,7 @@ describe("timetable entries and double-booking", () => {
     const assignmentA = await createAssignment(klassA.id, maths.id, teacher.id, session.id);
     const assignmentB = await createAssignment(klassB.id, english.id, teacher.id, session.id);
 
-    const slotRes = await request(app)
+    const slotRes = await request(server)
       .post("/api/time-slots")
       .set("Authorization", `Bearer ${token}`)
       .send({ name: "Period 1", startTime: "08:00", endTime: "08:40", order: 1 });
@@ -63,7 +75,7 @@ describe("timetable entries and double-booking", () => {
   it("creates a timetable entry with class/teacher denormalized from the assignment", async () => {
     const { token, klassA, assignmentA, timeSlot } = await setup();
 
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/timetable-entries")
       .set("Authorization", `Bearer ${token}`)
       .send({ classSubjectAssignmentId: assignmentA.id, timeSlotId: timeSlot.id, dayOfWeek: "MONDAY" });
@@ -79,12 +91,12 @@ describe("timetable entries and double-booking", () => {
     const session = await prisma.academicSession.findFirstOrThrow();
     const conflictingAssignment = await createAssignment(klassA.id, otherSubject.id, otherTeacher.id, session.id);
 
-    await request(app)
+    await request(server)
       .post("/api/timetable-entries")
       .set("Authorization", `Bearer ${token}`)
       .send({ classSubjectAssignmentId: assignmentA.id, timeSlotId: timeSlot.id, dayOfWeek: "MONDAY" });
 
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/timetable-entries")
       .set("Authorization", `Bearer ${token}`)
       .send({ classSubjectAssignmentId: conflictingAssignment.id, timeSlotId: timeSlot.id, dayOfWeek: "MONDAY" });
@@ -95,13 +107,13 @@ describe("timetable entries and double-booking", () => {
   it("rejects double-booking the same teacher across two different classes in the same day/slot", async () => {
     const { token, assignmentA, assignmentB, timeSlot } = await setup();
 
-    await request(app)
+    await request(server)
       .post("/api/timetable-entries")
       .set("Authorization", `Bearer ${token}`)
       .send({ classSubjectAssignmentId: assignmentA.id, timeSlotId: timeSlot.id, dayOfWeek: "MONDAY" });
 
     // Same teacher (assignmentB uses the same teacher as assignmentA), different class.
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/timetable-entries")
       .set("Authorization", `Bearer ${token}`)
       .send({ classSubjectAssignmentId: assignmentB.id, timeSlotId: timeSlot.id, dayOfWeek: "MONDAY" });
@@ -111,17 +123,17 @@ describe("timetable entries and double-booking", () => {
 
   it("allows the same teacher in two classes on the same day at DIFFERENT time slots", async () => {
     const { token, assignmentA, assignmentB, timeSlot } = await setup();
-    const secondSlotRes = await request(app)
+    const secondSlotRes = await request(server)
       .post("/api/time-slots")
       .set("Authorization", `Bearer ${token}`)
       .send({ name: "Period 2", startTime: "08:40", endTime: "09:20", order: 2 });
 
-    await request(app)
+    await request(server)
       .post("/api/timetable-entries")
       .set("Authorization", `Bearer ${token}`)
       .send({ classSubjectAssignmentId: assignmentA.id, timeSlotId: timeSlot.id, dayOfWeek: "MONDAY" });
 
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/timetable-entries")
       .set("Authorization", `Bearer ${token}`)
       .send({
@@ -135,12 +147,12 @@ describe("timetable entries and double-booking", () => {
 
   it("deletes a timetable entry", async () => {
     const { token, assignmentA, timeSlot } = await setup();
-    const createRes = await request(app)
+    const createRes = await request(server)
       .post("/api/timetable-entries")
       .set("Authorization", `Bearer ${token}`)
       .send({ classSubjectAssignmentId: assignmentA.id, timeSlotId: timeSlot.id, dayOfWeek: "MONDAY" });
 
-    const deleteRes = await request(app)
+    const deleteRes = await request(server)
       .delete(`/api/timetable-entries/${createRes.body.id}`)
       .set("Authorization", `Bearer ${token}`);
     expect(deleteRes.status).toBe(204);

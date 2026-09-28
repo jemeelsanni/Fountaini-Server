@@ -1,5 +1,6 @@
+import type { Server } from "node:http";
 import request from "supertest";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
 import {
@@ -18,6 +19,17 @@ import { waitForAuditLog } from "../../test/waitForAuditLog.js";
 import { waitForNotification } from "../../test/waitForNotification.js";
 
 const app = createApp();
+let server: Server;
+
+beforeAll(async () => {
+  server = await new Promise<Server>((resolve) => {
+    const s = app.listen(0, "127.0.0.1", () => resolve(s));
+  });
+});
+
+afterAll(() => {
+  server.close();
+});
 
 beforeEach(async () => {
   await resetDb();
@@ -32,14 +44,14 @@ describe("POST /api/students", () => {
     const { token } = await createAdmin("admin@test.local");
     await createCurrentAcademicSession("2026/2027");
 
-    const first = await request(app)
+    const first = await request(server)
       .post("/api/students")
       .set("Authorization", `Bearer ${token}`)
       .send({ firstName: "Ada", lastName: "Lovelace" });
     expect(first.status).toBe(201);
     expect(first.body.admissionNumber).toBe("FIA/2026/001");
 
-    const second = await request(app)
+    const second = await request(server)
       .post("/api/students")
       .set("Authorization", `Bearer ${token}`)
       .send({ firstName: "Grace", lastName: "Hopper" });
@@ -50,7 +62,7 @@ describe("POST /api/students", () => {
   it("fails with a specific error, not a calendar-year fallback, when no academic session is current", async () => {
     const { token } = await createAdmin("admin@test.local");
 
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/students")
       .set("Authorization", `Bearer ${token}`)
       .send({ firstName: "Ada", lastName: "Lovelace" });
@@ -65,7 +77,7 @@ describe("POST /api/students", () => {
 
     const results = await Promise.all(
       Array.from({ length: 4 }, (_, i) =>
-        request(app)
+        request(server)
           .post("/api/students")
           .set("Authorization", `Bearer ${token}`)
           .send({ firstName: "Student", lastName: `${i}` }),
@@ -83,7 +95,7 @@ describe("POST /api/students", () => {
     const { token } = await createAdmin("admin@test.local");
     await createCurrentAcademicSession("2026/2027");
 
-    const firstSessionStudent = await request(app)
+    const firstSessionStudent = await request(server)
       .post("/api/students")
       .set("Authorization", `Bearer ${token}`)
       .send({ firstName: "Ada", lastName: "Lovelace" });
@@ -102,7 +114,7 @@ describe("POST /api/students", () => {
       },
     });
 
-    const newSessionStudent = await request(app)
+    const newSessionStudent = await request(server)
       .post("/api/students")
       .set("Authorization", `Bearer ${token}`)
       .send({ firstName: "Grace", lastName: "Hopper" });
@@ -120,7 +132,7 @@ describe("POST /api/students", () => {
       const { token } = await createAdmin("admin@test.local");
       await createCurrentAcademicSession("2026/2027");
 
-      const res = await request(app)
+      const res = await request(server)
         .post("/api/students")
         .set("Authorization", `Bearer ${token}`)
         .send({ admissionNumber: "FIA/2019/050", firstName: "Legacy", lastName: "Import" });
@@ -129,7 +141,7 @@ describe("POST /api/students", () => {
 
       // The counter is bumped so a later generated number for that same
       // prefix-year never collides with the imported one.
-      const nextGenerated = await request(app)
+      const nextGenerated = await request(server)
         .post("/api/students")
         .set("Authorization", `Bearer ${token}`)
         .send({ admissionNumber: "FIA/2019/049", firstName: "Also", lastName: "Legacy" });
@@ -144,7 +156,7 @@ describe("POST /api/students", () => {
       await createCurrentAcademicSession("2026/2027");
       await createBareStudent("FIA/2019/050");
 
-      const res = await request(app)
+      const res = await request(server)
         .post("/api/students")
         .set("Authorization", `Bearer ${token}`)
         .send({ admissionNumber: "FIA/2019/050", firstName: "Ada", lastName: "Lovelace" });
@@ -156,7 +168,7 @@ describe("POST /api/students", () => {
       const { token } = await createAdmin("admin@test.local");
       await createCurrentAcademicSession("2026/2027");
 
-      const res = await request(app)
+      const res = await request(server)
         .post("/api/students")
         .set("Authorization", `Bearer ${token}`)
         .send({ admissionNumber: "ADM-001", firstName: "Ada", lastName: "Lovelace" });
@@ -167,7 +179,7 @@ describe("POST /api/students", () => {
     it("registering an override never requires a current academic session — it doesn't need today's year", async () => {
       const { token } = await createAdmin("admin@test.local");
 
-      const res = await request(app)
+      const res = await request(server)
         .post("/api/students")
         .set("Authorization", `Bearer ${token}`)
         .send({ admissionNumber: "FIA/2019/050", firstName: "Legacy", lastName: "Import" });
@@ -183,7 +195,7 @@ describe("POST /api/students", () => {
 describe("GET /api/students/:id", () => {
   it("returns 404 for a nonexistent student even for an admin", async () => {
     const { token } = await createAdmin("admin@test.local");
-    const res = await request(app)
+    const res = await request(server)
       .get("/api/students/does-not-exist")
       .set("Authorization", `Bearer ${token}`);
     expect(res.status).toBe(404);
@@ -197,13 +209,13 @@ describe("POST /api/students/:id/enrollments", () => {
     const session = await createCurrentAcademicSession("2026/2027");
     const klass = await createClass("JSS1", "A");
 
-    const first = await request(app)
+    const first = await request(server)
       .post(`/api/students/${student.id}/enrollments`)
       .set("Authorization", `Bearer ${token}`)
       .send({ classId: klass.id, academicSessionId: session.id });
     expect(first.status).toBe(201);
 
-    const second = await request(app)
+    const second = await request(server)
       .post(`/api/students/${student.id}/enrollments`)
       .set("Authorization", `Bearer ${token}`)
       .send({ classId: klass.id, academicSessionId: session.id });
@@ -228,19 +240,19 @@ describe("GET /api/students/:id/parents", () => {
     });
     const { token: unlinkedParentToken } = await createParent("unlinked-parent@test.local");
 
-    const asAdmin = await request(app)
+    const asAdmin = await request(server)
       .get(`/api/students/${student.id}/parents`)
       .set("Authorization", `Bearer ${adminToken}`);
     expect(asAdmin.status).toBe(200);
     expect(asAdmin.body).toHaveLength(1);
     expect(asAdmin.body[0].parentId).toBe(parent.id);
 
-    const asTeacher = await request(app)
+    const asTeacher = await request(server)
       .get(`/api/students/${student.id}/parents`)
       .set("Authorization", `Bearer ${teacherToken}`);
     expect(asTeacher.status).toBe(200);
 
-    const asUnlinkedParent = await request(app)
+    const asUnlinkedParent = await request(server)
       .get(`/api/students/${student.id}/parents`)
       .set("Authorization", `Bearer ${unlinkedParentToken}`);
     expect(asUnlinkedParent.status).toBe(403);
@@ -268,7 +280,7 @@ describe("POST /api/students/:id/reissue-credentials", () => {
     const { token: adminToken } = await createAdmin("admin@test.local");
     const student = await createBareStudent("FIA/2026/001");
     const { parent } = await createParent("parent@test.local");
-    const linkRes = await request(app)
+    const linkRes = await request(server)
       .post(`/api/parents/${parent.id}/children`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ studentId: student.id, relationship: "MOTHER", isPrimaryContact: true });
@@ -284,7 +296,7 @@ describe("POST /api/students/:id/reissue-credentials", () => {
     const { token: adminToken } = await createAdmin("admin@test.local");
     const student = await createBareStudent("FIA/2026/002");
 
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/students/${student.id}/reissue-credentials`)
       .set("Authorization", `Bearer ${adminToken}`);
 
@@ -296,13 +308,13 @@ describe("POST /api/students/:id/reissue-credentials", () => {
     const userBefore = await prisma.user.findUniqueOrThrow({ where: { id: student.userId! } });
 
     // A real session on the original password, to prove reissue revokes it.
-    const loginRes = await request(app)
+    const loginRes = await request(server)
       .post("/api/auth/login")
       .send({ identifier: userBefore.loginId, password: temporaryPassword });
     expect(loginRes.status).toBe(200);
     const oldRefreshToken = loginRes.body.refreshToken as string;
 
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/students/${student.id}/reissue-credentials`)
       .set("Authorization", `Bearer ${adminToken}`);
     expect(res.status).toBe(200);
@@ -312,7 +324,7 @@ describe("POST /api/students/:id/reissue-credentials", () => {
     expect(userAfter.passwordHash).not.toBe(userBefore.passwordHash);
     expect(userAfter.mustChangePassword).toBe(true);
 
-    const refreshAttempt = await request(app)
+    const refreshAttempt = await request(server)
       .post("/api/auth/refresh")
       .send({ refreshToken: oldRefreshToken });
     expect(refreshAttempt.status).toBe(401);
@@ -320,12 +332,12 @@ describe("POST /api/students/:id/reissue-credentials", () => {
 
   it("returns the generated password once when every linked parent has been unlinked", async () => {
     const { adminToken, student, parent } = await studentWithLoginAndPrimaryParent();
-    const unlinkRes = await request(app)
+    const unlinkRes = await request(server)
       .delete(`/api/parents/${parent.id}/children/${student.id}`)
       .set("Authorization", `Bearer ${adminToken}`);
     expect(unlinkRes.status).toBe(204);
 
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/students/${student.id}/reissue-credentials`)
       .set("Authorization", `Bearer ${adminToken}`);
 
@@ -336,12 +348,12 @@ describe("POST /api/students/:id/reissue-credentials", () => {
 
   it("never persists the reissued password into the audit log, even on the no-parent-linked branch that returns it", async () => {
     const { adminToken, student, parent } = await studentWithLoginAndPrimaryParent();
-    const unlinkRes = await request(app)
+    const unlinkRes = await request(server)
       .delete(`/api/parents/${parent.id}/children/${student.id}`)
       .set("Authorization", `Bearer ${adminToken}`);
     expect(unlinkRes.status).toBe(204);
 
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/students/${student.id}/reissue-credentials`)
       .set("Authorization", `Bearer ${adminToken}`);
     expect(res.status).toBe(200);
@@ -364,7 +376,7 @@ describe("PATCH /api/students/status", () => {
     const validA = await createBareStudent("ADM-BULK-001");
     const validB = await createBareStudent("ADM-BULK-002");
 
-    const res = await request(app)
+    const res = await request(server)
       .patch("/api/students/status")
       .set("Authorization", `Bearer ${token}`)
       .send({ ids: [validA.id, "does-not-exist", validB.id], status: "INACTIVE" });
@@ -388,7 +400,7 @@ describe("PATCH /api/students/status", () => {
     const { token } = await createAdmin("admin@test.local");
     const student = await createBareStudent("ADM-BULK-040");
 
-    const res = await request(app)
+    const res = await request(server)
       .patch("/api/students/status")
       .set("Authorization", `Bearer ${token}`)
       .send({ ids: [student.id], status: "WITHDRAWN" });
@@ -404,7 +416,7 @@ describe("PATCH /api/students/status", () => {
     const { token } = await createTeacher("teacher@test.local");
     const student = await createBareStudent("ADM-BULK-010");
 
-    const res = await request(app)
+    const res = await request(server)
       .patch("/api/students/status")
       .set("Authorization", `Bearer ${token}`)
       .send({ ids: [student.id], status: "GRADUATED" });
@@ -419,7 +431,7 @@ describe("PATCH /api/students/status", () => {
     const student = await createBareStudent("ADM-BULK-020");
     const enrollment = await enrollStudent(student.id, klass.id, session.id);
 
-    const inactiveRes = await request(app)
+    const inactiveRes = await request(server)
       .patch("/api/students/status")
       .set("Authorization", `Bearer ${token}`)
       .send({ ids: [student.id], status: "INACTIVE" });
@@ -428,7 +440,7 @@ describe("PATCH /api/students/status", () => {
     expect(stillActiveEnrollment.status).toBe("ACTIVE");
     expect(stillActiveEnrollment.closedAt).toBeNull();
 
-    const rosterBeforeGraduation = await request(app)
+    const rosterBeforeGraduation = await request(server)
       .get(`/api/classes/${klass.id}/students`)
       .set("Authorization", `Bearer ${token}`)
       .query({ academicSessionId: session.id });
@@ -436,7 +448,7 @@ describe("PATCH /api/students/status", () => {
       student.id,
     );
 
-    const graduateRes = await request(app)
+    const graduateRes = await request(server)
       .patch("/api/students/status")
       .set("Authorization", `Bearer ${token}`)
       .send({ ids: [student.id], status: "GRADUATED" });
@@ -447,7 +459,7 @@ describe("PATCH /api/students/status", () => {
     expect(closedEnrollment.closedAt).not.toBeNull();
     expect(closedEnrollment.closedByUserId).not.toBeNull();
 
-    const rosterAfterGraduation = await request(app)
+    const rosterAfterGraduation = await request(server)
       .get(`/api/classes/${klass.id}/students`)
       .set("Authorization", `Bearer ${token}`)
       .query({ academicSessionId: session.id });
@@ -470,7 +482,7 @@ describe("PATCH /api/students/status", () => {
     const enrollmentA = await enrollStudent(student.id, klass.id, sessionA.id);
     const enrollmentB = await enrollStudent(student.id, klass.id, sessionB.id);
 
-    const res = await request(app)
+    const res = await request(server)
       .patch("/api/students/status")
       .set("Authorization", `Bearer ${token}`)
       .send({ ids: [student.id], status: "WITHDRAWN" });
@@ -492,7 +504,7 @@ describe("POST /api/students/:id/transfer", () => {
     const student = await createBareStudent("ADM-XFER-ROUTE-001");
     const enrollment = await enrollStudent(student.id, classA.id, session.id);
 
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/students/${student.id}/transfer`)
       .set("Authorization", `Bearer ${token}`)
       .send({ classId: classB.id });
@@ -514,7 +526,7 @@ describe("POST /api/students/:id/transfer", () => {
     const student = await createBareStudent("ADM-XFER-ROUTE-002");
     const enrollment = await enrollStudent(student.id, jss1.id, session.id);
 
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/students/${student.id}/transfer`)
       .set("Authorization", `Bearer ${token}`)
       .send({ classId: jss2.id });
@@ -534,7 +546,7 @@ describe("POST /api/students/:id/transfer", () => {
     const student = await createBareStudent("ADM-XFER-ROUTE-003");
     await enrollStudent(student.id, classA.id, session.id);
 
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/students/${student.id}/transfer`)
       .set("Authorization", `Bearer ${token}`)
       .send({ classId: classB.id });
@@ -550,7 +562,7 @@ describe("POST /api/students/:id/transfer", () => {
     const student = await createBareStudent("ADM-XFER-ROUTE-004");
     await enrollStudent(student.id, classA.id, session.id);
 
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/students/${student.id}/transfer`)
       .set("Authorization", `Bearer ${token}`)
       .send({ classId: classB.id });

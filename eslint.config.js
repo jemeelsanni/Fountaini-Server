@@ -1,11 +1,23 @@
 import js from "@eslint/js";
 import tseslint from "typescript-eslint";
+import globals from "globals";
 
 export default tseslint.config(
   {
     ignores: ["dist/**", "generated/**", "node_modules/**", "coverage/**"],
   },
   js.configs.recommended,
+  {
+    // Plain JS/Node scripts get no TypeScript layer at all, so unlike the
+    // *.ts block below — which turns no-undef off and leans on tsc + @types
+    // /node instead — this is the only thing that would ever catch a typo'd
+    // or genuinely undefined identifier here. Keep the rule on; declare the
+    // globals it needs instead.
+    files: ["**/*.mjs"],
+    languageOptions: {
+      globals: globals.node,
+    },
+  },
   {
     files: ["src/**/*.ts"],
     extends: [...tseslint.configs.recommendedTypeChecked],
