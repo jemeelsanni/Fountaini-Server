@@ -54,7 +54,19 @@ export const SENSITIVE_ROUTE_ROLES: Readonly<Record<string, readonly Role[]>> = 
   "PATCH /api/fee-structures/:id": ["ADMIN", "BURSAR"],
   "DELETE /api/fee-structures/:id": ["ADMIN", "BURSAR"],
   "PATCH /api/fee-obligations/:id": ["ADMIN", "BURSAR"],
-  "POST /api/fee-obligations/:id/payments": ["ADMIN", "BURSAR"],
+  // REMOVED deliberately, not dropped by accident: this route no longer
+  // has a bare requireRole at all — it's scope-only now (requireScope ->
+  // canCreatePaymentForObligation: ADMIN/BURSAR always, or a PARENT linked
+  // to the obligation's own student), so its live allowedRoles is
+  // undefined and this snapshot's flat role-list model can't represent it
+  // anyway ("PARENT" here would wrongly read as "any parent," not "a
+  // linked one"). Every other scope-only financial route (GET
+  // /api/fee-obligations/:id, GET /api/payments/:id/receipt, etc.) is
+  // absent from this file for the same reason and is pinned by
+  // authMatrix.data.ts's bespoke rows instead — this route now follows
+  // that same, more accurate mechanism. POST .../confirm above is
+  // unchanged: still requireRole("ADMIN","BURSAR") only, never scoped to a
+  // parent.
 
   // --- Academic session / term: mutations ---
   "POST /api/academic-sessions": ["ADMIN"],

@@ -55,7 +55,7 @@ export async function updateObligation(req: Request, res: Response): Promise<voi
 export async function recordPayment(req: Request, res: Response): Promise<void> {
   if (!req.principal) throw AppError.unauthorized();
   const { id } = req.params as unknown as IdParams;
-  const payment = await service.recordPayment(id, req.principal.userId, req.body as RecordPaymentBody);
+  const payment = await service.recordPayment(id, req.principal, req.body as RecordPaymentBody);
   res.status(201).json(payment);
 }
 

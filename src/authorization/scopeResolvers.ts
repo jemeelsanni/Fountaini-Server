@@ -242,6 +242,36 @@ export async function canReadFeeObligation(principal: Principal, feeObligationId
   return canReadStudentFinancials(principal, obligation.studentId);
 }
 
+/// Deliberately narrower than canReadFeeObligation, not a reuse of it:
+/// logging a payment is ADMIN, BURSAR, or a parent linked to the
+/// obligation's student — never the student themself. canReadFeeObligation
+/// (via canReadStudentFinancials) grants STUDENT self-access too, which is
+/// right for reading a balance but not specified anywhere for creating a
+/// payment claim, so this doesn't just delegate to it.
+export async function canCreatePaymentForObligation(
+  principal: Principal,
+  feeObligationId: string,
+): Promise<boolean> {
+  if (principal.roles.has("ADMIN") || principal.roles.has("BURSAR")) {
+    return true;
+  }
+  if (!principal.roles.has("PARENT") || !principal.parentId) {
+    return false;
+  }
+  const obligation = await prisma.feeObligation.findUnique({
+    where: { id: feeObligationId },
+    select: { studentId: true },
+  });
+  if (!obligation) {
+    return false;
+  }
+  const link = await prisma.studentParent.findUnique({
+    where: { studentId_parentId: { studentId: obligation.studentId, parentId: principal.parentId } },
+    select: { id: true },
+  });
+  return link !== null;
+}
+
 /// Timetable data isn't sensitive the way scores/fees are — "Maths is taught
 /// in JSS1A at 10am Monday" carries no privacy concern — so any staff member
 /// can view any class's timetable. Students/parents are scoped to classes

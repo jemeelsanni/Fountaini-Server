@@ -187,6 +187,7 @@ export const BESPOKE_ROUTE_KEYS: readonly string[] = [
   "GET /api/students/:id/payments",
   "GET /api/payments/:id/receipt",
   "GET /api/fee-obligations/:id",
+  "POST /api/fee-obligations/:id/payments",
   "GET /api/class-subject-assignments/:id/students",
   "GET /api/class-subject-assignments/:id/scores",
   "PUT /api/class-subject-assignments/:id/scores",
@@ -467,6 +468,31 @@ const STUDENT_FINANCIALS_SCOPE_CASES: MatrixCase[] = [
   // of-TEACHER resolver: staffParent holds TEACHER (which grants nothing
   // here) and PARENT (which does) — PARENT alone must be enough.
   { actor: "staffParent", expectedStatus: "allowed" },
+];
+
+/// canCreatePaymentForObligation, not canReadStudentFinancials: same ADMIN/
+/// BURSAR/linked-PARENT shape, but ownStudent is 403 here — logging a
+/// payment claim was never specified as something a student does for
+/// themself, only a parent for their child. staffParent is deliberately
+/// NOT included as a second "allowed" case in this same row: this route
+/// creates a real Payment row, and recordPayment() blocks a second PENDING
+/// claim on the same obligation from any non-ADMIN/BURSAR actor — since
+/// linkedParent and staffParent are both non-exempt PARENT-role actors
+/// against the SAME world.feeObligationId, asserting both "allowed" in one
+/// row would make the second one to run hit that cap and get a 409 instead.
+/// linkedParent alone already proves the PARENT branch; staffParent's
+/// "PARENT alone is enough even while also holding TEACHER" point is
+/// already proven on the read side above.
+const PAYMENT_CREATE_SCOPE_CASES: MatrixCase[] = [
+  { actor: "unauthenticated", expectedStatus: 401 },
+  { actor: "admin", expectedStatus: "allowed" },
+  { actor: "bursar", expectedStatus: "allowed" },
+  { actor: "assignedTeacher", expectedStatus: 403 },
+  { actor: "unassignedTeacher", expectedStatus: 403 },
+  { actor: "linkedParent", expectedStatus: "allowed" },
+  { actor: "unlinkedParent", expectedStatus: 403 },
+  { actor: "ownStudent", expectedStatus: 403 },
+  { actor: "otherStudent", expectedStatus: 403 },
 ];
 
 /// canActOnAssignment sits behind requireRole("ADMIN", "TEACHER") — so
@@ -754,6 +780,17 @@ export async function buildBespokeRows(generics: GenericActors): Promise<MatrixR
     ),
     financialsScopeRow("GET /api/payments/:id/receipt", `/api/payments/${world.payment.id}/receipt`),
     financialsScopeRow("GET /api/fee-obligations/:id", `/api/fee-obligations/${world.feeObligationId}`),
+    {
+      name: "POST /api/fee-obligations/:id/payments",
+      method: "post",
+      cases: PAYMENT_CREATE_SCOPE_CASES,
+      setup: () =>
+        Promise.resolve({
+          url: `/api/fee-obligations/${world.feeObligationId}/payments`,
+          body: { amountKobo: 100_00, paymentDate: new Date().toISOString(), bankReference: "MATRIX-REF" },
+          tokens: world.studentScopeTokens,
+        }),
+    },
     {
       name: "GET /api/class-subject-assignments/:id/scores",
       method: "get",

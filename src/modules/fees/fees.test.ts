@@ -3,6 +3,7 @@ import request from "supertest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
+import { drainFireAndForget } from "../../lib/fireAndForget.js";
 import {
   createAdmin,
   createBareStudent,
@@ -463,5 +464,166 @@ describe("GET /api/fee-obligations/:id", () => {
       .get(`/api/fee-obligations/${obligationId}`)
       .set("Authorization", `Bearer ${unrelatedParentToken}`);
     expect(asUnrelatedParent.status).toBe(403);
+  });
+});
+
+describe("PARENT logs a payment against their own child's obligation", () => {
+  async function setupLinkedObligation() {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const session = await createCurrentAcademicSession("2026/2027");
+    const klass = await createClass("JSS1", "A");
+    const student = await createBareStudent("ADM-001");
+    await enrollStudent(student.id, klass.id, session.id);
+    const { parent, token: parentToken } = await createParent("parent@test.local");
+    await prisma.studentParent.create({
+      data: { parentId: parent.id, studentId: student.id, relationship: "MOTHER" },
+    });
+
+    const structureRes = await request(server)
+      .post("/api/fee-structures")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ name: "Tuition", category: "TUITION", classId: klass.id, academicSessionId: session.id, amountKobo: 5_000_000 });
+    await request(server)
+      .post(`/api/fee-structures/${structureRes.body.id}/generate-obligations`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    const obligation = await prisma.feeObligation.findFirstOrThrow({ where: { studentId: student.id } });
+
+    return { adminToken, parentToken, parent, student, obligation };
+  }
+
+  it("creates a payment claim — 201, status PENDING", async () => {
+    const { parentToken, obligation } = await setupLinkedObligation();
+
+    const res = await request(server)
+      .post(`/api/fee-obligations/${obligation.id}/payments`)
+      .set("Authorization", `Bearer ${parentToken}`)
+      .send({ amountKobo: 5_000_000, paymentDate: "2026-09-10", bankReference: "PARENT-TXN-001" });
+
+    expect(res.status).toBe(201);
+    expect(res.body.status).toBe("PENDING");
+    expect(res.body.recordedByUserId).toBeTruthy();
+
+    const stored = await prisma.payment.findUniqueOrThrow({ where: { id: res.body.id } });
+    expect(stored.status).toBe("PENDING");
+  });
+
+  it("the audit row records that a parent logged it, not just that a payment appeared", async () => {
+    const { parentToken, parent, obligation } = await setupLinkedObligation();
+
+    const res = await request(server)
+      .post(`/api/fee-obligations/${obligation.id}/payments`)
+      .set("Authorization", `Bearer ${parentToken}`)
+      .send({ amountKobo: 5_000_000, paymentDate: "2026-09-10" });
+    expect(res.status).toBe(201);
+
+    // auditMutation() writes through the fire-and-forget wrapper — the
+    // AuditLog row can land after this response already returned.
+    await drainFireAndForget();
+
+    // entityId here is the fee obligation's id, not the new payment's:
+    // auditMutation() resolves entityId from req.params.id first, falling
+    // back to the response body's id only when there's no :id param at all
+    // — and for this nested-creation route, :id in the URL names the
+    // PARENT resource (the obligation), the same shape already noted for
+    // POST /api/parents/:id/children in that middleware's own comment.
+    const entry = await prisma.auditLog.findFirstOrThrow({
+      where: { entityType: "Payment", entityId: obligation.id, action: "PAYMENT_RECORDED" },
+    });
+    expect(entry.actorUserId).toBe(parent.userId);
+    expect(entry.actorRoles).toEqual(["PARENT"]);
+  });
+
+  it("rejects a claim against another family's obligation — 403", async () => {
+    const { obligation } = await setupLinkedObligation();
+    const { token: unrelatedParentToken } = await createParent("unrelated-parent@test.local");
+
+    const res = await request(server)
+      .post(`/api/fee-obligations/${obligation.id}/payments`)
+      .set("Authorization", `Bearer ${unrelatedParentToken}`)
+      .send({ amountKobo: 5_000_000, paymentDate: "2026-09-10" });
+
+    expect(res.status).toBe(403);
+    const count = await prisma.payment.count({ where: { feeObligationId: obligation.id } });
+    expect(count).toBe(0);
+  });
+
+  it("ignores a status set in the request body — the row is PENDING regardless of what was sent", async () => {
+    const { parentToken, obligation } = await setupLinkedObligation();
+
+    const res = await request(server)
+      .post(`/api/fee-obligations/${obligation.id}/payments`)
+      .set("Authorization", `Bearer ${parentToken}`)
+      .send({ amountKobo: 5_000_000, paymentDate: "2026-09-10", status: "CONFIRMED" });
+
+    expect(res.status).toBe(201);
+    expect(res.body.status).toBe("PENDING");
+  });
+
+  it("blocks a parent from confirming or rejecting any payment, including their own claim", async () => {
+    const { parentToken, obligation } = await setupLinkedObligation();
+
+    const claim = await request(server)
+      .post(`/api/fee-obligations/${obligation.id}/payments`)
+      .set("Authorization", `Bearer ${parentToken}`)
+      .send({ amountKobo: 5_000_000, paymentDate: "2026-09-10" });
+    expect(claim.status).toBe(201);
+
+    const confirmRes = await request(server)
+      .post(`/api/payments/${claim.body.id}/confirm`)
+      .set("Authorization", `Bearer ${parentToken}`);
+    expect(confirmRes.status).toBe(403);
+
+    const rejectRes = await request(server)
+      .post(`/api/payments/${claim.body.id}/reject`)
+      .set("Authorization", `Bearer ${parentToken}`);
+    expect(rejectRes.status).toBe(403);
+
+    const stored = await prisma.payment.findUniqueOrThrow({ where: { id: claim.body.id as string } });
+    expect(stored.status).toBe("PENDING");
+  });
+
+  it("a bursar confirming a parent-logged payment moves the balance — collected rises, pending falls", async () => {
+    const { adminToken, parentToken, obligation } = await setupLinkedObligation();
+
+    const claim = await request(server)
+      .post(`/api/fee-obligations/${obligation.id}/payments`)
+      .set("Authorization", `Bearer ${parentToken}`)
+      .send({ amountKobo: 5_000_000, paymentDate: "2026-09-10" });
+    expect(claim.status).toBe(201);
+
+    const beforeConfirm = await prisma.feeObligation.findUniqueOrThrow({ where: { id: obligation.id } });
+    expect(beforeConfirm.status).toBe("PENDING");
+
+    const confirmRes = await request(server)
+      .post(`/api/payments/${claim.body.id}/confirm`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(confirmRes.status).toBe(200);
+
+    const afterConfirm = await prisma.feeObligation.findUniqueOrThrow({ where: { id: obligation.id } });
+    expect(afterConfirm.status).toBe("PAID");
+  });
+
+  it("blocks a second pending claim from a parent on the same obligation, but not from staff", async () => {
+    const { adminToken, parentToken, obligation } = await setupLinkedObligation();
+
+    const first = await request(server)
+      .post(`/api/fee-obligations/${obligation.id}/payments`)
+      .set("Authorization", `Bearer ${parentToken}`)
+      .send({ amountKobo: 2_000_000, paymentDate: "2026-09-10" });
+    expect(first.status).toBe(201);
+
+    const second = await request(server)
+      .post(`/api/fee-obligations/${obligation.id}/payments`)
+      .set("Authorization", `Bearer ${parentToken}`)
+      .send({ amountKobo: 2_000_000, paymentDate: "2026-09-11" });
+    expect(second.status).toBe(409);
+
+    // Staff are exempt — a legitimate manual/installment entry must not be
+    // blocked by a parent's own outstanding claim on the same obligation.
+    const staffEntry = await request(server)
+      .post(`/api/fee-obligations/${obligation.id}/payments`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ amountKobo: 1_000_000, paymentDate: "2026-09-12" });
+    expect(staffEntry.status).toBe(201);
   });
 });

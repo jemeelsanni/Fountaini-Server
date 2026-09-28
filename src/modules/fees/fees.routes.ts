@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { requireAuth, requireRole, requireScope } from "../../authorization/middleware.js";
 import {
+  canCreatePaymentForObligation,
   canReadFeeObligation,
   canReadPayment,
   canReadStudentFinancials,
@@ -80,8 +81,10 @@ feesRouter.patch(
 
 feesRouter.post(
   "/fee-obligations/:id/payments",
-  requireRole("BURSAR", "ADMIN"),
   validate({ params: idParamsSchema, body: recordPaymentSchema }),
+  requireScope((principal, req) =>
+    canCreatePaymentForObligation(principal, (req.params as unknown as IdParams).id),
+  ),
   auditMutation("Payment", "PAYMENT_RECORDED"),
   controller.recordPayment,
 );

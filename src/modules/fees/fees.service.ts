@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { Prisma } from "../../../generated/prisma/index.js";
+import type { Principal } from "../../authorization/types.js";
 import { logger } from "../../config/logger.js";
 import { prisma } from "../../db/client.js";
 import { AppError } from "../../errors/AppError.js";
@@ -232,10 +233,30 @@ async function recomputeObligationStatus(client: Prisma.TransactionClient, feeOb
 // Payments
 // ---------------------------------------------------------------------------
 
-export async function recordPayment(feeObligationId: string, actorUserId: string, input: RecordPaymentBody) {
+/// A parent-logged payment is a claim, not a fact: status is never taken
+/// from input (recordPaymentSchema has no status field at all — Zod strips
+/// one if sent) and always lands PENDING, same as staff-recorded ones. The
+/// only behavioral difference for a PARENT caller is the queue-hygiene
+/// check below; ADMIN/BURSAR are exempt since a legitimate multi-
+/// installment manual entry can mean more than one PENDING payment on the
+/// same obligation at once.
+export async function recordPayment(feeObligationId: string, principal: Principal, input: RecordPaymentBody) {
   const obligation = await prisma.feeObligation.findUnique({ where: { id: feeObligationId } });
   if (!obligation) {
     throw AppError.notFound("Fee obligation not found");
+  }
+
+  if (!principal.roles.has("ADMIN") && !principal.roles.has("BURSAR")) {
+    const existingPending = await prisma.payment.findFirst({
+      where: { feeObligationId, status: "PENDING" },
+      select: { id: true },
+    });
+    if (existingPending) {
+      throw AppError.conflict(
+        "There is already a pending payment claim on this obligation — wait for it to be confirmed or " +
+          "rejected before submitting another.",
+      );
+    }
   }
 
   return prisma.payment.create({
@@ -245,7 +266,7 @@ export async function recordPayment(feeObligationId: string, actorUserId: string
       bankReference: input.bankReference,
       paymentDate: input.paymentDate,
       notes: input.notes,
-      recordedByUserId: actorUserId,
+      recordedByUserId: principal.userId,
     },
   });
 }
