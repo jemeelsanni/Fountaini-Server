@@ -4,6 +4,7 @@ import * as service from "./fees.service.js";
 import type {
   CreateFeeStructureBody,
   IdParams,
+  ListPaymentsQuery,
   RecordPaymentBody,
   UpdateFeeObligationBody,
   UpdateFeeStructureBody,
@@ -79,4 +80,8 @@ export async function listPaymentsForStudent(req: Request, res: Response): Promi
 export async function getReceiptForPayment(req: Request, res: Response): Promise<void> {
   const { id } = req.params as unknown as IdParams;
   res.status(200).json(await service.getReceiptForPayment(id));
+}
+
+export async function listPayments(req: Request, res: Response): Promise<void> {
+  res.status(200).json(await service.listPayments(req.validatedQuery as ListPaymentsQuery));
 }

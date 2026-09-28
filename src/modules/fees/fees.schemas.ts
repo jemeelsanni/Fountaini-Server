@@ -64,3 +64,17 @@ export const recordPaymentSchema = z.object({
   notes: z.string().min(1).optional(),
 });
 export type RecordPaymentBody = z.infer<typeof recordPaymentSchema>;
+
+// status omitted entirely (not just an empty string) means PENDING — the
+// bursar's work queue is the default view, not "every payment ever."
+// Pass status=CONFIRMED (etc.) explicitly to see anything else.
+export const listPaymentsQuerySchema = z.object({
+  status: z.enum(["PENDING", "CONFIRMED", "REJECTED"]).default("PENDING"),
+  classId: z.string().min(1).optional(),
+  studentId: z.string().min(1).optional(),
+  from: z.coerce.date().optional(),
+  to: z.coerce.date().optional(),
+  page: z.coerce.number().int().positive().default(1),
+  pageSize: z.coerce.number().int().positive().max(100).default(20),
+});
+export type ListPaymentsQuery = z.infer<typeof listPaymentsQuerySchema>;

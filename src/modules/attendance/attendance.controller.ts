@@ -42,7 +42,7 @@ export async function getAttendanceForStudent(req: Request, res: Response): Prom
 
 export async function getAttendanceForClass(req: Request, res: Response): Promise<void> {
   const { id } = req.params as unknown as IdParams;
-  const { date } = req.query as unknown as ClassAttendanceQuery;
+  const { date } = req.validatedQuery as ClassAttendanceQuery;
   res.status(200).json(await service.getAttendanceForClass(id, date));
 }
 

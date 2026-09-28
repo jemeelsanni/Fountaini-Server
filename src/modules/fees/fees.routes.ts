@@ -14,6 +14,7 @@ import {
   createFeeStructureSchema,
   idParamsSchema,
   type IdParams,
+  listPaymentsQuerySchema,
   recordPaymentSchema,
   updateFeeObligationSchema,
   updateFeeStructureSchema,
@@ -117,4 +118,11 @@ feesRouter.get(
     canReadStudentFinancials(principal, (req.params as unknown as IdParams).id),
   ),
   controller.listPaymentsForStudent,
+);
+
+feesRouter.get(
+  "/payments",
+  requireRole("ADMIN", "BURSAR"),
+  validate({ query: listPaymentsQuerySchema }),
+  controller.listPayments,
 );

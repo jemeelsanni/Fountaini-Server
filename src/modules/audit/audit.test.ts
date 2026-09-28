@@ -88,4 +88,31 @@ describe("admin mutation auditing", () => {
     expect(allowed.status).toBe(200);
     expect(allowed.body.length).toBeGreaterThan(0);
   });
+
+  // Regression test for a real bug found while building the fee-payments
+  // dashboard: validate.ts used to write the parsed query back onto
+  // req.query via Object.assign, but Express 5's req.query is a getter that
+  // re-derives a fresh object from req.url on every access — the mutation
+  // never actually reached the controller, so listAuditLogQuerySchema's
+  // limit: .default(100) was silently never applied, and this route
+  // returned every row, unbounded, on every call with no ?limit. Fixed by
+  // having validate() store the parsed result on req.validatedQuery instead
+  // (a plain, real property) and reading that here rather than req.query.
+  it("defaults to a 100-row limit when none is given, not unlimited", async () => {
+    const { token: adminToken, user } = await createAdmin("admin@test.local");
+    await prisma.auditLog.createMany({
+      data: Array.from({ length: 150 }, (_, i) => ({
+        actorUserId: user.id,
+        actorRoles: ["ADMIN" as const],
+        action: "TEST_ACTION",
+        entityType: "Test",
+        entityId: `entity-${i}`,
+      })),
+    });
+
+    const res = await request(server).get("/api/audit-log").set("Authorization", `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.length).toBe(100);
+  });
 });

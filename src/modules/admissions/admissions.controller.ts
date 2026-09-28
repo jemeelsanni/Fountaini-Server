@@ -15,7 +15,7 @@ export async function createEnquiry(req: Request, res: Response): Promise<void> 
 }
 
 export async function listEnquiries(req: Request, res: Response): Promise<void> {
-  const query = req.query as unknown as ListEnquiriesQuery;
+  const query = req.validatedQuery as ListEnquiriesQuery;
   res.status(200).json(await service.listEnquiries(query));
 }
 

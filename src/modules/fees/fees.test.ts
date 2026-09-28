@@ -12,6 +12,7 @@ import {
   createCurrentAcademicSession,
   createParent,
   createStudentWithLogin,
+  createTeacher,
   createTermForSession,
   enrollStudent,
 } from "../../test/factories.js";
@@ -37,6 +38,30 @@ beforeEach(async () => {
 afterAll(async () => {
   await resetDb();
 });
+
+/// Shared by several describe blocks below (payment recording/confirmation,
+/// the bursar's queue) — module scope, not local to one describe, so it
+/// isn't duplicated per block.
+async function setupObligation() {
+  const { token: adminToken } = await createAdmin("admin@test.local");
+  const { token: bursarToken } = await createBursar("bursar@test.local");
+
+  const session = await createCurrentAcademicSession("2026/2027");
+  const klass = await createClass("JSS1", "A");
+  const student = await createBareStudent("ADM-001");
+  await enrollStudent(student.id, klass.id, session.id);
+
+  const structureRes = await request(server)
+    .post("/api/fee-structures")
+    .set("Authorization", `Bearer ${adminToken}`)
+    .send({ name: "Tuition", category: "TUITION", classId: klass.id, academicSessionId: session.id, amountKobo: 10_000_000 });
+  await request(server)
+    .post(`/api/fee-structures/${structureRes.body.id}/generate-obligations`)
+    .set("Authorization", `Bearer ${adminToken}`);
+  const obligation = await prisma.feeObligation.findFirstOrThrow({ where: { studentId: student.id } });
+
+  return { adminToken, bursarToken, student, obligation };
+}
 
 describe("fee structures and obligation generation", () => {
   it("generates one obligation per actively-enrolled student in scope, and skips them on re-run", async () => {
@@ -173,27 +198,6 @@ describe("fee structures and obligation generation", () => {
 });
 
 describe("payment recording, confirmation, and balance math", () => {
-  async function setupObligation() {
-    const { token: adminToken } = await createAdmin("admin@test.local");
-    const { token: bursarToken } = await createBursar("bursar@test.local");
-
-    const session = await createCurrentAcademicSession("2026/2027");
-    const klass = await createClass("JSS1", "A");
-    const student = await createBareStudent("ADM-001");
-    await enrollStudent(student.id, klass.id, session.id);
-
-    const structureRes = await request(server)
-      .post("/api/fee-structures")
-      .set("Authorization", `Bearer ${adminToken}`)
-      .send({ name: "Tuition", category: "TUITION", classId: klass.id, academicSessionId: session.id, amountKobo: 10_000_000 });
-    await request(server)
-      .post(`/api/fee-structures/${structureRes.body.id}/generate-obligations`)
-      .set("Authorization", `Bearer ${adminToken}`);
-    const obligation = await prisma.feeObligation.findFirstOrThrow({ where: { studentId: student.id } });
-
-    return { adminToken, bursarToken, student, obligation };
-  }
-
   it("marks PARTIALLY_PAID after one installment and PAID once fully covered, with exact kobo math", async () => {
     const { adminToken, bursarToken, student, obligation } = await setupObligation();
 
@@ -625,5 +629,77 @@ describe("PARENT logs a payment against their own child's obligation", () => {
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ amountKobo: 1_000_000, paymentDate: "2026-09-12" });
     expect(staffEntry.status).toBe(201);
+  });
+});
+
+describe("GET /api/payments — the bursar's queue", () => {
+  it("defaults to PENDING and excludes a confirmed payment", async () => {
+    const { adminToken, obligation } = await setupObligation();
+
+    const pending = await request(server)
+      .post(`/api/fee-obligations/${obligation.id}/payments`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ amountKobo: 2_000_000, paymentDate: "2026-09-10", bankReference: "PENDING-1" });
+    const toConfirm = await request(server)
+      .post(`/api/fee-obligations/${obligation.id}/payments`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ amountKobo: 3_000_000, paymentDate: "2026-09-11", bankReference: "CONFIRMED-1" });
+    await request(server).post(`/api/payments/${toConfirm.body.id}/confirm`).set("Authorization", `Bearer ${adminToken}`);
+
+    const res = await request(server).get("/api/payments").set("Authorization", `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(200);
+    const ids = (res.body.data as Array<{ id: string; status: string }>).map((p) => p.id);
+    expect(ids).toContain(pending.body.id);
+    expect(ids).not.toContain(toConfirm.body.id);
+    for (const row of res.body.data as Array<{ status: string }>) {
+      expect(row.status).toBe("PENDING");
+    }
+  });
+
+  it("each row carries enough to triage: student, admission number, class, amount, bank reference, who logged it, and the obligation's balance", async () => {
+    const { adminToken, student, obligation } = await setupObligation();
+
+    const payment = await request(server)
+      .post(`/api/fee-obligations/${obligation.id}/payments`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ amountKobo: 4_000_000, paymentDate: "2026-09-10", bankReference: "TRIAGE-1" });
+    expect(payment.status).toBe(201);
+
+    const res = await request(server).get("/api/payments").set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    const row = (res.body.data as Array<Record<string, unknown>>).find((r) => r.id === payment.body.id)!;
+
+    expect(row.student).toMatchObject({ id: student.id, name: "Bare Student", admissionNumber: "ADM-001" });
+    expect(row.class).toMatchObject({ name: "JSS1 A" });
+    expect(row.amountKobo).toBe(4_000_000);
+    expect(row.bankReference).toBe("TRIAGE-1");
+    expect(row.recordedByName).toBeTruthy();
+    // Obligation is 10,000,000 due, nothing confirmed yet — the PENDING
+    // claim itself must not move this: only CONFIRMED payments count.
+    expect(row.obligationOutstandingKobo).toBe(10_000_000);
+  });
+
+  it("excludes a payment when filtered by an unrelated classId", async () => {
+    const { adminToken, obligation } = await setupObligation();
+    const otherClass = await createClass("JSS2", "A");
+
+    await request(server)
+      .post(`/api/fee-obligations/${obligation.id}/payments`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ amountKobo: 2_000_000, paymentDate: "2026-09-10" });
+
+    const res = await request(server)
+      .get(`/api/payments?classId=${otherClass.id}`)
+      .set("Authorization", `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(0);
+  });
+
+  it("TEACHER is blocked", async () => {
+    const { token } = await createTeacher("teacher@test.local");
+    const res = await request(server).get("/api/payments").set("Authorization", `Bearer ${token}`);
+    expect(res.status).toBe(403);
   });
 });

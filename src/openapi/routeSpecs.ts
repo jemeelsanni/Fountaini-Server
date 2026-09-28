@@ -13,7 +13,7 @@ import {
 } from "../modules/auth/auth.schemas.js";
 import { classAttendanceQuerySchema, correctAttendanceSchema, idParamsSchema as attendanceIdParamsSchema, openSessionSchema, scanSchema } from "../modules/attendance/attendance.schemas.js";
 import { listAuditLogQuerySchema } from "../modules/audit/audit.schemas.js";
-import { createFeeStructureSchema, idParamsSchema as feesIdParamsSchema, recordPaymentSchema, updateFeeObligationSchema, updateFeeStructureSchema } from "../modules/fees/fees.schemas.js";
+import { createFeeStructureSchema, idParamsSchema as feesIdParamsSchema, listPaymentsQuerySchema, recordPaymentSchema, updateFeeObligationSchema, updateFeeStructureSchema } from "../modules/fees/fees.schemas.js";
 import { createAssessmentComponentSchema, createGradeBandSchema, createGradingScaleSchema, idParamsSchema as gradingIdParamsSchema, updateAssessmentComponentSchema, updateGradeBandSchema } from "../modules/grading/grading.schemas.js";
 import { createProgressSchema, idParamsSchema as madrassahIdParamsSchema } from "../modules/madrassah/madrassah.schemas.js";
 import {
@@ -79,6 +79,7 @@ import {
   NotificationEventSchema,
   NotificationEventWithDeliveriesSchema,
   ParentSchema,
+  PaymentQueueResponseSchema,
   PaymentSchema,
   PaymentWithRelationsSchema,
   RatingScaleLevelSchema,
@@ -178,6 +179,9 @@ const SCOPE_NOTES = {
     "ADMIN, BURSAR, or a TEACHER assigned to teach some subject in this class for the resolved session — " +
     "not any teacher unconditionally (unlike GET /api/classes/:id/timetable's own rule), and not the " +
     "form teacher specifically (unlike GET /api/classes/:id/results/:termId's).",
+  canCreatePaymentForObligation:
+    "ADMIN, BURSAR, or the obligation's own linked parent — never the student themself, unlike most " +
+    "other fee-read scopes.",
 } as const;
 
 /// One entry per route in the live route inventory ("METHOD /path", exactly
@@ -508,10 +512,15 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     responses: { 200: { description: "OK", schema: FeeObligationSchema } },
   },
   "POST /api/fee-obligations/:id/payments": {
-    summary: "Record a payment against a fee obligation",
+    summary:
+      "Record a payment claim against a fee obligation. Always created PENDING regardless of caller — " +
+      "a parent-logged payment is a claim, not a fact, and only ADMIN/BURSAR can confirm or reject one " +
+      "(see those routes below). A non-ADMIN/BURSAR caller is blocked with 409 if they already have a " +
+      "PENDING claim on this same obligation.",
     requestParams: feesIdParamsSchema,
     requestBody: recordPaymentSchema,
     responses: { 201: { description: "Created", schema: PaymentSchema } },
+    scopeNote: SCOPE_NOTES.canCreatePaymentForObligation,
   },
   "POST /api/payments/:id/confirm": {
     summary: "Confirm a pending payment",
@@ -534,6 +543,14 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     requestParams: feesIdParamsSchema,
     responses: { 200: { description: "OK", schema: z.array(PaymentWithRelationsSchema) } },
     scopeNote: SCOPE_NOTES.canReadStudentFinancials,
+  },
+  "GET /api/payments": {
+    summary:
+      "The bursar's payment queue — paginated, newest first. Defaults to PENDING (the work queue) when " +
+      "status is omitted; pass status explicitly to see confirmed or rejected payments instead. " +
+      "classId filters via the student's current ACTIVE enrollment in that class.",
+    requestQuery: listPaymentsQuerySchema,
+    responses: { 200: { description: "OK", schema: PaymentQueueResponseSchema } },
   },
 
   // --- grading ----------------------------------------------------------------

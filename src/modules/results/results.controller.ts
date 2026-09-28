@@ -32,7 +32,7 @@ export async function listResultsForStudent(req: Request, res: Response): Promis
     throw AppError.unauthorized();
   }
   const { id } = req.params as unknown as IdParams;
-  const { academicSessionId } = req.query as unknown as ListResultsForStudentQuery;
+  const { academicSessionId } = req.validatedQuery as ListResultsForStudentQuery;
   res.status(200).json(await service.listResultsForStudent(id, academicSessionId, req.principal));
 }
 

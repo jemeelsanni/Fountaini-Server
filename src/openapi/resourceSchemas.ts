@@ -780,6 +780,37 @@ export const FeeObligationWithBalanceSchema = FeeObligationSchema.extend({
   outstandingKobo: kobo(),
 }).openapi("FeeObligationWithBalance");
 
+/// GET /api/payments's per-row shape — enough to triage a claim without a
+/// second request. recordedByName is resolved server-side (Payment has no
+/// Prisma relation to User — see fees.service.ts's resolveUserNames).
+export const PaymentQueueItemSchema = z
+  .object({
+    id: id(),
+    amountKobo: kobo(),
+    bankReference: z.string().nullable(),
+    paymentDate: isoDateTime(),
+    status: PaymentStatusSchema,
+    recordedByUserId: id(),
+    recordedByName: z.string(),
+    createdAt: isoDateTime(),
+    student: z.object({ id: id(), name: z.string(), admissionNumber: z.string() }),
+    class: z.object({ id: id(), name: z.string() }).nullable(),
+    feeObligationId: id(),
+    obligationOutstandingKobo: kobo().openapi({
+      description: "The obligation's current balance, independent of whether this specific claim is confirmed",
+    }),
+  })
+  .openapi("PaymentQueueItem");
+
+export const PaymentQueueResponseSchema = z
+  .object({
+    data: z.array(PaymentQueueItemSchema),
+    total: z.number().int(),
+    page: z.number().int(),
+    pageSize: z.number().int(),
+  })
+  .openapi("PaymentQueueResponse");
+
 // ---------------------------------------------------------------------------
 // Attendance (QR-based)
 // ---------------------------------------------------------------------------

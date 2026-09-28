@@ -381,3 +381,115 @@ export async function getReceiptForPayment(paymentId: string) {
   }
   return receipt;
 }
+
+// ---------------------------------------------------------------------------
+// Bursar payment queue
+// ---------------------------------------------------------------------------
+
+interface ListPaymentsFilter {
+  status: "PENDING" | "CONFIRMED" | "REJECTED";
+  classId?: string;
+  studentId?: string;
+  from?: Date;
+  to?: Date;
+  page: number;
+  pageSize: number;
+}
+
+/// recordedByUserId/confirmedByUserId are plain scalar columns, not Prisma
+/// relations to User (see schema.prisma's own Payment model) — there's
+/// nothing to `include` them through, so resolving "who logged it" to a
+/// name is a second, batched query (one User.findMany for every distinct
+/// id on this page), not a join. A recorder is always Staff (ADMIN/BURSAR)
+/// or Parent, never Student — canCreatePaymentForObligation doesn't grant
+/// STUDENT — so checking both covers every real case.
+async function resolveUserNames(userIds: string[]): Promise<Map<string, string>> {
+  const unique = [...new Set(userIds)];
+  const users = await prisma.user.findMany({
+    where: { id: { in: unique } },
+    select: {
+      id: true,
+      staff: { select: { firstName: true, lastName: true } },
+      parent: { select: { firstName: true, lastName: true } },
+    },
+  });
+  const names = new Map<string, string>();
+  for (const user of users) {
+    const person = user.staff ?? user.parent;
+    names.set(user.id, person ? `${person.firstName} ${person.lastName}` : "Unknown");
+  }
+  return names;
+}
+
+/// The bursar's work queue: enough per row to triage without a second
+/// request. classId filters via the student's ACTIVE enrollment in that
+/// class — a pragmatic proxy, not an exact match against the obligation's
+/// own academicSessionId (Prisma's relational filters can't compare two
+/// fields on different rows without raw SQL) — correct for the common
+/// case of filtering the current queue by class, since a past session's
+/// enrollment is no longer ACTIVE once a new one starts.
+export async function listPayments(filter: ListPaymentsFilter) {
+  const where: Prisma.PaymentWhereInput = {
+    status: filter.status,
+    feeObligation: {
+      studentId: filter.studentId,
+      student: filter.classId
+        ? { enrollments: { some: { classId: filter.classId, status: "ACTIVE" } } }
+        : undefined,
+    },
+    paymentDate: filter.from ?? filter.to ? { gte: filter.from, lte: filter.to } : undefined,
+  };
+
+  const [total, payments] = await Promise.all([
+    prisma.payment.count({ where }),
+    prisma.payment.findMany({
+      where,
+      include: {
+        feeObligation: {
+          include: {
+            student: {
+              include: { enrollments: { where: { status: "ACTIVE" }, include: { class: true }, take: 1 } },
+            },
+            payments: { where: { status: "CONFIRMED" } },
+          },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+      skip: (filter.page - 1) * filter.pageSize,
+      take: filter.pageSize,
+    }),
+  ]);
+
+  const names = await resolveUserNames(payments.map((p) => p.recordedByUserId));
+
+  const data = payments.map((payment) => {
+    const { student } = payment.feeObligation;
+    const enrollment = student.enrollments[0];
+    const { outstandingKobo } = withBalance(payment.feeObligation);
+    return {
+      id: payment.id,
+      amountKobo: payment.amountKobo,
+      bankReference: payment.bankReference,
+      paymentDate: payment.paymentDate,
+      status: payment.status,
+      recordedByUserId: payment.recordedByUserId,
+      recordedByName: names.get(payment.recordedByUserId) ?? "Unknown",
+      createdAt: payment.createdAt,
+      student: {
+        id: student.id,
+        name: `${student.firstName} ${student.lastName}`,
+        admissionNumber: student.admissionNumber,
+      },
+      class: enrollment
+        ? {
+            id: enrollment.class.id,
+            name: `${enrollment.class.gradeName}${enrollment.class.arm ? ` ${enrollment.class.arm}` : ""}`,
+          }
+        : null,
+      feeObligationId: payment.feeObligationId,
+      obligationOutstandingKobo: outstandingKobo,
+    };
+  });
+
+  return { data, total, page: filter.page, pageSize: filter.pageSize };
+}

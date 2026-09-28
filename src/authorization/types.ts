@@ -24,6 +24,19 @@ declare global {
   namespace Express {
     interface Request {
       principal?: Principal;
+      /// validate()'s parsed query result (http/middleware/validate.ts) —
+      /// NOT the same object req.query ever returns. Express 5's req.query
+      /// is a getter that re-derives a fresh object from req.url on every
+      /// access (confirmed directly: it has no own property descriptor on
+      /// the request instance at all), so mutating one snapshot of it — the
+      /// only thing Express 4 code could safely do, and what this codebase
+      /// did until this was found — silently never persists. A controller
+      /// reading a Zod-defaulted or coerced query field via req.query was
+      /// always getting the raw, un-defaulted, un-coerced value instead;
+      /// read req.validatedQuery for any route whose query schema uses
+      /// .default(), z.coerce, or .transform() and needs the applied
+      /// result, not just presence/shape validation.
+      validatedQuery?: unknown;
     }
   }
 }
