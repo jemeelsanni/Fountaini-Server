@@ -1,5 +1,6 @@
+import type { Server } from "node:http";
 import request from "supertest";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
 import {
@@ -14,6 +15,17 @@ import { resetDb } from "../../test/resetDb.js";
 import { waitForNotification } from "../../test/waitForNotification.js";
 
 const app = createApp();
+let server: Server;
+
+beforeAll(async () => {
+  server = await new Promise<Server>((resolve) => {
+    const s = app.listen(0, "127.0.0.1", () => resolve(s));
+  });
+});
+
+afterAll(() => {
+  server.close();
+});
 
 beforeEach(async () => {
   await resetDb();
@@ -47,23 +59,23 @@ describe("fee reminder trigger", () => {
       data: { parentId: paidParent.id, studentId: paidStudent.id, relationship: "FATHER" },
     });
 
-    const structureRes = await request(app)
+    const structureRes = await request(server)
       .post("/api/fee-structures")
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ name: "Tuition", category: "TUITION", classId: klass.id, academicSessionId: session.id, amountKobo: 5_000_000 });
-    await request(app)
+    await request(server)
       .post(`/api/fee-structures/${structureRes.body.id}/generate-obligations`)
       .set("Authorization", `Bearer ${adminToken}`);
 
     // Fully pay off paidStudent's obligation.
     const paidObligation = await prisma.feeObligation.findFirstOrThrow({ where: { studentId: paidStudent.id } });
-    const payment = await request(app)
+    const payment = await request(server)
       .post(`/api/fee-obligations/${paidObligation.id}/payments`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ amountKobo: 5_000_000, paymentDate: "2026-09-10" });
-    await request(app).post(`/api/payments/${payment.body.id}/confirm`).set("Authorization", `Bearer ${adminToken}`);
+    await request(server).post(`/api/payments/${payment.body.id}/confirm`).set("Authorization", `Bearer ${adminToken}`);
 
-    const triggerRes = await request(app)
+    const triggerRes = await request(server)
       .post("/api/notifications/fee-reminders/trigger")
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ academicSessionId: session.id });
@@ -103,20 +115,20 @@ describe("payment confirmation notification", () => {
       data: { parentId: parent.id, studentId: student.id, relationship: "MOTHER" },
     });
 
-    const structureRes = await request(app)
+    const structureRes = await request(server)
       .post("/api/fee-structures")
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ name: "Tuition", category: "TUITION", classId: klass.id, academicSessionId: session.id, amountKobo: 5_000_000 });
-    await request(app)
+    await request(server)
       .post(`/api/fee-structures/${structureRes.body.id}/generate-obligations`)
       .set("Authorization", `Bearer ${adminToken}`);
     const obligation = await prisma.feeObligation.findFirstOrThrow({ where: { studentId: student.id } });
 
-    const payment = await request(app)
+    const payment = await request(server)
       .post(`/api/fee-obligations/${obligation.id}/payments`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ amountKobo: 5_000_000, paymentDate: "2026-09-10" });
-    await request(app).post(`/api/payments/${payment.body.id}/confirm`).set("Authorization", `Bearer ${adminToken}`);
+    await request(server).post(`/api/payments/${payment.body.id}/confirm`).set("Authorization", `Bearer ${adminToken}`);
 
     // confirmPayment() fires the notification without awaiting it (a slow or
     // failing notification must not delay or fail the confirm response) —
@@ -124,7 +136,7 @@ describe("payment confirmation notification", () => {
     // above returns.
     await waitForNotification(parent.userId, "Payment", payment.body.id as string);
 
-    const myNotifications = await request(app)
+    const myNotifications = await request(server)
       .get("/api/notifications")
       .set("Authorization", `Bearer ${parentToken}`);
 
@@ -148,10 +160,10 @@ describe("GET /api/notifications", () => {
       },
     });
 
-    const asParent1 = await request(app).get("/api/notifications").set("Authorization", `Bearer ${token1}`);
+    const asParent1 = await request(server).get("/api/notifications").set("Authorization", `Bearer ${token1}`);
     expect(asParent1.body).toHaveLength(1);
 
-    const asParent2 = await request(app).get("/api/notifications").set("Authorization", `Bearer ${token2}`);
+    const asParent2 = await request(server).get("/api/notifications").set("Authorization", `Bearer ${token2}`);
     expect(asParent2.body).toHaveLength(0);
   });
 });
@@ -170,21 +182,21 @@ describe("PATCH /api/notifications/:id/read", () => {
       },
     });
 
-    const first = await request(app)
+    const first = await request(server)
       .patch(`/api/notifications/${notification.id}/read`)
       .set("Authorization", `Bearer ${token1}`);
     expect(first.status).toBe(200);
     expect(first.body.readAt).not.toBeNull();
     const firstReadAt = first.body.readAt as string;
 
-    const second = await request(app)
+    const second = await request(server)
       .patch(`/api/notifications/${notification.id}/read`)
       .set("Authorization", `Bearer ${token1}`);
     expect(second.status).toBe(200);
     // Idempotent: the original readAt is preserved, not bumped.
     expect(second.body.readAt).toBe(firstReadAt);
 
-    const asOtherUser = await request(app)
+    const asOtherUser = await request(server)
       .patch(`/api/notifications/${notification.id}/read`)
       .set("Authorization", `Bearer ${token2}`);
     expect([403, 404]).toContain(asOtherUser.status);
@@ -204,7 +216,7 @@ describe("POST /api/notifications/read-all", () => {
       ],
     });
 
-    const res = await request(app).post("/api/notifications/read-all").set("Authorization", `Bearer ${token1}`);
+    const res = await request(server).post("/api/notifications/read-all").set("Authorization", `Bearer ${token1}`);
     expect(res.status).toBe(200);
     expect(res.body.markedCount).toBe(2);
 

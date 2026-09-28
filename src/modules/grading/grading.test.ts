@@ -1,5 +1,6 @@
+import type { Server } from "node:http";
 import request from "supertest";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
 import {
@@ -16,6 +17,17 @@ import {
 import { resetDb } from "../../test/resetDb.js";
 
 const app = createApp();
+let server: Server;
+
+beforeAll(async () => {
+  server = await new Promise<Server>((resolve) => {
+    const s = app.listen(0, "127.0.0.1", () => resolve(s));
+  });
+});
+
+afterAll(() => {
+  server.close();
+});
 
 beforeEach(async () => {
   await resetDb();
@@ -31,13 +43,13 @@ describe("assessment components", () => {
     const { token: teacherToken } = await createTeacher("teacher@test.local");
     const session = await createCurrentAcademicSession("2026/2027");
 
-    const create = await request(app)
+    const create = await request(server)
       .post(`/api/academic-sessions/${session.id}/assessment-components`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ code: "CA1", name: "First CA", type: "CA", maxScore: 20, order: 1 });
     expect(create.status).toBe(201);
 
-    const list = await request(app)
+    const list = await request(server)
       .get(`/api/academic-sessions/${session.id}/assessment-components`)
       .set("Authorization", `Bearer ${teacherToken}`);
     expect(list.status).toBe(200);
@@ -53,12 +65,12 @@ describe("assessment components", () => {
     const { token: adminToken } = await createAdmin("admin@test.local");
     const { token: parentToken } = await createParent("parent@test.local");
     const session = await createCurrentAcademicSession("2026/2027");
-    await request(app)
+    await request(server)
       .post(`/api/academic-sessions/${session.id}/assessment-components`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ code: "CA1", name: "First CA", type: "CA", maxScore: 20, order: 1 });
 
-    const res = await request(app)
+    const res = await request(server)
       .get(`/api/academic-sessions/${session.id}/assessment-components`)
       .set("Authorization", `Bearer ${parentToken}`);
 
@@ -71,11 +83,11 @@ describe("assessment components", () => {
     const session = await createCurrentAcademicSession("2026/2027");
     const body = { code: "CA1", name: "First CA", type: "CA", maxScore: 20, order: 1 };
 
-    await request(app)
+    await request(server)
       .post(`/api/academic-sessions/${session.id}/assessment-components`)
       .set("Authorization", `Bearer ${token}`)
       .send(body);
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/academic-sessions/${session.id}/assessment-components`)
       .set("Authorization", `Bearer ${token}`)
       .send(body);
@@ -88,16 +100,16 @@ describe("PATCH/DELETE /api/assessment-components/:id", () => {
   it("updates a field, leaving the rest untouched, and carries no warning when the session's total stays 100", async () => {
     const { token } = await createAdmin("admin@test.local");
     const session = await createCurrentAcademicSession("2026/2027");
-    const ca = await request(app)
+    const ca = await request(server)
       .post(`/api/academic-sessions/${session.id}/assessment-components`)
       .set("Authorization", `Bearer ${token}`)
       .send({ code: "CA1", name: "First CA", type: "CA", maxScore: 20, order: 1 });
-    await request(app)
+    await request(server)
       .post(`/api/academic-sessions/${session.id}/assessment-components`)
       .set("Authorization", `Bearer ${token}`)
       .send({ code: "EXAM", name: "Exam", type: "EXAM", maxScore: 80, order: 2 });
 
-    const res = await request(app)
+    const res = await request(server)
       .patch(`/api/assessment-components/${ca.body.id as string}`)
       .set("Authorization", `Bearer ${token}`)
       .send({ name: "Renamed CA" });
@@ -119,16 +131,16 @@ describe("PATCH/DELETE /api/assessment-components/:id", () => {
   it("carries a warning when an edit leaves the session's components summing to something other than 100", async () => {
     const { token } = await createAdmin("admin@test.local");
     const session = await createCurrentAcademicSession("2026/2027");
-    const ca = await request(app)
+    const ca = await request(server)
       .post(`/api/academic-sessions/${session.id}/assessment-components`)
       .set("Authorization", `Bearer ${token}`)
       .send({ code: "CA1", name: "First CA", type: "CA", maxScore: 20, order: 1 });
-    await request(app)
+    await request(server)
       .post(`/api/academic-sessions/${session.id}/assessment-components`)
       .set("Authorization", `Bearer ${token}`)
       .send({ code: "EXAM", name: "Exam", type: "EXAM", maxScore: 80, order: 2 });
 
-    const res = await request(app)
+    const res = await request(server)
       .patch(`/api/assessment-components/${ca.body.id as string}`)
       .set("Authorization", `Bearer ${token}`)
       .send({ maxScore: 30 }); // 30 + 80 = 110, not 100
@@ -140,12 +152,12 @@ describe("PATCH/DELETE /api/assessment-components/:id", () => {
   it("deletes a component with no scores, 204", async () => {
     const { token } = await createAdmin("admin@test.local");
     const session = await createCurrentAcademicSession("2026/2027");
-    const create = await request(app)
+    const create = await request(server)
       .post(`/api/academic-sessions/${session.id}/assessment-components`)
       .set("Authorization", `Bearer ${token}`)
       .send({ code: "CA1", name: "First CA", type: "CA", maxScore: 20, order: 1 });
 
-    const res = await request(app)
+    const res = await request(server)
       .delete(`/api/assessment-components/${create.body.id as string}`)
       .set("Authorization", `Bearer ${token}`);
 
@@ -161,7 +173,7 @@ describe("PATCH/DELETE /api/assessment-components/:id", () => {
     const session = await createCurrentAcademicSession("2026/2027");
     const term = await createTermForSession(session.id, "First Term", 1);
     const assignment = await createAssignment(klass.id, subject.id, staff.id, session.id);
-    const create = await request(app)
+    const create = await request(server)
       .post(`/api/academic-sessions/${session.id}/assessment-components`)
       .set("Authorization", `Bearer ${token}`)
       .send({ code: "CA1", name: "First CA", type: "CA", maxScore: 20, order: 1 });
@@ -177,7 +189,7 @@ describe("PATCH/DELETE /api/assessment-components/:id", () => {
       },
     });
 
-    const res = await request(app)
+    const res = await request(server)
       .delete(`/api/assessment-components/${create.body.id as string}`)
       .set("Authorization", `Bearer ${token}`);
 
@@ -190,18 +202,18 @@ describe("PATCH/DELETE /api/assessment-components/:id", () => {
     const { token: adminToken } = await createAdmin("admin@test.local");
     const { token: teacherToken } = await createTeacher("teacher@test.local");
     const session = await createCurrentAcademicSession("2026/2027");
-    const create = await request(app)
+    const create = await request(server)
       .post(`/api/academic-sessions/${session.id}/assessment-components`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ code: "CA1", name: "First CA", type: "CA", maxScore: 20, order: 1 });
 
-    const patchRes = await request(app)
+    const patchRes = await request(server)
       .patch(`/api/assessment-components/${create.body.id as string}`)
       .set("Authorization", `Bearer ${teacherToken}`)
       .send({ name: "X" });
     expect(patchRes.status).toBe(403);
 
-    const deleteRes = await request(app)
+    const deleteRes = await request(server)
       .delete(`/api/assessment-components/${create.body.id as string}`)
       .set("Authorization", `Bearer ${teacherToken}`);
     expect(deleteRes.status).toBe(403);
@@ -213,18 +225,18 @@ describe("grading scale and bands", () => {
     const { token } = await createAdmin("admin@test.local");
     const session = await createCurrentAcademicSession("2026/2027");
 
-    const scaleRes = await request(app)
+    const scaleRes = await request(server)
       .post(`/api/academic-sessions/${session.id}/grading-scale`)
       .set("Authorization", `Bearer ${token}`);
     expect(scaleRes.status).toBe(201);
 
-    const bandRes = await request(app)
+    const bandRes = await request(server)
       .post(`/api/grading-scales/${scaleRes.body.id}/bands`)
       .set("Authorization", `Bearer ${token}`)
       .send({ grade: "A", minScore: 70, maxScore: 100, remark: "Excellent" });
     expect(bandRes.status).toBe(201);
 
-    const getRes = await request(app)
+    const getRes = await request(server)
       .get(`/api/academic-sessions/${session.id}/grading-scale`)
       .set("Authorization", `Bearer ${token}`);
     expect(getRes.status).toBe(200);
@@ -238,11 +250,11 @@ describe("grading scale and bands", () => {
     const { token: adminToken } = await createAdmin("admin@test.local");
     const { token: parentToken } = await createParent("parent@test.local");
     const session = await createCurrentAcademicSession("2026/2027");
-    await request(app)
+    await request(server)
       .post(`/api/academic-sessions/${session.id}/grading-scale`)
       .set("Authorization", `Bearer ${adminToken}`);
 
-    const res = await request(app)
+    const res = await request(server)
       .get(`/api/academic-sessions/${session.id}/grading-scale`)
       .set("Authorization", `Bearer ${parentToken}`);
 
@@ -253,10 +265,10 @@ describe("grading scale and bands", () => {
     const { token } = await createAdmin("admin@test.local");
     const session = await createCurrentAcademicSession("2026/2027");
 
-    await request(app)
+    await request(server)
       .post(`/api/academic-sessions/${session.id}/grading-scale`)
       .set("Authorization", `Bearer ${token}`);
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/academic-sessions/${session.id}/grading-scale`)
       .set("Authorization", `Bearer ${token}`);
 
@@ -266,11 +278,11 @@ describe("grading scale and bands", () => {
   it("rejects a band where maxScore is not greater than minScore", async () => {
     const { token } = await createAdmin("admin@test.local");
     const session = await createCurrentAcademicSession("2026/2027");
-    const scaleRes = await request(app)
+    const scaleRes = await request(server)
       .post(`/api/academic-sessions/${session.id}/grading-scale`)
       .set("Authorization", `Bearer ${token}`);
 
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/grading-scales/${scaleRes.body.id}/bands`)
       .set("Authorization", `Bearer ${token}`)
       .send({ grade: "F", minScore: 50, maxScore: 40 });
@@ -287,12 +299,12 @@ describe("grading scale and bands", () => {
   it("carries a warning when the scale's bands leave part of 0-100 uncovered after creating a band", async () => {
     const { token } = await createAdmin("admin@test.local");
     const session = await createCurrentAcademicSession("2026/2027");
-    const scaleRes = await request(app)
+    const scaleRes = await request(server)
       .post(`/api/academic-sessions/${session.id}/grading-scale`)
       .set("Authorization", `Bearer ${token}`);
 
     // Only 70-100 covered — 0-69.99 is a gap.
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/grading-scales/${scaleRes.body.id}/bands`)
       .set("Authorization", `Bearer ${token}`)
       .send({ grade: "A", minScore: 70, maxScore: 100 });
@@ -304,19 +316,19 @@ describe("grading scale and bands", () => {
   it("carries no warning once bands fully cover 0-100 with no gaps", async () => {
     const { token } = await createAdmin("admin@test.local");
     const session = await createCurrentAcademicSession("2026/2027");
-    const scaleRes = await request(app)
+    const scaleRes = await request(server)
       .post(`/api/academic-sessions/${session.id}/grading-scale`)
       .set("Authorization", `Bearer ${token}`);
-    await request(app)
+    await request(server)
       .post(`/api/grading-scales/${scaleRes.body.id}/bands`)
       .set("Authorization", `Bearer ${token}`)
       .send({ grade: "F", minScore: 0, maxScore: 49.99 });
-    await request(app)
+    await request(server)
       .post(`/api/grading-scales/${scaleRes.body.id}/bands`)
       .set("Authorization", `Bearer ${token}`)
       .send({ grade: "B", minScore: 50, maxScore: 69.99 });
 
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/grading-scales/${scaleRes.body.id}/bands`)
       .set("Authorization", `Bearer ${token}`)
       .send({ grade: "A", minScore: 70, maxScore: 100 });
@@ -328,20 +340,20 @@ describe("grading scale and bands", () => {
   it("carries a warning when updating a band opens up a gap that wasn't there before", async () => {
     const { token } = await createAdmin("admin@test.local");
     const session = await createCurrentAcademicSession("2026/2027");
-    const scaleRes = await request(app)
+    const scaleRes = await request(server)
       .post(`/api/academic-sessions/${session.id}/grading-scale`)
       .set("Authorization", `Bearer ${token}`);
-    await request(app)
+    await request(server)
       .post(`/api/grading-scales/${scaleRes.body.id}/bands`)
       .set("Authorization", `Bearer ${token}`)
       .send({ grade: "F", minScore: 0, maxScore: 49.99 });
-    const bandB = await request(app)
+    const bandB = await request(server)
       .post(`/api/grading-scales/${scaleRes.body.id}/bands`)
       .set("Authorization", `Bearer ${token}`)
       .send({ grade: "B", minScore: 50, maxScore: 100 });
 
     // Shrinking B down to 50-79.99 now leaves 80-100 uncovered.
-    const res = await request(app)
+    const res = await request(server)
       .patch(`/api/grade-bands/${bandB.body.id as string}`)
       .set("Authorization", `Bearer ${token}`)
       .send({ maxScore: 79.99 });
@@ -353,16 +365,16 @@ describe("grading scale and bands", () => {
   it("rejects creating a band whose range overlaps an existing one", async () => {
     const { token } = await createAdmin("admin@test.local");
     const session = await createCurrentAcademicSession("2026/2027");
-    const scaleRes = await request(app)
+    const scaleRes = await request(server)
       .post(`/api/academic-sessions/${session.id}/grading-scale`)
       .set("Authorization", `Bearer ${token}`);
-    await request(app)
+    await request(server)
       .post(`/api/grading-scales/${scaleRes.body.id}/bands`)
       .set("Authorization", `Bearer ${token}`)
       .send({ grade: "B", minScore: 50, maxScore: 69 });
 
     // 60-79 overlaps the existing 50-69 band in the 60-69 range.
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/grading-scales/${scaleRes.body.id}/bands`)
       .set("Authorization", `Bearer ${token}`)
       .send({ grade: "A", minScore: 60, maxScore: 79 });
@@ -374,14 +386,14 @@ describe("grading scale and bands", () => {
 describe("PATCH/DELETE /api/grade-bands/:id", () => {
   async function buildScaleWithTwoBands(token: string) {
     const session = await createCurrentAcademicSession("2026/2027");
-    const scaleRes = await request(app)
+    const scaleRes = await request(server)
       .post(`/api/academic-sessions/${session.id}/grading-scale`)
       .set("Authorization", `Bearer ${token}`);
-    const bandA = await request(app)
+    const bandA = await request(server)
       .post(`/api/grading-scales/${scaleRes.body.id}/bands`)
       .set("Authorization", `Bearer ${token}`)
       .send({ grade: "B", minScore: 50, maxScore: 69, remark: "Good" });
-    const bandB = await request(app)
+    const bandB = await request(server)
       .post(`/api/grading-scales/${scaleRes.body.id}/bands`)
       .set("Authorization", `Bearer ${token}`)
       .send({ grade: "A", minScore: 70, maxScore: 100 });
@@ -392,7 +404,7 @@ describe("PATCH/DELETE /api/grade-bands/:id", () => {
     const { token } = await createAdmin("admin@test.local");
     const { bandA } = await buildScaleWithTwoBands(token);
 
-    const res = await request(app)
+    const res = await request(server)
       .patch(`/api/grade-bands/${bandA.id as string}`)
       .set("Authorization", `Bearer ${token}`)
       .send({ remark: null });
@@ -407,7 +419,7 @@ describe("PATCH/DELETE /api/grade-bands/:id", () => {
     const { bandA } = await buildScaleWithTwoBands(token);
 
     // Widening B (50-69) up to 75 now overlaps A's 70-100.
-    const res = await request(app)
+    const res = await request(server)
       .patch(`/api/grade-bands/${bandA.id as string}`)
       .set("Authorization", `Bearer ${token}`)
       .send({ maxScore: 75 });
@@ -421,7 +433,7 @@ describe("PATCH/DELETE /api/grade-bands/:id", () => {
     const { token } = await createAdmin("admin@test.local");
     const { bandA } = await buildScaleWithTwoBands(token);
 
-    const res = await request(app)
+    const res = await request(server)
       .delete(`/api/grade-bands/${bandA.id as string}`)
       .set("Authorization", `Bearer ${token}`);
 
@@ -434,13 +446,13 @@ describe("PATCH/DELETE /api/grade-bands/:id", () => {
     const { token: teacherToken } = await createTeacher("teacher@test.local");
     const { bandA } = await buildScaleWithTwoBands(adminToken);
 
-    const patchRes = await request(app)
+    const patchRes = await request(server)
       .patch(`/api/grade-bands/${bandA.id as string}`)
       .set("Authorization", `Bearer ${teacherToken}`)
       .send({ remark: "X" });
     expect(patchRes.status).toBe(403);
 
-    const deleteRes = await request(app)
+    const deleteRes = await request(server)
       .delete(`/api/grade-bands/${bandA.id as string}`)
       .set("Authorization", `Bearer ${teacherToken}`);
     expect(deleteRes.status).toBe(403);

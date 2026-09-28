@@ -1,5 +1,6 @@
+import type { Server } from "node:http";
 import request from "supertest";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
 import { setCurrentAcademicSession, setCurrentTerm } from "./academic-structure.service.js";
@@ -20,6 +21,17 @@ import {
 import { resetDb } from "../../test/resetDb.js";
 
 const app = createApp();
+let server: Server;
+
+beforeAll(async () => {
+  server = await new Promise<Server>((resolve) => {
+    const s = app.listen(0, "127.0.0.1", () => resolve(s));
+  });
+});
+
+afterAll(() => {
+  server.close();
+});
 
 beforeEach(async () => {
   await resetDb();
@@ -33,7 +45,7 @@ describe("academic sessions", () => {
   it("allows an admin to create a session", async () => {
     const { token: adminToken } = await createAdmin("admin@test.local");
 
-    const asAdmin = await request(app)
+    const asAdmin = await request(server)
       .post("/api/academic-sessions")
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ name: "2026/2027", startDate: "2026-09-01", endDate: "2027-07-31" });
@@ -43,7 +55,7 @@ describe("academic sessions", () => {
   it("rejects endDate before startDate", async () => {
     const { token } = await createAdmin("admin@test.local");
 
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/academic-sessions")
       .set("Authorization", `Bearer ${token}`)
       .send({ name: "2026/2027", startDate: "2027-07-31", endDate: "2026-09-01" });
@@ -55,8 +67,8 @@ describe("academic sessions", () => {
     const { token } = await createAdmin("admin@test.local");
     const body = { name: "2026/2027", startDate: "2026-09-01", endDate: "2027-07-31" };
 
-    await request(app).post("/api/academic-sessions").set("Authorization", `Bearer ${token}`).send(body);
-    const res = await request(app)
+    await request(server).post("/api/academic-sessions").set("Authorization", `Bearer ${token}`).send(body);
+    const res = await request(server)
       .post("/api/academic-sessions")
       .set("Authorization", `Bearer ${token}`)
       .send(body);
@@ -73,7 +85,7 @@ describe("academic sessions", () => {
       data: { name: "B", startDate: new Date("2026-09-01"), endDate: new Date("2027-07-31") },
     });
 
-    const res = await request(app)
+    const res = await request(server)
       .patch(`/api/academic-sessions/${b.id}/set-current`)
       .set("Authorization", `Bearer ${token}`);
     expect(res.status).toBe(200);
@@ -123,13 +135,13 @@ describe("terms", () => {
   it("is readable by a PARENT, not just staff roles", async () => {
     const { token: adminToken } = await createAdmin("admin@test.local");
     const { token: parentToken } = await createParent("parent@test.local");
-    const session = await createCurrentSessionViaApi(app, adminToken);
-    await request(app)
+    const session = await createCurrentSessionViaApi(server, adminToken);
+    await request(server)
       .post(`/api/academic-sessions/${session.id}/terms`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ name: "First Term", order: 1, startDate: "2026-09-01", endDate: "2026-12-15" });
 
-    const res = await request(app)
+    const res = await request(server)
       .get(`/api/academic-sessions/${session.id}/terms`)
       .set("Authorization", `Bearer ${parentToken}`);
 
@@ -139,14 +151,14 @@ describe("terms", () => {
 
   it("rejects a duplicate order within the same session", async () => {
     const { token } = await createAdmin("admin@test.local");
-    const session = await createCurrentSessionViaApi(app, token);
+    const session = await createCurrentSessionViaApi(server, token);
 
     const body = { name: "First Term", order: 1, startDate: "2026-09-01", endDate: "2026-12-15" };
-    await request(app)
+    await request(server)
       .post(`/api/academic-sessions/${session.id}/terms`)
       .set("Authorization", `Bearer ${token}`)
       .send(body);
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/academic-sessions/${session.id}/terms`)
       .set("Authorization", `Bearer ${token}`)
       .send({ ...body, name: "Also First Term" });
@@ -156,8 +168,8 @@ describe("terms", () => {
 
   it("set-current only clears isCurrent within the same session", async () => {
     const { token } = await createAdmin("admin@test.local");
-    const sessionA = await createCurrentSessionViaApi(app, token, "A");
-    const sessionB = await createCurrentSessionViaApi(app, token, "B");
+    const sessionA = await createCurrentSessionViaApi(server, token, "A");
+    const sessionB = await createCurrentSessionViaApi(server, token, "B");
 
     const termA = await prisma.term.create({
       data: {
@@ -189,7 +201,7 @@ describe("terms", () => {
       },
     });
 
-    const res = await request(app)
+    const res = await request(server)
       .patch(`/api/terms/${termA2.id}/set-current`)
       .set("Authorization", `Bearer ${token}`);
     expect(res.status).toBe(200);
@@ -244,7 +256,7 @@ describe("classes and subjects", () => {
     const { token } = await createAdmin("admin@test.local");
     await createClass("JSS1", "A");
 
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/classes")
       .set("Authorization", `Bearer ${token}`)
       .send({ gradeName: "JSS1", arm: "A", order: 1 });
@@ -256,7 +268,7 @@ describe("classes and subjects", () => {
     const { token } = await createAdmin("admin@test.local");
     await createSubject("Mathematics", "MTH");
 
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/subjects")
       .set("Authorization", `Bearer ${token}`)
       .send({ name: "Maths (again)", code: "MTH" });
@@ -276,7 +288,7 @@ describe("class-subject-teacher assignments", () => {
       data: { name: "2026/2027", startDate: new Date("2026-09-01"), endDate: new Date("2027-07-31") },
     });
 
-    const validAssignment = await request(app)
+    const validAssignment = await request(server)
       .post("/api/class-subject-assignments")
       .set("Authorization", `Bearer ${token}`)
       .send({
@@ -287,7 +299,7 @@ describe("class-subject-teacher assignments", () => {
       });
     expect(validAssignment.status).toBe(201);
 
-    const bursarAssignment = await request(app)
+    const bursarAssignment = await request(server)
       .post("/api/class-subject-assignments")
       .set("Authorization", `Bearer ${token}`)
       .send({
@@ -314,8 +326,8 @@ describe("class-subject-teacher assignments", () => {
       academicSessionId: session.id,
     };
 
-    await request(app).post("/api/class-subject-assignments").set("Authorization", `Bearer ${token}`).send(body);
-    const res = await request(app)
+    await request(server).post("/api/class-subject-assignments").set("Authorization", `Bearer ${token}`).send(body);
+    const res = await request(server)
       .post("/api/class-subject-assignments")
       .set("Authorization", `Bearer ${token}`)
       .send(body);
@@ -342,7 +354,7 @@ describe("class-subject-teacher assignments", () => {
     });
 
     // Teacher A tries to peek at teacher B's assignments via the query param.
-    const res = await request(app)
+    const res = await request(server)
       .get(`/api/class-subject-assignments?teacherId=${teacherB.id}`)
       .set("Authorization", `Bearer ${teacherAToken}`);
 
@@ -351,7 +363,7 @@ describe("class-subject-teacher assignments", () => {
     expect(res.body[0].teacherId).toBe(teacherA.id);
 
     // Sanity: admin sees everything.
-    const asAdmin = await request(app)
+    const asAdmin = await request(server)
       .get("/api/class-subject-assignments")
       .set("Authorization", `Bearer ${adminToken}`);
     expect(asAdmin.body).toHaveLength(2);
@@ -389,7 +401,7 @@ describe("deleting a class-subject-teacher assignment", () => {
   it("204s and removes the assignment when nothing is attached", async () => {
     const { token, assignment } = await buildAssignment();
 
-    const res = await request(app)
+    const res = await request(server)
       .delete(`/api/class-subject-assignments/${assignment.id}`)
       .set("Authorization", `Bearer ${token}`);
 
@@ -401,7 +413,7 @@ describe("deleting a class-subject-teacher assignment", () => {
     const { token, assignment, session } = await buildAssignment();
     const entry = await attachTimetableEntry(assignment, session.id);
 
-    const res = await request(app)
+    const res = await request(server)
       .delete(`/api/class-subject-assignments/${assignment.id}`)
       .set("Authorization", `Bearer ${token}`);
 
@@ -426,7 +438,7 @@ describe("deleting a class-subject-teacher assignment", () => {
       },
     });
 
-    const res = await request(app)
+    const res = await request(server)
       .delete(`/api/class-subject-assignments/${assignment.id}`)
       .set("Authorization", `Bearer ${token}`);
 
@@ -442,7 +454,7 @@ describe("deleting a class-subject-teacher assignment", () => {
     const { assignment } = await buildAssignment();
     const { token: otherTeacherToken } = await createTeacher("other-teacher@test.local");
 
-    const res = await request(app)
+    const res = await request(server)
       .delete(`/api/class-subject-assignments/${assignment.id}`)
       .set("Authorization", `Bearer ${otherTeacherToken}`);
 
@@ -460,13 +472,13 @@ describe("class form teachers", () => {
       data: { name: "2026/2027", startDate: new Date("2026-09-01"), endDate: new Date("2027-07-31") },
     });
 
-    const validAssignment = await request(app)
+    const validAssignment = await request(server)
       .post("/api/class-form-teachers")
       .set("Authorization", `Bearer ${token}`)
       .send({ classId: klass.id, teacherId: teacherStaff.id, academicSessionId: session.id });
     expect(validAssignment.status).toBe(201);
 
-    const bursarAssignment = await request(app)
+    const bursarAssignment = await request(server)
       .post("/api/class-form-teachers")
       .set("Authorization", `Bearer ${token}`)
       .send({ classId: klass.id, teacherId: bursarStaff.id, academicSessionId: session.id });
@@ -482,11 +494,11 @@ describe("class form teachers", () => {
       data: { name: "2026/2027", startDate: new Date("2026-09-01"), endDate: new Date("2027-07-31") },
     });
 
-    await request(app)
+    await request(server)
       .post("/api/class-form-teachers")
       .set("Authorization", `Bearer ${token}`)
       .send({ classId: klass.id, teacherId: teacherA.id, academicSessionId: session.id });
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/class-form-teachers")
       .set("Authorization", `Bearer ${token}`)
       .send({ classId: klass.id, teacherId: teacherB.id, academicSessionId: session.id });
@@ -506,11 +518,11 @@ describe("class form teachers", () => {
       data: { name: "2026/2027", startDate: new Date("2026-09-01"), endDate: new Date("2027-07-31") },
     });
 
-    const resA = await request(app)
+    const resA = await request(server)
       .post("/api/class-form-teachers")
       .set("Authorization", `Bearer ${token}`)
       .send({ classId: klass.id, teacherId: teacherA.id, academicSessionId: sessionA.id });
-    const resB = await request(app)
+    const resB = await request(server)
       .post("/api/class-form-teachers")
       .set("Authorization", `Bearer ${token}`)
       .send({ classId: klass.id, teacherId: teacherB.id, academicSessionId: sessionB.id });
@@ -536,7 +548,7 @@ describe("class form teachers", () => {
       data: { classId: klassB.id, teacherId: teacherB.id, academicSessionId: session.id },
     });
 
-    const res = await request(app)
+    const res = await request(server)
       .get(`/api/class-form-teachers?teacherId=${teacherB.id}`)
       .set("Authorization", `Bearer ${teacherAToken}`);
 
@@ -544,7 +556,7 @@ describe("class form teachers", () => {
     expect(res.body).toHaveLength(1);
     expect(res.body[0].teacherId).toBe(teacherA.id);
 
-    const asAdmin = await request(app)
+    const asAdmin = await request(server)
       .get("/api/class-form-teachers")
       .set("Authorization", `Bearer ${adminToken}`);
     expect(asAdmin.body).toHaveLength(2);
@@ -561,7 +573,7 @@ describe("class form teachers", () => {
       data: { classId: klass.id, teacherId: staff.id, academicSessionId: session.id },
     });
 
-    const res = await request(app)
+    const res = await request(server)
       .delete(`/api/class-form-teachers/${assignment.id}`)
       .set("Authorization", `Bearer ${token}`);
     expect(res.status).toBe(204);
@@ -600,7 +612,7 @@ describe("GET /api/classes/:id/students", () => {
     const { token: adminToken } = await createAdmin("admin@test.local");
     const { klass, activeStudent, transferredStudent } = await buildClassWithStudents();
 
-    const res = await request(app)
+    const res = await request(server)
       .get(`/api/classes/${klass.id}/students`)
       .set("Authorization", `Bearer ${adminToken}`);
 
@@ -619,17 +631,17 @@ describe("GET /api/classes/:id/students", () => {
     const { klass, assignedTeacherToken, otherTeacherToken } = await buildClassWithStudents();
     const { token: parentToken } = await createParent("parent@test.local");
 
-    const asAssigned = await request(app)
+    const asAssigned = await request(server)
       .get(`/api/classes/${klass.id}/students`)
       .set("Authorization", `Bearer ${assignedTeacherToken}`);
     expect(asAssigned.status).toBe(200);
 
-    const asOtherTeacher = await request(app)
+    const asOtherTeacher = await request(server)
       .get(`/api/classes/${klass.id}/students`)
       .set("Authorization", `Bearer ${otherTeacherToken}`);
     expect(asOtherTeacher.status).toBe(403);
 
-    const asParent = await request(app)
+    const asParent = await request(server)
       .get(`/api/classes/${klass.id}/students`)
       .set("Authorization", `Bearer ${parentToken}`);
     expect(asParent.status).toBe(403);
@@ -639,7 +651,7 @@ describe("GET /api/classes/:id/students", () => {
     const { token: bursarToken } = await createBursar("bursar@test.local");
     const { klass } = await buildClassWithStudents();
 
-    const res = await request(app)
+    const res = await request(server)
       .get(`/api/classes/${klass.id}/students`)
       .set("Authorization", `Bearer ${bursarToken}`);
 
@@ -647,7 +659,7 @@ describe("GET /api/classes/:id/students", () => {
   });
 });
 
-async function createCurrentSessionViaApi(appInstance: ReturnType<typeof createApp>, token: string, name = "S") {
+async function createCurrentSessionViaApi(appInstance: Server, token: string, name = "S") {
   const res = await request(appInstance)
     .post("/api/academic-sessions")
     .set("Authorization", `Bearer ${token}`)

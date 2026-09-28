@@ -22,18 +22,13 @@ export default defineConfig({
     fileParallelism: false,
     pool: "forks",
     maxWorkers: 1,
-    // NOT because of requireAuth's mustChangePassword check: that extra
-    // per-request DB round-trip was measured directly at ~0.3ms avg
-    // (docs/concurrency.md, "2026-09-19 measurement") — noise, confirmed
-    // not to be the reason this needed raising. Kept at 10s anyway: briefly
-    // reverted to Vitest's 5000ms default to test that theory, and a 3-run
-    // check at the default produced a genuine `Test timed out in 5000ms`
-    // on fees.test.ts (not even an auth-heavy test) in 1/3 runs — direct,
-    // fresh evidence that the pre-existing, unrelated, unexplained flake
-    // documented in docs/concurrency.md really does manifest as hard
-    // timeouts at the default, not just as the malformed-response symptoms
-    // also on file there. 10s doesn't fix that flake's cause, but measurably
-    // reduces how often it surfaces as a failed run.
-    testTimeout: 10_000,
+    // Was raised to 10s to paper over the month-long intermittent flake
+    // documented in docs/concurrency.md ("Known intermittent test failure").
+    // That flake is now root-caused and fixed (per-request ephemeral
+    // http.Server churn racing its own teardown at the OS level — see the
+    // doc's "Root cause found" entry) — 25/25 clean runs at Vitest's 5000ms
+    // default confirmed the fix, not just the raise, so this no longer needs
+    // to be anything other than the default.
+    testTimeout: 5_000,
   },
 });

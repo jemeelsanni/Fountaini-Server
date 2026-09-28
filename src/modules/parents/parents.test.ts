@@ -1,5 +1,6 @@
+import type { Server } from "node:http";
 import request from "supertest";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
 import { createAdmin, createBareStudent, createParent, createStaffParent, createTeacher } from "../../test/factories.js";
@@ -7,6 +8,17 @@ import { resetDb } from "../../test/resetDb.js";
 import { waitForNotification } from "../../test/waitForNotification.js";
 
 const app = createApp();
+let server: Server;
+
+beforeAll(async () => {
+  server = await new Promise<Server>((resolve) => {
+    const s = app.listen(0, "127.0.0.1", () => resolve(s));
+  });
+});
+
+afterAll(() => {
+  server.close();
+});
 
 beforeEach(async () => {
   await resetDb();
@@ -20,7 +32,7 @@ describe("POST /api/parents", () => {
   it("atomically creates the User and Parent profile, generates a login, and emails it to the parent", async () => {
     const { token } = await createAdmin("admin@test.local");
 
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/parents")
       .set("Authorization", `Bearer ${token}`)
       .send({ email: "newparent@test.local", firstName: "Grace", lastName: "Hopper" });
@@ -46,14 +58,14 @@ describe("POST /api/parents", () => {
     const { token } = await createAdmin("admin@test.local");
     const body = { email: "dupe-parent@test.local", firstName: "Grace", lastName: "Hopper" };
 
-    const first = await request(app).post("/api/parents").set("Authorization", `Bearer ${token}`).send(body);
+    const first = await request(server).post("/api/parents").set("Authorization", `Bearer ${token}`).send(body);
     expect(first.status).toBe(201);
     // Drain the fire-and-forget credential-issuance notification this
     // create triggers before moving on — an unawaited one can otherwise
     // land mid-way through a later test's resetDb() and trip its FK.
     await waitForNotification(first.body.userId as string, "Parent", first.body.id as string);
 
-    const second = await request(app).post("/api/parents").set("Authorization", `Bearer ${token}`).send(body);
+    const second = await request(server).post("/api/parents").set("Authorization", `Bearer ${token}`).send(body);
     expect(second.status).toBe(409);
 
     const users = await prisma.user.findMany({ where: { email: "dupe-parent@test.local" } });
@@ -69,7 +81,7 @@ describe("POST /api/parents", () => {
   it("rejects an email that collides with an existing (different-route) account's loginId", async () => {
     const { token } = await createAdmin("admin@test.local");
 
-    const adminRes = await request(app)
+    const adminRes = await request(server)
       .post("/api/users")
       .set("Authorization", `Bearer ${token}`)
       .send({ email: "shared-identifier@test.local", role: "ADMIN" });
@@ -78,7 +90,7 @@ describe("POST /api/parents", () => {
     // credential notification.
     await waitForNotification(adminRes.body.id as string, "User", adminRes.body.id as string);
 
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/parents")
       .set("Authorization", `Bearer ${token}`)
       .send({ email: "shared-identifier@test.local", firstName: "Grace", lastName: "Hopper" });
@@ -96,7 +108,7 @@ describe("PATCH /api/parents/:id", () => {
       data: { phone: "080-original", alternatePhone: "080-alt", address: "Original Address" },
     });
 
-    const res = await request(app)
+    const res = await request(server)
       .patch(`/api/parents/${parent.id}`)
       .set("Authorization", `Bearer ${adminToken}`)
       // phone: set to a new value. alternatePhone: explicitly cleared.
@@ -122,7 +134,7 @@ describe("PATCH /api/parents/:id", () => {
     const { token: adminToken } = await createAdmin("admin@test.local");
     const { parent, user } = await createParent("parent@test.local");
 
-    const res = await request(app)
+    const res = await request(server)
       .patch(`/api/parents/${parent.id}`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ email: "changed@test.local", firstName: "Changed" });
@@ -136,7 +148,7 @@ describe("PATCH /api/parents/:id", () => {
 
   it("404s for a non-existent parent", async () => {
     const { token: adminToken } = await createAdmin("admin@test.local");
-    const res = await request(app)
+    const res = await request(server)
       .patch("/api/parents/does-not-exist")
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ firstName: "X" });
@@ -147,7 +159,7 @@ describe("PATCH /api/parents/:id", () => {
     const { parent } = await createParent("parent@test.local");
     const { token: teacherToken } = await createTeacher("teacher@test.local");
 
-    const res = await request(app)
+    const res = await request(server)
       .patch(`/api/parents/${parent.id}`)
       .set("Authorization", `Bearer ${teacherToken}`)
       .send({ firstName: "X" });
@@ -162,7 +174,7 @@ describe("child linking", () => {
     const { parent, token: parentToken } = await createParent("parent@test.local");
     const child = await createBareStudent("ADM-600");
 
-    const linkRes = await request(app)
+    const linkRes = await request(server)
       .post(`/api/parents/${parent.id}/children`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ studentId: child.id, relationship: "MOTHER", isPrimaryContact: true });
@@ -174,19 +186,19 @@ describe("child linking", () => {
     // the next test's resetDb() and violate the FK it deletes under.
     await waitForNotification(parent.userId, "Student", child.id);
 
-    const myChildren = await request(app)
+    const myChildren = await request(server)
       .get("/api/parents/me/children")
       .set("Authorization", `Bearer ${parentToken}`);
     expect(myChildren.status).toBe(200);
     expect(myChildren.body).toHaveLength(1);
     expect(myChildren.body[0].studentId).toBe(child.id);
 
-    const unlinkRes = await request(app)
+    const unlinkRes = await request(server)
       .delete(`/api/parents/${parent.id}/children/${child.id}`)
       .set("Authorization", `Bearer ${adminToken}`);
     expect(unlinkRes.status).toBe(204);
 
-    const afterUnlink = await request(app)
+    const afterUnlink = await request(server)
       .get("/api/parents/me/children")
       .set("Authorization", `Bearer ${parentToken}`);
     expect(afterUnlink.body).toHaveLength(0);
@@ -198,11 +210,11 @@ describe("child linking", () => {
     const child = await createBareStudent("ADM-601");
     const body = { studentId: child.id, relationship: "FATHER" };
 
-    await request(app)
+    await request(server)
       .post(`/api/parents/${parent.id}/children`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send(body);
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/parents/${parent.id}/children`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send(body);
@@ -216,7 +228,7 @@ describe("child linking", () => {
     const { parent: secondParent } = await createParent("second-parent@test.local");
     const child = await createBareStudent("ADM-602");
 
-    const first = await request(app)
+    const first = await request(server)
       .post(`/api/parents/${firstParent.id}/children`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ studentId: child.id, relationship: "MOTHER", isPrimaryContact: true });
@@ -225,7 +237,7 @@ describe("child linking", () => {
     // link triggers before moving on — see the identical comment above.
     await waitForNotification(firstParent.userId, "Student", child.id);
 
-    const second = await request(app)
+    const second = await request(server)
       .post(`/api/parents/${secondParent.id}/children`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ studentId: child.id, relationship: "FATHER", isPrimaryContact: true });
@@ -243,7 +255,7 @@ describe("child linking", () => {
     const child = await createBareStudent("ADM-610", { firstName: "Ada" });
     expect(child.userId).toBeNull();
 
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/parents/${parent.id}/children`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ studentId: child.id, relationship: "MOTHER", isPrimaryContact: true });
@@ -269,7 +281,7 @@ describe("child linking", () => {
     const { parent: secondParent } = await createParent("second-parent@test.local");
     const child = await createBareStudent("ADM-611");
 
-    await request(app)
+    await request(server)
       .post(`/api/parents/${primaryParent.id}/children`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ studentId: child.id, relationship: "MOTHER", isPrimaryContact: true });
@@ -278,7 +290,7 @@ describe("child linking", () => {
     const issuedOnce = await prisma.student.findUniqueOrThrow({ where: { id: child.id } });
     expect(issuedOnce.userId).not.toBeNull();
 
-    const res = await request(app)
+    const res = await request(server)
       .post(`/api/parents/${secondParent.id}/children`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ studentId: child.id, relationship: "FATHER" });
@@ -296,7 +308,7 @@ describe("child linking", () => {
     const { parent: newParent } = await createParent("new-parent@test.local");
     const child = await createBareStudent("ADM-612");
 
-    await request(app)
+    await request(server)
       .post(`/api/parents/${originalParent.id}/children`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ studentId: child.id, relationship: "MOTHER", isPrimaryContact: true });
@@ -304,12 +316,12 @@ describe("child linking", () => {
     const issuedOnce = await prisma.student.findUniqueOrThrow({ where: { id: child.id } });
     expect(issuedOnce.userId).not.toBeNull();
 
-    const unlinkRes = await request(app)
+    const unlinkRes = await request(server)
       .delete(`/api/parents/${originalParent.id}/children/${child.id}`)
       .set("Authorization", `Bearer ${adminToken}`);
     expect(unlinkRes.status).toBe(204);
 
-    const relinkRes = await request(app)
+    const relinkRes = await request(server)
       .post(`/api/parents/${newParent.id}/children`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ studentId: child.id, relationship: "FATHER", isPrimaryContact: true });
@@ -327,7 +339,7 @@ describe("GET /api/parents/:id/children", () => {
     const { token: adminToken } = await createAdmin("admin@test.local");
     const { parent, token: parentToken } = await createParent("parent@test.local");
     const child = await createBareStudent("ADM-700");
-    await request(app)
+    await request(server)
       .post(`/api/parents/${parent.id}/children`)
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ studentId: child.id, relationship: "MOTHER" });
@@ -337,7 +349,7 @@ describe("GET /api/parents/:id/children", () => {
   it("lets an admin list a parent's linked children, same shape as /me/children", async () => {
     const { adminToken, parent, child } = await buildLinkedParentWithChild();
 
-    const res = await request(app)
+    const res = await request(server)
       .get(`/api/parents/${parent.id}/children`)
       .set("Authorization", `Bearer ${adminToken}`);
 
@@ -350,7 +362,7 @@ describe("GET /api/parents/:id/children", () => {
   it("lets a parent list their own children via their own id", async () => {
     const { parent, parentToken, child } = await buildLinkedParentWithChild();
 
-    const res = await request(app)
+    const res = await request(server)
       .get(`/api/parents/${parent.id}/children`)
       .set("Authorization", `Bearer ${parentToken}`);
 
@@ -363,7 +375,7 @@ describe("GET /api/parents/:id/children", () => {
     const { parent } = await buildLinkedParentWithChild();
     const { token: otherParentToken } = await createParent("other-parent@test.local");
 
-    const res = await request(app)
+    const res = await request(server)
       .get(`/api/parents/${parent.id}/children`)
       .set("Authorization", `Bearer ${otherParentToken}`);
 
@@ -374,7 +386,7 @@ describe("GET /api/parents/:id/children", () => {
     const { parent } = await buildLinkedParentWithChild();
     const { token: teacherToken } = await createTeacher("teacher@test.local");
 
-    const res = await request(app)
+    const res = await request(server)
       .get(`/api/parents/${parent.id}/children`)
       .set("Authorization", `Bearer ${teacherToken}`);
 
@@ -388,7 +400,7 @@ describe("GET /api/parents/:id/children", () => {
       data: { parentId: staffParent.parent.id, studentId: child.id, relationship: "FATHER" },
     });
 
-    const res = await request(app)
+    const res = await request(server)
       .get(`/api/parents/${staffParent.parent.id}/children`)
       .set("Authorization", `Bearer ${staffParent.token}`);
 

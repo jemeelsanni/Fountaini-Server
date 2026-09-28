@@ -1,5 +1,6 @@
+import type { Server } from "node:http";
 import request from "supertest";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
 import {
@@ -14,6 +15,17 @@ import {
 import { resetDb } from "../../test/resetDb.js";
 
 const app = createApp();
+let server: Server;
+
+beforeAll(async () => {
+  server = await new Promise<Server>((resolve) => {
+    const s = app.listen(0, "127.0.0.1", () => resolve(s));
+  });
+});
+
+afterAll(() => {
+  server.close();
+});
 
 beforeEach(async () => {
   await resetDb();
@@ -27,7 +39,7 @@ describe("GET /api/surahs", () => {
   it("returns all 114 surahs in order", async () => {
     const { token } = await createAdmin("admin@test.local");
 
-    const res = await request(app).get("/api/surahs").set("Authorization", `Bearer ${token}`);
+    const res = await request(server).get("/api/surahs").set("Authorization", `Bearer ${token}`);
 
     expect(res.status).toBe(200);
     expect(res.body).toHaveLength(114);
@@ -44,7 +56,7 @@ describe("POST /api/madrassah-progress", () => {
     const student = await createBareStudent("ADM-001");
     const fatihah = await prisma.surah.findUniqueOrThrow({ where: { number: 1 } });
 
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/madrassah-progress")
       .set("Authorization", `Bearer ${token}`)
       .send({
@@ -70,7 +82,7 @@ describe("POST /api/madrassah-progress", () => {
     const term = await createTermForSession(session.id, "First Term", 1);
     const student = await createBareStudent("ADM-001");
 
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/madrassah-progress")
       .set("Authorization", `Bearer ${token}`)
       .send({
@@ -90,7 +102,7 @@ describe("POST /api/madrassah-progress", () => {
     const term = await createTermForSession(session.id, "First Term", 1);
     const student = await createBareStudent("ADM-001");
 
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/madrassah-progress")
       .set("Authorization", `Bearer ${token}`)
       .send({
@@ -131,7 +143,7 @@ describe("GET /api/students/:id/madrassah-progress", () => {
       },
     });
 
-    const res = await request(app)
+    const res = await request(server)
       .get(`/api/students/${student.id}/madrassah-progress`)
       .set("Authorization", `Bearer ${adminToken}`);
     expect(res.status).toBe(200);

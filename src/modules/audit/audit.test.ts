@@ -1,5 +1,6 @@
+import type { Server } from "node:http";
 import request from "supertest";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
 import { createAdmin, createTeacher } from "../../test/factories.js";
@@ -7,6 +8,17 @@ import { resetDb } from "../../test/resetDb.js";
 import { waitForAuditLog } from "../../test/waitForAuditLog.js";
 
 const app = createApp();
+let server: Server;
+
+beforeAll(async () => {
+  server = await new Promise<Server>((resolve) => {
+    const s = app.listen(0, "127.0.0.1", () => resolve(s));
+  });
+});
+
+afterAll(() => {
+  server.close();
+});
 
 beforeEach(async () => {
   await resetDb();
@@ -20,7 +32,7 @@ describe("admin mutation auditing", () => {
   it("records an audit entry when an admin creates a class, with the actor and new data", async () => {
     const { token, user } = await createAdmin("admin@test.local");
 
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/classes")
       .set("Authorization", `Bearer ${token}`)
       .send({ gradeName: "JSS1", arm: "A", order: 1 });
@@ -38,7 +50,7 @@ describe("admin mutation auditing", () => {
     const { token } = await createAdmin("admin@test.local");
     const { user: teacherUser } = await createTeacher("teacher@test.local");
 
-    const deactivateRes = await request(app)
+    const deactivateRes = await request(server)
       .post(`/api/users/${teacherUser.id}/deactivate`)
       .set("Authorization", `Bearer ${token}`);
     expect(deactivateRes.status).toBe(200);
@@ -51,7 +63,7 @@ describe("admin mutation auditing", () => {
   it("does not record an audit entry for a failed (4xx) mutation attempt", async () => {
     const { token } = await createTeacher("teacher@test.local");
 
-    const res = await request(app)
+    const res = await request(server)
       .post("/api/classes")
       .set("Authorization", `Bearer ${token}`)
       .send({ gradeName: "SS3", order: 1 });
@@ -66,13 +78,13 @@ describe("admin mutation auditing", () => {
   it("GET /api/audit-log returns recorded entries", async () => {
     const { token: adminToken } = await createAdmin("admin@test.local");
 
-    const createRes = await request(app)
+    const createRes = await request(server)
       .post("/api/subjects")
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ name: "Mathematics", code: "MTH" });
     await waitForAuditLog("Subject", createRes.body.id as string);
 
-    const allowed = await request(app).get("/api/audit-log").set("Authorization", `Bearer ${adminToken}`);
+    const allowed = await request(server).get("/api/audit-log").set("Authorization", `Bearer ${adminToken}`);
     expect(allowed.status).toBe(200);
     expect(allowed.body.length).toBeGreaterThan(0);
   });

@@ -319,7 +319,8 @@ plainly so nobody re-derives "it must be the lock waits" from the raw
 `pg_locks` capture later: the capture is real, the causal link to the
 timeouts is not.
 
-**Cause**: unknown. Measured at ~20% of full-suite runs failing (9/40),
+**Cause**: unknown — **superseded, see "2026-09-28 — Root cause found and
+fixed" at the end of this section.** Measured at ~20% of full-suite runs failing (9/40),
 under a back-to-back 40-run stress loop (two batches of 20) with an
 additional `psql` poller querying `pg_stat_activity`/`pg_locks` every
 250ms throughout the second batch. That methodology — continuous
@@ -497,6 +498,118 @@ redundant for race-prevention specifically (`resetDb()` covers that
 generally) but were left in place rather than stripped back out — several
 double as the content assertions just described, and removing the rest
 would have been churn for no correctness gain.
+
+**2026-09-28 — Root cause found and fixed.** The mechanism: every
+`request(app)` call in this suite handed supertest a bare Express app
+function rather than a listening server, and supertest's own code
+(`node_modules/supertest/lib/test.js`) creates a **brand-new real OS-level
+`http.Server`** via `app.listen(0)` for that one request, then calls
+`server.close()` once the response has been fully received. Across a
+578-test run that's on the order of 1,600 real `listen()`/`close()` cycles,
+in bursts, often faster than the OS could reliably tear one socket down
+before the next `.listen(0)` reused its port. Under that churn, a client's
+`connect()` can complete at the TCP level for a listening socket whose
+JS-level `close()` is racing it — the server's own `'connection'` handler
+never fires for that socket, and the client is left holding a "connected"
+socket nobody on this process is servicing. Depending on exactly how the
+kernel resolves that orphaned connection, the client sees one of: a clean
+`ECONNRESET` ("socket hang up"), Node's parser mis-reporting the same
+zero-byte abrupt close as `Parse Error: Expected HTTP/`
+(`HPE_INVALID_CONSTANT`), or — the case that produces the foreign-JSON-body
+symptom — a complete, well-formed response arriving on that socket instead
+of a reset.
+
+Evidence, not inference: live instrumentation was added (gated behind
+`FLAKE_DIAGNOSTICS=1` in `vitest.setup.ts`, a no-op otherwise) patching
+`http.Server`'s listen/close/connection lifecycle, `http.ServerResponse`'s
+`end`/`writeHead` (to directly detect a double response — never observed,
+zero hits across ~65 stress runs, ruling out a `next(err)`-after-response
+double-write), and both client and server sockets' raw bytes, plus
+per-request Content-Length-vs-actual-bytes-read tracking on every request in
+every run. Two independent captures (one `Parse Error`, one on a foreign
+401 body) each showed the identical signature: the client's socket reached
+`'connect'`, the client wrote its full request, and the server's own
+`connection_accepted` event **never fired** for that exact port — a 1:1
+correlation between "this server never accepted a connection" and "this
+request failed," in every instance examined. The foreign-body capture
+specifically: a 401 response, 109 bytes, byte-identical in length to this
+doc's own long-documented `{"type":"error","error":{"type":
+"authentication_error","message":"Invalid authentication"},"request_id":
+null}` signature, with **no `Content-Length` header** — every one of this
+app's own thousands of captured responses across two full stress batches
+always carries one matching `bytesWritten` exactly — and no corresponding
+`server_response_summary` entry from this process's own Express handlers at
+all. That response did not originate from this app. (Its ultimate source
+was not chased further — a live packet capture would be needed to identify
+the other party — but the failure mechanism on this app's side is the same
+proven race in both cases.)
+
+This also explains why `authMatrix.test.ts` dominated failure counts without
+being a special case: it alone issues ~789 of a run's ~1,629 total HTTP
+requests (confirmed by running it in isolation with the instrumentation
+on — `buildRouteInventory()` drives it against nearly every mounted route
+for nearly every actor). 7 of 13 failures across one 25-run batch landed in
+that file; a flat per-request failure rate predicts 6.3. It wasn't auth
+logic, wasn't a double-write, wasn't Prisma pool exhaustion (no `P2024`s
+anywhere in any capture) — it was request *volume*, because volume is
+churn.
+
+Reproduction harness (not checked into this repo — recreate if needed): a
+shell loop invoking `npx vitest run` N times back-to-back, each with the
+instrumentation above active, capturing full stdout/stderr and the
+diagnostic JSON-lines log per run, plus a TSV summary of exit
+code/duration/failed-test-names. Two signals mattered more than the raw
+failure rate: **duration** cleanly separated "genuine hang" runs (baseline
++ exactly one configured timeout) from "fast, wrong response" runs
+(baseline duration, symptom is a bad body/status instead), and
+**per-request normalization** (isolate a suspect file, count its real
+request volume, compare failures-per-request against the rest of the
+suite) is what showed `authMatrix.test.ts` wasn't special.
+
+Fix: one real `http.Server` per test file instead of one per request.
+Every file that issues real HTTP requests through the shared `app` (20 of
+23 files touching `createApp()` — the other 3 only use `app` for static
+route-inventory analysis, never `request(app)`) now does:
+
+```ts
+let server: Server;
+
+beforeAll(async () => {
+  server = await new Promise<Server>((resolve) => {
+    const s = app.listen(0, "127.0.0.1", () => resolve(s));
+  });
+});
+
+afterAll(() => {
+  server.close();
+});
+```
+
+— and passes `server`, not `app`, to `request()`. Bound explicitly to
+`127.0.0.1` rather than the default (`::`/all interfaces): narrows what can
+connect to it, costs nothing, and is a straightforward hardening given the
+mechanism involves exactly what can reach an accepting socket. This drops
+per-run server churn from ~1,600 create/close cycles to ~23 (one per file).
+A handful of small, purpose-built test apps that genuinely need a fresh
+differently-configured instance per test (`rateLimit.test.ts`,
+`auditMutation.test.ts`, `openapi.test.ts`'s `miniApp` cases, and
+`app.test.ts`'s own CORS test which must call `createApp()` *after*
+mutating `env.CORS_ORIGINS`) were left on their own low-volume, per-test
+`listen(0, "127.0.0.1")` instead of a shared per-file server — never
+implicated in any captured failure, and forcing them onto one shared
+instance would have meant restructuring tests that need genuinely different
+app configurations.
+
+Measured, same harness, same run count both times: **12/25 (48%) failing
+before → 0/25 after.** Then `testTimeout` (below) was reverted from 10s to
+Vitest's 5000ms default and the harness run again: 0/25 at the default too,
+confirming the raise was masking this, not something else.
+
+Do not re-open this as "unknown" — if a similar symptom (timeout, socket
+hang up, Parse Error, or a response body that doesn't belong to this app)
+resurfaces, check first whether it's this same mechanism finding a new gap
+(a new file added without a shared server, a test that bypasses `request()`
+some other way) before assuming a new cause.
 
 ## attendance.test.ts scan/close: folded into the known flake above, not separate
 

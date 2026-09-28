@@ -1,5 +1,6 @@
+import type { Server } from "node:http";
 import request from "supertest";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp, routeMounts } from "../app.js";
 import { resetDb } from "../test/resetDb.js";
 import {
@@ -13,6 +14,17 @@ import {
 import { buildRouteInventory } from "./routeInventory.js";
 
 const app = createApp();
+let server: Server;
+
+beforeAll(async () => {
+  server = await new Promise<Server>((resolve) => {
+    const s = app.listen(0, "127.0.0.1", () => resolve(s));
+  });
+});
+
+afterAll(() => {
+  server.close();
+});
 
 // Runs during this file's own sequential slot (vitest.config.ts pins the
 // whole suite to one worker/one fork specifically so no other file's
@@ -61,7 +73,7 @@ describe.each(rows.map((row) => ({ row, key: row.name })))("$key", ({ row }) => 
 
     for (const c of orderedCases) {
       const token = tokens[c.actor];
-      let req = request(app)[row.method](url);
+      let req = request(server)[row.method](url);
       if (token) {
         req = req.set("Authorization", `Bearer ${token}`);
       }

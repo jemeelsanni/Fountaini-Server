@@ -1,5 +1,6 @@
+import type { Server } from "node:http";
 import request from "supertest";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
 import {
@@ -15,6 +16,17 @@ import {
 import { resetDb } from "../../test/resetDb.js";
 
 const app = createApp();
+let server: Server;
+
+beforeAll(async () => {
+  server = await new Promise<Server>((resolve) => {
+    const s = app.listen(0, "127.0.0.1", () => resolve(s));
+  });
+});
+
+afterAll(() => {
+  server.close();
+});
 
 beforeEach(async () => {
   await resetDb();
@@ -46,7 +58,7 @@ async function setupRatingsWorld() {
     data: { classId: klass.id, subjectId: subject.id, teacherId: subjectTeacherStaff.id, academicSessionId: session.id },
   });
 
-  const traitRes = await request(app)
+  const traitRes = await request(server)
     .post(`/api/academic-sessions/${session.id}/traits`)
     .set("Authorization", `Bearer ${adminToken}`)
     .send({ category: "AFFECTIVE", name: "Punctuality", order: 1 });
@@ -72,7 +84,7 @@ describe("PUT /api/classes/:id/results/:termId/ratings", () => {
   it("lets the form teacher write ratings, but denies a subject teacher assigned to the same class", async () => {
     const world = await setupRatingsWorld();
 
-    const asFormTeacher = await request(app)
+    const asFormTeacher = await request(server)
       .put(`/api/classes/${world.klass.id}/results/${world.term.id}/ratings`)
       .set("Authorization", `Bearer ${world.formTeacherToken}`)
       .send({ entries: [{ studentId: world.student.id, traitId: world.traitId, value: 5 }] });
@@ -81,7 +93,7 @@ describe("PUT /api/classes/:id/results/:termId/ratings", () => {
     expect(asFormTeacher.body[0].value).toBe(5);
     expect(asFormTeacher.body[0].trait.name).toBe("Punctuality");
 
-    const asSubjectTeacher = await request(app)
+    const asSubjectTeacher = await request(server)
       .put(`/api/classes/${world.klass.id}/results/${world.term.id}/ratings`)
       .set("Authorization", `Bearer ${world.subjectTeacherToken}`)
       .send({ entries: [{ studentId: world.student.id, traitId: world.traitId, value: 3 }] });
@@ -91,11 +103,11 @@ describe("PUT /api/classes/:id/results/:termId/ratings", () => {
   it("rejects writing ratings once the student's result for this term is FINALIZED", async () => {
     const world = await setupRatingsWorld();
 
-    await request(app)
+    await request(server)
       .post(`/api/results/${world.result.id}/finalize`)
       .set("Authorization", `Bearer ${world.adminToken}`);
 
-    const res = await request(app)
+    const res = await request(server)
       .put(`/api/classes/${world.klass.id}/results/${world.term.id}/ratings`)
       .set("Authorization", `Bearer ${world.formTeacherToken}`)
       .send({ entries: [{ studentId: world.student.id, traitId: world.traitId, value: 4 }] });
@@ -108,16 +120,16 @@ describe("PUT /api/classes/:id/results/:termId/ratings", () => {
   it("appears on GET /api/results/:studentId/:termId once written", async () => {
     const world = await setupRatingsWorld();
 
-    await request(app)
+    await request(server)
       .put(`/api/classes/${world.klass.id}/results/${world.term.id}/ratings`)
       .set("Authorization", `Bearer ${world.formTeacherToken}`)
       .send({ entries: [{ studentId: world.student.id, traitId: world.traitId, value: 5 }] });
 
-    await request(app)
+    await request(server)
       .post(`/api/results/${world.result.id}/finalize`)
       .set("Authorization", `Bearer ${world.adminToken}`);
 
-    const res = await request(app)
+    const res = await request(server)
       .get(`/api/results/${world.student.id}/${world.term.id}`)
       .set("Authorization", `Bearer ${world.adminToken}`);
     expect(res.status).toBe(200);
@@ -141,7 +153,7 @@ describe("GET /api/rating-scale", () => {
       await prisma.ratingScaleLevel.upsert({ where: { value: level.value }, update: {}, create: level });
     }
 
-    const res = await request(app).get("/api/rating-scale").set("Authorization", `Bearer ${adminToken}`);
+    const res = await request(server).get("/api/rating-scale").set("Authorization", `Bearer ${adminToken}`);
     expect(res.status).toBe(200);
     expect(res.body.map((l: { value: number }) => l.value)).toEqual([5, 4, 3, 2, 1]);
   });
