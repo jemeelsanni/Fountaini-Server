@@ -630,6 +630,17 @@ version-specific bug. Do not record "virtualization I/O overhead" or any
 other specific cause here without direct evidence for it; there isn't any
 yet.
 
+**2026-09-28 — its 120s `it(..., 120_000)` override removed.** Once the
+mechanism above was fixed, this test's own organic runtime — 50 iterations
+of reset/fixture/concurrent-request work, genuinely real workload,
+unrelated to the flake — was measured directly at ~1.4s in isolation,
+comfortably inside Vitest's 5000ms default. The 120s figure was never load-
+bearing for the test's own work; it existed only to give this same race
+enough room to lose without failing the run. Confirmed via the same 25-run
+stress harness at the default timeout: 0/25 failing. The override is gone —
+this test now inherits `testTimeout` like everything else, which is the
+final artifact of a bug that never existed in the application.
+
 ## Local Postgres major-version mismatch (2026-08-27, corrected same day)
 
 `docker-compose.yml` and `.github/workflows/ci.yml` both pin `postgres:16`.
