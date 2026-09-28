@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import type { Prisma } from "../../../generated/prisma/index.js";
+import { Prisma } from "../../../generated/prisma/index.js";
 import type { Principal } from "../../authorization/types.js";
 import { logger } from "../../config/logger.js";
 import { prisma } from "../../db/client.js";
@@ -492,4 +492,188 @@ export async function listPayments(filter: ListPaymentsFilter) {
   });
 
   return { data, total, page: filter.page, pageSize: filter.pageSize };
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard summary
+// ---------------------------------------------------------------------------
+
+interface FeesSummaryFilter {
+  academicSessionId?: string;
+  termId?: string;
+  classId?: string;
+}
+
+/// Raw row shape from summaryByClassSql below — bigint/numeric columns come
+/// back as JS `bigint` or `string` from node-postgres depending on type, not
+/// `number`; normalizeBucketRow() below converts every one to a real number
+/// (kobo amounts and counts are both always well within Number's safe
+/// integer range for a school this size) so callers never have to think
+/// about it.
+interface RawClassBucketRow {
+  classId: string;
+  gradeName: string;
+  arm: string | null;
+  expectedKobo: bigint | number;
+  waivedKobo: bigint | number;
+  fullyPaidCount: bigint | number;
+  partiallyPaidCount: bigint | number;
+  unpaidCount: bigint | number;
+  collectedKobo: bigint | number;
+  pendingKobo: bigint | number;
+}
+
+/// Field names deliberately avoid "pending" on the FeeObligation side and
+/// "unpaid"/"paid" on the Payment side — FeeObligation.status's PENDING
+/// ("nothing confirmed yet") and Payment.status's PENDING ("awaiting
+/// confirmation") are different concepts on different rows, and blurring
+/// their names in this response is exactly how a bursar ends up unable to
+/// tell which one a number refers to.
+export interface FeesSummaryBuckets {
+  expectedKobo: number;
+  collectedKobo: number;
+  pendingKobo: number;
+  outstandingKobo: number;
+  waivedKobo: number;
+  fullyPaidCount: number;
+  partiallyPaidCount: number;
+  unpaidCount: number;
+}
+
+function toNumber(value: bigint | number): number {
+  return typeof value === "bigint" ? Number(value) : value;
+}
+
+function bucketsFromRow(row: RawClassBucketRow): FeesSummaryBuckets {
+  const expectedKobo = toNumber(row.expectedKobo);
+  const collectedKobo = toNumber(row.collectedKobo);
+  return {
+    expectedKobo,
+    collectedKobo,
+    pendingKobo: toNumber(row.pendingKobo),
+    // expected minus collected, deliberately NOT minus pending too — a
+    // claimed-but-unconfirmed payment is neither collected nor outstanding,
+    // it's its own bucket above. Folding it into either one is exactly the
+    // mistake that makes this dashboard stop matching the bank statement.
+    outstandingKobo: expectedKobo - collectedKobo,
+    waivedKobo: toNumber(row.waivedKobo),
+    fullyPaidCount: toNumber(row.fullyPaidCount),
+    partiallyPaidCount: toNumber(row.partiallyPaidCount),
+    unpaidCount: toNumber(row.unpaidCount),
+  };
+}
+
+function sumBuckets(rows: FeesSummaryBuckets[]): FeesSummaryBuckets {
+  return rows.reduce(
+    (acc, r) => ({
+      expectedKobo: acc.expectedKobo + r.expectedKobo,
+      collectedKobo: acc.collectedKobo + r.collectedKobo,
+      pendingKobo: acc.pendingKobo + r.pendingKobo,
+      outstandingKobo: acc.outstandingKobo + r.outstandingKobo,
+      waivedKobo: acc.waivedKobo + r.waivedKobo,
+      fullyPaidCount: acc.fullyPaidCount + r.fullyPaidCount,
+      partiallyPaidCount: acc.partiallyPaidCount + r.partiallyPaidCount,
+      unpaidCount: acc.unpaidCount + r.unpaidCount,
+    }),
+    {
+      expectedKobo: 0,
+      collectedKobo: 0,
+      pendingKobo: 0,
+      outstandingKobo: 0,
+      waivedKobo: 0,
+      fullyPaidCount: 0,
+      partiallyPaidCount: 0,
+      unpaidCount: 0,
+    },
+  );
+}
+
+/// Everything aggregated in SQL, in one query, never by fetching obligation/
+/// payment rows and reducing them in application code. Three CTEs:
+///   1. obligation_scope — every FeeObligation in the requested session/
+///      term/class, resolved to its class via the student's Enrollment for
+///      THAT SAME academicSessionId (FeeObligation has no classId of its
+///      own — see listPayments()'s own comment on the same join).
+///   2. obligation_agg — expectedKobo/waivedKobo/the three status counts,
+///      grouped by class, computed straight from obligation_scope (no join
+///      to Payment here, so no risk of the fan-out a direct join would
+///      cause — one obligation can have several payments, which would
+///      otherwise multiply amountDueKobo once per matching payment row).
+///   3. payment_agg — collectedKobo/pendingKobo, separately, joining
+///      obligation_scope to Payment and grouping by class — fan-out here is
+///      fine and correct, since this branch only ever sums Payment.amountKobo,
+///      never amountDueKobo.
+/// The final SELECT joins the two pre-aggregated CTEs by class. The grand
+/// total (always returned) is then computed by summing these already-
+/// aggregated per-class rows in application code — arithmetic over at most
+/// a few dozen numbers, not a reduce over raw obligation/payment rows, so
+/// it isn't the thing "aggregate in SQL" is warning against.
+export async function getFeesSummary(filter: FeesSummaryFilter) {
+  const conditions: Prisma.Sql[] = [];
+  if (filter.academicSessionId) {
+    conditions.push(Prisma.sql`fo."academicSessionId" = ${filter.academicSessionId}`);
+  }
+  if (filter.termId) {
+    conditions.push(Prisma.sql`fo."termId" = ${filter.termId}`);
+  }
+  if (filter.classId) {
+    conditions.push(Prisma.sql`e."classId" = ${filter.classId}`);
+  }
+  // Prisma.sql fragments compose by concatenation, not by interpolating
+  // into the middle of an existing one — the `WHERE 1=1` below is what
+  // lets an arbitrary number of AND-ed conditions (zero or more) attach
+  // cleanly regardless of which filters were actually given.
+  const whereClause = conditions.length > 0 ? Prisma.sql`AND ${Prisma.join(conditions, " AND ")}` : Prisma.empty;
+
+  const rows = await prisma.$queryRaw<RawClassBucketRow[]>`
+    WITH obligation_scope AS (
+      SELECT fo.id, fo."amountDueKobo", fo.status, e."classId"
+      FROM "FeeObligation" fo
+      JOIN "Enrollment" e
+        ON e."studentId" = fo."studentId"
+       AND e."academicSessionId" = fo."academicSessionId"
+      WHERE 1=1 ${whereClause}
+    ),
+    obligation_agg AS (
+      SELECT
+        "classId",
+        COALESCE(SUM(CASE WHEN status != 'WAIVED' THEN "amountDueKobo" ELSE 0 END), 0) AS "expectedKobo",
+        COALESCE(SUM(CASE WHEN status = 'WAIVED' THEN "amountDueKobo" ELSE 0 END), 0) AS "waivedKobo",
+        COUNT(*) FILTER (WHERE status = 'PAID') AS "fullyPaidCount",
+        COUNT(*) FILTER (WHERE status = 'PARTIALLY_PAID') AS "partiallyPaidCount",
+        COUNT(*) FILTER (WHERE status = 'PENDING') AS "unpaidCount"
+      FROM obligation_scope
+      GROUP BY "classId"
+    ),
+    payment_agg AS (
+      SELECT
+        os."classId",
+        COALESCE(SUM(CASE WHEN p.status = 'CONFIRMED' THEN p."amountKobo" ELSE 0 END), 0) AS "collectedKobo",
+        COALESCE(SUM(CASE WHEN p.status = 'PENDING' THEN p."amountKobo" ELSE 0 END), 0) AS "pendingKobo"
+      FROM obligation_scope os
+      JOIN "Payment" p ON p."feeObligationId" = os.id
+      GROUP BY os."classId"
+    )
+    SELECT
+      cls.id AS "classId", cls."gradeName", cls.arm,
+      oa."expectedKobo", oa."waivedKobo", oa."fullyPaidCount", oa."partiallyPaidCount", oa."unpaidCount",
+      COALESCE(pa."collectedKobo", 0) AS "collectedKobo",
+      COALESCE(pa."pendingKobo", 0) AS "pendingKobo"
+    FROM obligation_agg oa
+    JOIN "Class" cls ON cls.id = oa."classId"
+    LEFT JOIN payment_agg pa ON pa."classId" = oa."classId"
+    ORDER BY cls."order"
+  `;
+
+  const byClass = rows.map((row) => ({
+    classId: row.classId,
+    className: `${row.gradeName}${row.arm ? ` ${row.arm}` : ""}`,
+    ...bucketsFromRow(row),
+  }));
+
+  const total = sumBuckets(byClass);
+
+  // Per-class breakdown only when the caller didn't already scope to one
+  // class — a single-class request already IS the "breakdown".
+  return filter.classId ? { total } : { total, byClass };
 }

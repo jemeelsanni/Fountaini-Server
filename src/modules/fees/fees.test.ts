@@ -703,3 +703,159 @@ describe("GET /api/payments — the bursar's queue", () => {
     expect(res.status).toBe(403);
   });
 });
+
+describe("GET /api/fees/summary", () => {
+  async function seedSummaryScenario() {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const session = await createCurrentAcademicSession("2026/2027");
+    const term = await createTermForSession(session.id, "First Term", 1);
+    const klass = await createClass("JSS1", "A");
+
+    async function obligationFor(admissionNumber: string, amountDueKobo: number) {
+      const student = await createBareStudent(admissionNumber);
+      await enrollStudent(student.id, klass.id, session.id);
+      const structure = await prisma.feeStructure.create({
+        data: { name: `Fee-${admissionNumber}`, category: "TUITION", classId: klass.id, academicSessionId: session.id, termId: term.id, amountKobo: amountDueKobo },
+      });
+      return prisma.feeObligation.create({
+        data: { studentId: student.id, feeStructureId: structure.id, academicSessionId: session.id, termId: term.id, amountDueKobo, createdByUserId: "seed" },
+      });
+    }
+
+    // A: fully paid — one CONFIRMED payment covering the whole amount.
+    const oblA = await obligationFor("SUM-A", 5_000_000);
+    const payA = await request(server)
+      .post(`/api/fee-obligations/${oblA.id}/payments`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ amountKobo: 5_000_000, paymentDate: "2026-09-10" });
+    await request(server).post(`/api/payments/${payA.body.id}/confirm`).set("Authorization", `Bearer ${adminToken}`);
+
+    // B: a claim awaiting confirmation — PENDING, must not move collected or outstanding.
+    const oblB = await obligationFor("SUM-B", 5_000_000);
+    await request(server)
+      .post(`/api/fee-obligations/${oblB.id}/payments`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ amountKobo: 2_000_000, paymentDate: "2026-09-10" });
+
+    // C: a rejected claim — must not count toward collected, pending, or outstanding relief.
+    const oblC = await obligationFor("SUM-C", 5_000_000);
+    const payC = await request(server)
+      .post(`/api/fee-obligations/${oblC.id}/payments`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ amountKobo: 5_000_000, paymentDate: "2026-09-10" });
+    await request(server).post(`/api/payments/${payC.body.id}/reject`).set("Authorization", `Bearer ${adminToken}`);
+
+    // D: waived — excluded from expectedKobo, reported only in waivedKobo.
+    const oblD = await obligationFor("SUM-D", 3_000_000);
+    await request(server)
+      .patch(`/api/fee-obligations/${oblD.id}`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ status: "WAIVED" });
+
+    // E: partially paid — one CONFIRMED payment covering part of the amount.
+    const oblE = await obligationFor("SUM-E", 4_000_000);
+    const payE = await request(server)
+      .post(`/api/fee-obligations/${oblE.id}/payments`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ amountKobo: 1_500_000, paymentDate: "2026-09-10" });
+    await request(server).post(`/api/payments/${payE.body.id}/confirm`).set("Authorization", `Bearer ${adminToken}`);
+
+    return { adminToken, session, term, klass };
+  }
+
+  it("computes every bucket independently, and outstanding ignores pending entirely", async () => {
+    const { adminToken, session } = await seedSummaryScenario();
+
+    const res = await request(server)
+      .get(`/api/fees/summary?academicSessionId=${session.id}`)
+      .set("Authorization", `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(200);
+    const { total } = res.body;
+    // expected = A+B+C+E (non-waived), D excluded entirely.
+    expect(total.expectedKobo).toBe(5_000_000 + 5_000_000 + 5_000_000 + 4_000_000);
+    // collected = A (confirmed, full) + E (confirmed, partial). B's pending
+    // and C's rejected payment both contribute nothing here.
+    expect(total.collectedKobo).toBe(5_000_000 + 1_500_000);
+    // pending = only B's unconfirmed claim. C's REJECTED payment must not
+    // land here just because it was once a claim.
+    expect(total.pendingKobo).toBe(2_000_000);
+    // outstanding = expected - collected, NOT minus pending — folding
+    // pending in would silently give 10,500,000 instead of the real 12,500,000.
+    expect(total.outstandingKobo).toBe(total.expectedKobo - total.collectedKobo);
+    expect(total.outstandingKobo).toBe(12_500_000);
+    expect(total.waivedKobo).toBe(3_000_000);
+    expect(total.fullyPaidCount).toBe(1);
+    expect(total.partiallyPaidCount).toBe(1);
+    expect(total.unpaidCount).toBe(2);
+  });
+
+  it("includes a per-class breakdown when classId is omitted, and omits it when scoped to one class", async () => {
+    const { adminToken, session, klass } = await seedSummaryScenario();
+
+    const unscoped = await request(server)
+      .get(`/api/fees/summary?academicSessionId=${session.id}`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(unscoped.status).toBe(200);
+    expect(Array.isArray(unscoped.body.byClass)).toBe(true);
+    const classRow = unscoped.body.byClass.find((c: { classId: string }) => c.classId === klass.id);
+    expect(classRow.expectedKobo).toBe(unscoped.body.total.expectedKobo);
+
+    const scoped = await request(server)
+      .get(`/api/fees/summary?academicSessionId=${session.id}&classId=${klass.id}`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(scoped.status).toBe(200);
+    expect(scoped.body.byClass).toBeUndefined();
+    expect(scoped.body.total.expectedKobo).toBe(unscoped.body.total.expectedKobo);
+  });
+
+  it("TEACHER is blocked", async () => {
+    const { token } = await createTeacher("teacher@test.local");
+    const res = await request(server).get("/api/fees/summary").set("Authorization", `Bearer ${token}`);
+    expect(res.status).toBe(403);
+  });
+
+  // Not a bug in the summary — a real property of how fee structures can be
+  // defined, which the summary is exactly the right place for the school to
+  // notice: a class-specific structure and a grade-wide structure of the
+  // same category both generate their own FeeObligation for the same
+  // student (FeeObligation's only uniqueness guard is per-structure —
+  // @@unique([studentId, feeStructureId, termId]) — so two DIFFERENT
+  // structures billing the same student is never caught). expectedKobo sums
+  // amountDueKobo across every non-WAIVED obligation in scope, so it counts
+  // both.
+  it("expectedKobo is inflated when a class-specific and a grade-wide structure of the same category both bill one student", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const session = await createCurrentAcademicSession("2026/2027");
+    const klass = await createClass("JSS1", "A");
+    const student = await createBareStudent("OVERLAP-1");
+    await enrollStudent(student.id, klass.id, session.id);
+
+    const classSpecific = await request(server)
+      .post("/api/fee-structures")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ name: "Tuition — JSS1A", category: "TUITION", classId: klass.id, academicSessionId: session.id, amountKobo: 8_500_000 });
+    const gradeWide = await request(server)
+      .post("/api/fee-structures")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ name: "Tuition — JSS1 (grade-wide)", category: "TUITION", gradeName: "JSS1", academicSessionId: session.id, amountKobo: 8_500_000 });
+
+    await request(server)
+      .post(`/api/fee-structures/${classSpecific.body.id}/generate-obligations`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    await request(server)
+      .post(`/api/fee-structures/${gradeWide.body.id}/generate-obligations`)
+      .set("Authorization", `Bearer ${adminToken}`);
+
+    const obligations = await prisma.feeObligation.findMany({ where: { studentId: student.id } });
+    expect(obligations).toHaveLength(2); // both structures billed the same student — nothing stopped it
+
+    const res = await request(server)
+      .get(`/api/fees/summary?academicSessionId=${session.id}`)
+      .set("Authorization", `Bearer ${adminToken}`);
+
+    // A school intending ONE ₦85,000 tuition fee for this student sees
+    // ₦170,000 expected instead — double, from a genuine, undetected overlap.
+    expect(res.body.total.expectedKobo).toBe(17_000_000);
+  });
+});

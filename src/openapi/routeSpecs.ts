@@ -13,7 +13,7 @@ import {
 } from "../modules/auth/auth.schemas.js";
 import { classAttendanceQuerySchema, correctAttendanceSchema, idParamsSchema as attendanceIdParamsSchema, openSessionSchema, scanSchema } from "../modules/attendance/attendance.schemas.js";
 import { listAuditLogQuerySchema } from "../modules/audit/audit.schemas.js";
-import { createFeeStructureSchema, idParamsSchema as feesIdParamsSchema, listPaymentsQuerySchema, recordPaymentSchema, updateFeeObligationSchema, updateFeeStructureSchema } from "../modules/fees/fees.schemas.js";
+import { createFeeStructureSchema, feesSummaryQuerySchema, idParamsSchema as feesIdParamsSchema, listPaymentsQuerySchema, recordPaymentSchema, updateFeeObligationSchema, updateFeeStructureSchema } from "../modules/fees/fees.schemas.js";
 import { createAssessmentComponentSchema, createGradeBandSchema, createGradingScaleSchema, idParamsSchema as gradingIdParamsSchema, updateAssessmentComponentSchema, updateGradeBandSchema } from "../modules/grading/grading.schemas.js";
 import { createProgressSchema, idParamsSchema as madrassahIdParamsSchema } from "../modules/madrassah/madrassah.schemas.js";
 import {
@@ -79,6 +79,7 @@ import {
   NotificationEventSchema,
   NotificationEventWithDeliveriesSchema,
   ParentSchema,
+  FeesSummaryResponseSchema,
   PaymentQueueResponseSchema,
   PaymentSchema,
   PaymentWithRelationsSchema,
@@ -551,6 +552,14 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
       "classId filters via the student's current ACTIVE enrollment in that class.",
     requestQuery: listPaymentsQuerySchema,
     responses: { 200: { description: "OK", schema: PaymentQueueResponseSchema } },
+  },
+  "GET /api/fees/summary": {
+    summary:
+      "Dashboard totals, aggregated in SQL. Every amount is in kobo. pendingKobo is its own bucket — " +
+      "money claimed via a PENDING payment but not yet confirmed is neither collected nor outstanding. " +
+      "byClass is present only when classId is omitted from the request.",
+    requestQuery: feesSummaryQuerySchema,
+    responses: { 200: { description: "OK", schema: FeesSummaryResponseSchema } },
   },
 
   // --- grading ----------------------------------------------------------------

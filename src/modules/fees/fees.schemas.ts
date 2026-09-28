@@ -78,3 +78,10 @@ export const listPaymentsQuerySchema = z.object({
   pageSize: z.coerce.number().int().positive().max(100).default(20),
 });
 export type ListPaymentsQuery = z.infer<typeof listPaymentsQuerySchema>;
+
+export const feesSummaryQuerySchema = z.object({
+  academicSessionId: z.string().min(1).optional(),
+  termId: z.string().min(1).optional(),
+  classId: z.string().min(1).optional(),
+});
+export type FeesSummaryQuery = z.infer<typeof feesSummaryQuerySchema>;

@@ -811,6 +811,34 @@ export const PaymentQueueResponseSchema = z
   })
   .openapi("PaymentQueueResponse");
 
+/// Field names deliberately avoid "pending"/"unpaid" colliding across the
+/// two different PENDING meanings in this domain: FeeObligation.status's
+/// PENDING ("nothing confirmed yet", counted in unpaidCount) and
+/// Payment.status's PENDING ("awaiting confirmation", summed in
+/// pendingKobo) are different concepts on different rows.
+export const FeesSummaryBucketsSchema = z
+  .object({
+    expectedKobo: kobo().openapi({ description: "Sum of amountDueKobo across non-WAIVED obligations in scope" }),
+    collectedKobo: kobo().openapi({ description: "Sum of CONFIRMED payments only" }),
+    pendingKobo: kobo().openapi({ description: "Sum of PENDING (awaiting confirmation) payments — claimed, not yet confirmed" }),
+    outstandingKobo: kobo().openapi({ description: "expectedKobo minus collectedKobo. NOT minus pendingKobo." }),
+    waivedKobo: kobo().openapi({ description: "Sum of amountDueKobo across WAIVED obligations, reported separately" }),
+    fullyPaidCount: z.number().int().openapi({ description: "Obligations at FeeObligation.status = PAID" }),
+    partiallyPaidCount: z.number().int().openapi({ description: "Obligations at FeeObligation.status = PARTIALLY_PAID" }),
+    unpaidCount: z.number().int().openapi({ description: "Obligations with no CONFIRMED payment at all (FeeObligation.status = PENDING)" }),
+  })
+  .openapi("FeesSummaryBuckets");
+
+export const FeesSummaryResponseSchema = z
+  .object({
+    total: FeesSummaryBucketsSchema,
+    byClass: z
+      .array(FeesSummaryBucketsSchema.extend({ classId: id(), className: z.string() }))
+      .optional()
+      .openapi({ description: "Present only when classId was not given in the request" }),
+  })
+  .openapi("FeesSummaryResponse");
+
 // ---------------------------------------------------------------------------
 // Attendance (QR-based)
 // ---------------------------------------------------------------------------

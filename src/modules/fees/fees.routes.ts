@@ -12,6 +12,7 @@ import { validate } from "../../http/middleware/validate.js";
 import * as controller from "./fees.controller.js";
 import {
   createFeeStructureSchema,
+  feesSummaryQuerySchema,
   idParamsSchema,
   type IdParams,
   listPaymentsQuerySchema,
@@ -125,4 +126,11 @@ feesRouter.get(
   requireRole("ADMIN", "BURSAR"),
   validate({ query: listPaymentsQuerySchema }),
   controller.listPayments,
+);
+
+feesRouter.get(
+  "/fees/summary",
+  requireRole("ADMIN", "BURSAR"),
+  validate({ query: feesSummaryQuerySchema }),
+  controller.getFeesSummary,
 );

@@ -3,6 +3,7 @@ import { AppError } from "../../errors/AppError.js";
 import * as service from "./fees.service.js";
 import type {
   CreateFeeStructureBody,
+  FeesSummaryQuery,
   IdParams,
   ListPaymentsQuery,
   RecordPaymentBody,
@@ -84,4 +85,8 @@ export async function getReceiptForPayment(req: Request, res: Response): Promise
 
 export async function listPayments(req: Request, res: Response): Promise<void> {
   res.status(200).json(await service.listPayments(req.validatedQuery as ListPaymentsQuery));
+}
+
+export async function getFeesSummary(req: Request, res: Response): Promise<void> {
+  res.status(200).json(await service.getFeesSummary(req.validatedQuery as FeesSummaryQuery));
 }

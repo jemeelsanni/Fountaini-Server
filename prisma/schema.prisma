@@ -996,6 +996,11 @@ model FeeObligation {
 
   @@unique([studentId, feeStructureId, termId])
   @@index([studentId, status])
+  /// Added for the fees dashboard/reports (GET /api/fees/summary, GET
+  /// /api/reports/*) — every one of them filters obligations by session,
+  /// optionally narrowed by term, and had no supporting index at all before
+  /// this (studentId+status above doesn't help a query with no studentId).
+  @@index([academicSessionId, termId])
 }
 
 enum PaymentMethod {
@@ -1027,6 +1032,11 @@ model Payment {
   receipt Receipt?
 
   @@index([feeObligationId, status])
+  /// Added for GET /api/payments (the bursar's queue — status is nearly
+  /// always filtered, defaulting to PENDING) and GET /api/reports/payments
+  /// (a date-range reconciliation scan). No index on paymentDate existed at
+  /// all before this.
+  @@index([status, paymentDate])
 }
 
 model Receipt {
