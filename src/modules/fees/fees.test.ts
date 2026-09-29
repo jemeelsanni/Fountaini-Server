@@ -859,3 +859,91 @@ describe("GET /api/fees/summary", () => {
     expect(res.body.total.expectedKobo).toBe(17_000_000);
   });
 });
+
+describe("GET /api/students/:id/statement", () => {
+  async function setupStatement() {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    await request(server)
+      .post("/api/school")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ name: "Fountaini International School" });
+    const session = await createCurrentAcademicSession("2026/2027");
+    const klass = await createClass("JSS1", "A");
+    const student = await createBareStudent("STMT-1");
+    await enrollStudent(student.id, klass.id, session.id);
+    const { parent, token: parentToken } = await createParent("stmt-parent@test.local");
+    await prisma.studentParent.create({ data: { parentId: parent.id, studentId: student.id, relationship: "MOTHER" } });
+
+    const structureRes = await request(server)
+      .post("/api/fee-structures")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ name: "Tuition", category: "TUITION", classId: klass.id, academicSessionId: session.id, amountKobo: 5_000_000 });
+    await request(server)
+      .post(`/api/fee-structures/${structureRes.body.id}/generate-obligations`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    const obligation = await prisma.feeObligation.findFirstOrThrow({ where: { studentId: student.id } });
+    const payment = await request(server)
+      .post(`/api/fee-obligations/${obligation.id}/payments`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ amountKobo: 2_000_000, paymentDate: "2026-09-10", bankReference: "STMT-REF" });
+
+    return { adminToken, parentToken, student, obligation, payment: payment.body };
+  }
+
+  it("returns 200 for the linked parent, with school header, obligations, and every payment at every status", async () => {
+    const { parentToken, student, obligation, payment } = await setupStatement();
+
+    const res = await request(server)
+      .get(`/api/students/${student.id}/statement`)
+      .set("Authorization", `Bearer ${parentToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.school.name).toBeTruthy();
+    expect(res.body.student.id).toBe(student.id);
+    const row = res.body.obligations.find((o: { id: string }) => o.id === obligation.id);
+    expect(row.amountDueKobo).toBe(5_000_000);
+    expect(row.payments).toHaveLength(1);
+    expect(row.payments[0]).toMatchObject({ id: payment.id, status: "PENDING", bankReference: "STMT-REF" });
+    // PENDING, so it must not have moved the balance yet.
+    expect(row.balanceKobo).toBe(5_000_000);
+  });
+
+  it("returns 403 for an unrelated parent", async () => {
+    const { student } = await setupStatement();
+    const { token: unrelatedParentToken } = await createParent("stmt-unrelated@test.local");
+
+    const res = await request(server)
+      .get(`/api/students/${student.id}/statement`)
+      .set("Authorization", `Bearer ${unrelatedParentToken}`);
+
+    expect(res.status).toBe(403);
+  });
+});
+
+describe("GET /api/payments/:id", () => {
+  it("shows the obligation's balance before and after this claim would apply", async () => {
+    const { adminToken, obligation } = await setupObligation();
+
+    const first = await request(server)
+      .post(`/api/fee-obligations/${obligation.id}/payments`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ amountKobo: 3_000_000, paymentDate: "2026-09-10" });
+    await request(server).post(`/api/payments/${first.body.id}/confirm`).set("Authorization", `Bearer ${adminToken}`);
+
+    // A second, still-PENDING claim on the same (10,000,000) obligation —
+    // 3,000,000 already confirmed, so before this one applies the balance
+    // is 7,000,000; if confirmed, it would settle 5,000,000 of that.
+    const second = await request(server)
+      .post(`/api/fee-obligations/${obligation.id}/payments`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ amountKobo: 5_000_000, paymentDate: "2026-09-11" });
+
+    const res = await request(server).get(`/api/payments/${second.body.id}`).set("Authorization", `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("PENDING");
+    expect(res.body.balanceBeforeKobo).toBe(7_000_000);
+    expect(res.body.balanceAfterKobo).toBe(2_000_000);
+    expect(res.body.recordedByName).toBeTruthy();
+  });
+});

@@ -13,7 +13,7 @@ import {
 } from "../modules/auth/auth.schemas.js";
 import { classAttendanceQuerySchema, correctAttendanceSchema, idParamsSchema as attendanceIdParamsSchema, openSessionSchema, scanSchema } from "../modules/attendance/attendance.schemas.js";
 import { listAuditLogQuerySchema } from "../modules/audit/audit.schemas.js";
-import { createFeeStructureSchema, feesSummaryQuerySchema, idParamsSchema as feesIdParamsSchema, listPaymentsQuerySchema, recordPaymentSchema, updateFeeObligationSchema, updateFeeStructureSchema } from "../modules/fees/fees.schemas.js";
+import { createFeeStructureSchema, feesSummaryQuerySchema, idParamsSchema as feesIdParamsSchema, listPaymentsQuerySchema, recordPaymentSchema, studentStatementQuerySchema, updateFeeObligationSchema, updateFeeStructureSchema } from "../modules/fees/fees.schemas.js";
 import { createAssessmentComponentSchema, createGradeBandSchema, createGradingScaleSchema, idParamsSchema as gradingIdParamsSchema, updateAssessmentComponentSchema, updateGradeBandSchema } from "../modules/grading/grading.schemas.js";
 import { createProgressSchema, idParamsSchema as madrassahIdParamsSchema } from "../modules/madrassah/madrassah.schemas.js";
 import {
@@ -80,6 +80,8 @@ import {
   NotificationEventWithDeliveriesSchema,
   ParentSchema,
   FeesSummaryResponseSchema,
+  PaymentDetailResponseSchema,
+  StudentStatementResponseSchema,
   PaymentQueueResponseSchema,
   PaymentSchema,
   PaymentWithRelationsSchema,
@@ -539,10 +541,29 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     responses: { 200: { description: "OK", schema: ReceiptSchema } },
     scopeNote: SCOPE_NOTES.canReadStudentFinancials,
   },
+  "GET /api/payments/:id": {
+    summary:
+      "What a bursar needs to accept or decline a claim: the payment, the obligation, the student and " +
+      "class, who logged it, and the obligation's balance before and after this payment would apply.",
+    requestParams: feesIdParamsSchema,
+    responses: { 200: { description: "OK", schema: PaymentDetailResponseSchema } },
+    scopeNote: SCOPE_NOTES.canReadStudentFinancials,
+  },
   "GET /api/students/:id/payments": {
     summary: "List a student's payments",
     requestParams: feesIdParamsSchema,
     responses: { 200: { description: "OK", schema: z.array(PaymentWithRelationsSchema) } },
+    scopeNote: SCOPE_NOTES.canReadStudentFinancials,
+  },
+  "GET /api/students/:id/statement": {
+    summary:
+      "A family's statement: every obligation in scope with its amount, every payment against it at " +
+      "every status (not CONFIRMED-only, unlike most other fee-read endpoints), and the resulting " +
+      "balance. Plus the school's name/address so the frontend can render a printable document. " +
+      "Structured data, not a PDF — this API never generates one.",
+    requestParams: feesIdParamsSchema,
+    requestQuery: studentStatementQuerySchema,
+    responses: { 200: { description: "OK", schema: StudentStatementResponseSchema } },
     scopeNote: SCOPE_NOTES.canReadStudentFinancials,
   },
   "GET /api/payments": {

@@ -85,3 +85,9 @@ export const feesSummaryQuerySchema = z.object({
   classId: z.string().min(1).optional(),
 });
 export type FeesSummaryQuery = z.infer<typeof feesSummaryQuerySchema>;
+
+export const studentStatementQuerySchema = z.object({
+  academicSessionId: z.string().min(1).optional(),
+  termId: z.string().min(1).optional(),
+});
+export type StudentStatementQuery = z.infer<typeof studentStatementQuerySchema>;

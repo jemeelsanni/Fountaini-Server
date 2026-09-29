@@ -7,6 +7,7 @@ import type {
   IdParams,
   ListPaymentsQuery,
   RecordPaymentBody,
+  StudentStatementQuery,
   UpdateFeeObligationBody,
   UpdateFeeStructureBody,
 } from "./fees.schemas.js";
@@ -89,4 +90,14 @@ export async function listPayments(req: Request, res: Response): Promise<void> {
 
 export async function getFeesSummary(req: Request, res: Response): Promise<void> {
   res.status(200).json(await service.getFeesSummary(req.validatedQuery as FeesSummaryQuery));
+}
+
+export async function getStudentStatement(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as unknown as IdParams;
+  res.status(200).json(await service.getStudentStatement(id, req.validatedQuery as StudentStatementQuery));
+}
+
+export async function getPaymentById(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as unknown as IdParams;
+  res.status(200).json(await service.getPaymentById(id));
 }

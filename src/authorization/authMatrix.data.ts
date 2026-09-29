@@ -186,6 +186,8 @@ export const BESPOKE_ROUTE_KEYS: readonly string[] = [
   "GET /api/students/:id/fee-obligations",
   "GET /api/students/:id/payments",
   "GET /api/payments/:id/receipt",
+  "GET /api/payments/:id",
+  "GET /api/students/:id/statement",
   "GET /api/fee-obligations/:id",
   "POST /api/fee-obligations/:id/payments",
   "GET /api/class-subject-assignments/:id/students",
@@ -779,6 +781,8 @@ export async function buildBespokeRows(generics: GenericActors): Promise<MatrixR
       `/api/students/${world.targetStudent.id}/payments`,
     ),
     financialsScopeRow("GET /api/payments/:id/receipt", `/api/payments/${world.payment.id}/receipt`),
+    financialsScopeRow("GET /api/payments/:id", `/api/payments/${world.payment.id}`),
+    financialsScopeRow("GET /api/students/:id/statement", `/api/students/${world.targetStudent.id}/statement`),
     financialsScopeRow("GET /api/fee-obligations/:id", `/api/fee-obligations/${world.feeObligationId}`),
     {
       name: "POST /api/fee-obligations/:id/payments",

@@ -6,6 +6,7 @@ import { prisma } from "../../db/client.js";
 import { AppError } from "../../errors/AppError.js";
 import { fireAndForget } from "../../lib/fireAndForget.js";
 import { createNotification } from "../notifications/notifications.service.js";
+import { getSchool } from "../school/school.service.js";
 import type {
   CreateFeeStructureBody,
   RecordPaymentBody,
@@ -676,4 +677,156 @@ export async function getFeesSummary(filter: FeesSummaryFilter) {
   // Per-class breakdown only when the caller didn't already scope to one
   // class — a single-class request already IS the "breakdown".
   return filter.classId ? { total } : { total, byClass };
+}
+
+// ---------------------------------------------------------------------------
+// Student statement
+// ---------------------------------------------------------------------------
+
+interface StatementFilter {
+  academicSessionId?: string;
+  termId?: string;
+}
+
+/// Every obligation in scope, every payment against it at every status
+/// (unlike listObligationsForStudent/withBalance, which only ever include
+/// CONFIRMED payments — a family statement should show a pending or
+/// rejected claim too, not just what's already settled), and the resulting
+/// balance — computed from CONFIRMED payments only, same rule as
+/// recomputeObligationStatus, regardless of what else is shown alongside
+/// it. Plus the school's own name/address so the frontend can render this
+/// as a printable document without a second request.
+export async function getStudentStatement(studentId: string, filter: StatementFilter) {
+  const student = await prisma.student.findUnique({
+    where: { id: studentId },
+    select: { id: true, firstName: true, lastName: true, admissionNumber: true },
+  });
+  if (!student) {
+    throw AppError.notFound("Student not found");
+  }
+
+  const [school, obligations] = await Promise.all([
+    getSchool(),
+    prisma.feeObligation.findMany({
+      where: { studentId, academicSessionId: filter.academicSessionId, termId: filter.termId },
+      include: { feeStructure: true, payments: { orderBy: { paymentDate: "asc" } } },
+      orderBy: { createdAt: "asc" },
+    }),
+  ]);
+
+  return {
+    school: { name: school.name, address: school.address },
+    student: {
+      id: student.id,
+      name: `${student.firstName} ${student.lastName}`,
+      admissionNumber: student.admissionNumber,
+    },
+    obligations: obligations.map((obligation) => {
+      const confirmedPaidKobo = obligation.payments
+        .filter((p) => p.status === "CONFIRMED")
+        .reduce((sum, p) => sum + p.amountKobo, 0);
+      return {
+        id: obligation.id,
+        feeStructureName: obligation.feeStructure.name,
+        category: obligation.feeStructure.category,
+        amountDueKobo: obligation.amountDueKobo,
+        status: obligation.status,
+        dueDate: obligation.dueDate,
+        payments: obligation.payments.map((p) => ({
+          id: p.id,
+          amountKobo: p.amountKobo,
+          status: p.status,
+          bankReference: p.bankReference,
+          paymentDate: p.paymentDate,
+        })),
+        totalConfirmedPaidKobo: confirmedPaidKobo,
+        balanceKobo: obligation.amountDueKobo - confirmedPaidKobo,
+      };
+    }),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Payment detail
+// ---------------------------------------------------------------------------
+
+/// What a bursar needs to decide on a claim: the payment, the obligation,
+/// the student/class it's for, who logged it, and the balance before/after
+/// — computed the same way regardless of this payment's own status (PENDING,
+/// CONFIRMED, or REJECTED), so it reads consistently whether the bursar is
+/// still deciding or looking back at a past decision. "Before" is the
+/// balance from every OTHER CONFIRMED payment on this obligation (this one
+/// excluded, whatever its status); "after" is that minus this payment's own
+/// amount — "would this confirmation settle the account, or leave a
+/// remainder" for a still-PENDING claim, and "did/would" for a CONFIRMED/
+/// REJECTED one.
+export async function getPaymentById(paymentId: string) {
+  const payment = await prisma.payment.findUnique({
+    where: { id: paymentId },
+    include: {
+      feeObligation: {
+        include: {
+          feeStructure: true,
+          payments: { where: { status: "CONFIRMED" } },
+          student: {
+            include: { enrollments: { where: { status: "ACTIVE" }, include: { class: true }, take: 1 } },
+          },
+        },
+      },
+    },
+  });
+  if (!payment) {
+    throw AppError.notFound("Payment not found");
+  }
+
+  const { feeObligation } = payment;
+  const otherConfirmedPaidKobo = feeObligation.payments
+    .filter((p) => p.id !== payment.id)
+    .reduce((sum, p) => sum + p.amountKobo, 0);
+  const balanceBeforeKobo = feeObligation.amountDueKobo - otherConfirmedPaidKobo;
+  const balanceAfterKobo = balanceBeforeKobo - payment.amountKobo;
+
+  const [recordedByName, confirmedByName] = await Promise.all([
+    resolveUserNames([payment.recordedByUserId]).then((m) => m.get(payment.recordedByUserId) ?? "Unknown"),
+    payment.confirmedByUserId
+      ? resolveUserNames([payment.confirmedByUserId]).then((m) => m.get(payment.confirmedByUserId!) ?? "Unknown")
+      : Promise.resolve(null),
+  ]);
+
+  const enrollment = feeObligation.student.enrollments[0];
+
+  return {
+    id: payment.id,
+    amountKobo: payment.amountKobo,
+    method: payment.method,
+    bankReference: payment.bankReference,
+    paymentDate: payment.paymentDate,
+    status: payment.status,
+    notes: payment.notes,
+    recordedByUserId: payment.recordedByUserId,
+    recordedByName,
+    createdAt: payment.createdAt,
+    confirmedByUserId: payment.confirmedByUserId,
+    confirmedByName,
+    confirmedAt: payment.confirmedAt,
+    student: {
+      id: feeObligation.student.id,
+      name: `${feeObligation.student.firstName} ${feeObligation.student.lastName}`,
+      admissionNumber: feeObligation.student.admissionNumber,
+    },
+    class: enrollment
+      ? {
+          id: enrollment.class.id,
+          name: `${enrollment.class.gradeName}${enrollment.class.arm ? ` ${enrollment.class.arm}` : ""}`,
+        }
+      : null,
+    feeObligation: {
+      id: feeObligation.id,
+      feeStructureName: feeObligation.feeStructure.name,
+      amountDueKobo: feeObligation.amountDueKobo,
+      status: feeObligation.status,
+    },
+    balanceBeforeKobo,
+    balanceAfterKobo,
+  };
 }

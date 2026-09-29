@@ -839,6 +839,68 @@ export const FeesSummaryResponseSchema = z
   })
   .openapi("FeesSummaryResponse");
 
+const StatementPaymentSchema = z.object({
+  id: id(),
+  amountKobo: kobo(),
+  status: PaymentStatusSchema,
+  bankReference: z.string().nullable(),
+  paymentDate: isoDateTime(),
+});
+
+export const StudentStatementResponseSchema = z
+  .object({
+    school: z.object({ name: z.string(), address: z.string().nullable() }),
+    student: z.object({ id: id(), name: z.string(), admissionNumber: z.string() }),
+    obligations: z.array(
+      z.object({
+        id: id(),
+        feeStructureName: z.string(),
+        category: FeeCategorySchema,
+        amountDueKobo: kobo(),
+        status: FeeObligationStatusSchema,
+        dueDate: isoDateTime().nullable(),
+        payments: z.array(StatementPaymentSchema).openapi({
+          description: "Every payment against this obligation, at every status — not CONFIRMED-only",
+        }),
+        totalConfirmedPaidKobo: kobo(),
+        balanceKobo: kobo(),
+      }),
+    ),
+  })
+  .openapi("StudentStatementResponse");
+
+export const PaymentDetailResponseSchema = z
+  .object({
+    id: id(),
+    amountKobo: kobo(),
+    method: PaymentMethodSchema,
+    bankReference: z.string().nullable(),
+    paymentDate: isoDateTime(),
+    status: PaymentStatusSchema,
+    notes: z.string().nullable(),
+    recordedByUserId: id(),
+    recordedByName: z.string(),
+    createdAt: isoDateTime(),
+    confirmedByUserId: id().nullable(),
+    confirmedByName: z.string().nullable(),
+    confirmedAt: isoDateTime().nullable(),
+    student: z.object({ id: id(), name: z.string(), admissionNumber: z.string() }),
+    class: z.object({ id: id(), name: z.string() }).nullable(),
+    feeObligation: z.object({
+      id: id(),
+      feeStructureName: z.string(),
+      amountDueKobo: kobo(),
+      status: FeeObligationStatusSchema,
+    }),
+    balanceBeforeKobo: kobo().openapi({
+      description: "The obligation's balance from every OTHER confirmed payment, this one excluded regardless of its own status",
+    }),
+    balanceAfterKobo: kobo().openapi({
+      description: "balanceBeforeKobo minus this payment's own amount — what confirming it would leave (or already left/would have left, for a CONFIRMED/REJECTED payment)",
+    }),
+  })
+  .openapi("PaymentDetailResponse");
+
 // ---------------------------------------------------------------------------
 // Attendance (QR-based)
 // ---------------------------------------------------------------------------
