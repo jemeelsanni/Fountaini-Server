@@ -5,6 +5,7 @@ import { logger } from "../../config/logger.js";
 import { prisma } from "../../db/client.js";
 import { AppError } from "../../errors/AppError.js";
 import { fireAndForget } from "../../lib/fireAndForget.js";
+import { toNumber } from "../../lib/sqlNumeric.js";
 import { createNotification } from "../notifications/notifications.service.js";
 import { getSchool } from "../school/school.service.js";
 import type {
@@ -515,13 +516,13 @@ interface RawClassBucketRow {
   classId: string;
   gradeName: string;
   arm: string | null;
-  expectedKobo: bigint | number;
-  waivedKobo: bigint | number;
-  fullyPaidCount: bigint | number;
-  partiallyPaidCount: bigint | number;
-  unpaidCount: bigint | number;
-  collectedKobo: bigint | number;
-  pendingKobo: bigint | number;
+  expectedKobo: bigint | number | string;
+  waivedKobo: bigint | number | string;
+  fullyPaidCount: bigint | number | string;
+  partiallyPaidCount: bigint | number | string;
+  unpaidCount: bigint | number | string;
+  collectedKobo: bigint | number | string;
+  pendingKobo: bigint | number | string;
 }
 
 /// Field names deliberately avoid "pending" on the FeeObligation side and
@@ -539,10 +540,6 @@ export interface FeesSummaryBuckets {
   fullyPaidCount: number;
   partiallyPaidCount: number;
   unpaidCount: number;
-}
-
-function toNumber(value: bigint | number): number {
-  return typeof value === "bigint" ? Number(value) : value;
 }
 
 function bucketsFromRow(row: RawClassBucketRow): FeesSummaryBuckets {

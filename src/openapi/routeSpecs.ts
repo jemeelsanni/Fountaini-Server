@@ -14,6 +14,7 @@ import {
 import { classAttendanceQuerySchema, correctAttendanceSchema, idParamsSchema as attendanceIdParamsSchema, openSessionSchema, scanSchema } from "../modules/attendance/attendance.schemas.js";
 import { listAuditLogQuerySchema } from "../modules/audit/audit.schemas.js";
 import { createFeeStructureSchema, feesSummaryQuerySchema, idParamsSchema as feesIdParamsSchema, listPaymentsQuerySchema, recordPaymentSchema, studentStatementQuerySchema, updateFeeObligationSchema, updateFeeStructureSchema } from "../modules/fees/fees.schemas.js";
+import { paymentHistoryQuerySchema, scopedReportQuerySchema } from "../modules/reports/reports.schemas.js";
 import { createAssessmentComponentSchema, createGradeBandSchema, createGradingScaleSchema, idParamsSchema as gradingIdParamsSchema, updateAssessmentComponentSchema, updateGradeBandSchema } from "../modules/grading/grading.schemas.js";
 import { createProgressSchema, idParamsSchema as madrassahIdParamsSchema } from "../modules/madrassah/madrassah.schemas.js";
 import {
@@ -61,7 +62,9 @@ import {
   ClassSchema,
   ClassSubjectAssignmentSchema,
   ClassSubjectAssignmentWithRelationsSchema,
+  CollectionsRowSchema,
   ConvertEnquiryResultSchema,
+  DefaulterRowSchema,
   BulkStudentStatusResultSchema,
   EnrollmentSchema,
   EnrollmentWithRelationsSchema,
@@ -81,10 +84,12 @@ import {
   ParentSchema,
   FeesSummaryResponseSchema,
   PaymentDetailResponseSchema,
+  PaymentHistoryRowSchema,
   StudentStatementResponseSchema,
   PaymentQueueResponseSchema,
   PaymentSchema,
   PaymentWithRelationsSchema,
+  TermSummaryResponseSchema,
   RatingScaleLevelSchema,
   RatingWithTraitSchema,
   ReceiptSchema,
@@ -581,6 +586,33 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
       "byClass is present only when classId is omitted from the request.",
     requestQuery: feesSummaryQuerySchema,
     responses: { 200: { description: "OK", schema: FeesSummaryResponseSchema } },
+  },
+
+  // --- reports ------------------------------------------------------------
+  "GET /api/reports/defaulters": {
+    summary:
+      "Every student with an outstanding balance, by class, with the primary-contact parent's name and " +
+      "phone — a chasing list is useless without contact details.",
+    requestQuery: scopedReportQuerySchema,
+    responses: { 200: { description: "OK", schema: z.array(DefaulterRowSchema) } },
+  },
+  "GET /api/reports/collections": {
+    summary: "Expected, collected, and outstanding kobo per class, so the school can see which arms are behind.",
+    requestQuery: scopedReportQuerySchema,
+    responses: { 200: { description: "OK", schema: z.array(CollectionsRowSchema) } },
+  },
+  "GET /api/reports/payments": {
+    summary:
+      "Every payment in a date range, for reconciling against a bank statement — bankReference is the " +
+      "join key. No PENDING default and no pagination, unlike GET /api/payments: a reconciliation pass " +
+      "needs the whole range. Pass format=csv for a text/csv response instead of JSON, same rows.",
+    requestQuery: paymentHistoryQuerySchema,
+    responses: { 200: { description: "OK (JSON by default; text/csv when format=csv)", schema: z.array(PaymentHistoryRowSchema) } },
+  },
+  "GET /api/reports/term-summary": {
+    summary: "The dashboard figures plus payment counts by status, in a shape suitable for showing the proprietor.",
+    requestQuery: scopedReportQuerySchema,
+    responses: { 200: { description: "OK", schema: TermSummaryResponseSchema } },
   },
 
   // --- grading ----------------------------------------------------------------

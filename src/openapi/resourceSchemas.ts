@@ -902,6 +902,54 @@ export const PaymentDetailResponseSchema = z
   .openapi("PaymentDetailResponse");
 
 // ---------------------------------------------------------------------------
+// Reports
+// ---------------------------------------------------------------------------
+
+export const DefaulterRowSchema = z
+  .object({
+    studentId: id(),
+    studentName: z.string(),
+    admissionNumber: z.string(),
+    class: z.object({ id: id(), name: z.string() }),
+    outstandingKobo: kobo(),
+    primaryContact: z
+      .object({ name: z.string(), phone: z.string().nullable() })
+      .nullable()
+      .openapi({ description: "null only if the student has no linked parent at all" }),
+  })
+  .openapi("DefaulterRow");
+
+export const CollectionsRowSchema = z
+  .object({
+    classId: id(),
+    className: z.string(),
+    expectedKobo: kobo(),
+    collectedKobo: kobo(),
+    outstandingKobo: kobo(),
+  })
+  .openapi("CollectionsRow");
+
+export const TermSummaryResponseSchema = FeesSummaryBucketsSchema.extend({
+  paymentCounts: z.object({
+    pendingCount: z.number().int(),
+    confirmedCount: z.number().int(),
+    rejectedCount: z.number().int(),
+  }),
+}).openapi("TermSummaryResponse");
+
+/// JSON shape only — ?format=csv returns text/csv instead, same rows, not
+/// representable as a second schema on the one response entry below. A
+/// standalone shape, not PaymentWithRelationsSchema extended: that one
+/// requires a receipt, which this endpoint's own query never fetches
+/// (reconciling against a bank statement has no use for it).
+export const PaymentHistoryRowSchema = PaymentSchema.extend({
+  feeObligation: z.object({
+    id: id(),
+    student: z.object({ firstName: z.string(), lastName: z.string(), admissionNumber: z.string() }),
+  }),
+}).openapi("PaymentHistoryRow");
+
+// ---------------------------------------------------------------------------
 // Attendance (QR-based)
 // ---------------------------------------------------------------------------
 
