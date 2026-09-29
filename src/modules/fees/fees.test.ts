@@ -598,9 +598,17 @@ describe("PARENT logs a payment against their own child's obligation", () => {
     const beforeConfirm = await prisma.feeObligation.findUniqueOrThrow({ where: { id: obligation.id } });
     expect(beforeConfirm.status).toBe("PENDING");
 
+    const summaryBefore = await request(server).get("/api/fees/summary").set("Authorization", `Bearer ${adminToken}`);
+    expect(summaryBefore.body.total.collectedKobo).toBe(0);
+    expect(summaryBefore.body.total.pendingKobo).toBe(5_000_000);
+
     const confirmRes = await request(server)
       .post(`/api/payments/${claim.body.id}/confirm`)
       .set("Authorization", `Bearer ${adminToken}`);
+
+    const summaryAfter = await request(server).get("/api/fees/summary").set("Authorization", `Bearer ${adminToken}`);
+    expect(summaryAfter.body.total.collectedKobo).toBe(5_000_000);
+    expect(summaryAfter.body.total.pendingKobo).toBe(0);
     expect(confirmRes.status).toBe(200);
 
     const afterConfirm = await prisma.feeObligation.findUniqueOrThrow({ where: { id: obligation.id } });

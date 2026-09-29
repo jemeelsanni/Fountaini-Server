@@ -3083,6 +3083,164 @@
           "issuedAt"
         ]
       },
+      "PaymentDetailResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "amountKobo": {
+            "type": "integer",
+            "description": "Amount in kobo (1/100 of a naira)"
+          },
+          "method": {
+            "$ref": "#/components/schemas/PaymentMethod"
+          },
+          "bankReference": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "paymentDate": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PaymentStatus"
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "recordedByUserId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "recordedByName": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "confirmedByUserId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "cuid"
+          },
+          "confirmedByName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confirmedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "student": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "cuid"
+              },
+              "name": {
+                "type": "string"
+              },
+              "admissionNumber": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "admissionNumber"
+            ]
+          },
+          "class": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "cuid"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ]
+          },
+          "feeObligation": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "cuid"
+              },
+              "feeStructureName": {
+                "type": "string"
+              },
+              "amountDueKobo": {
+                "type": "integer",
+                "description": "Amount in kobo (1/100 of a naira)"
+              },
+              "status": {
+                "$ref": "#/components/schemas/FeeObligationStatus"
+              }
+            },
+            "required": [
+              "id",
+              "feeStructureName",
+              "amountDueKobo",
+              "status"
+            ]
+          },
+          "balanceBeforeKobo": {
+            "type": "integer",
+            "description": "The obligation's balance from every OTHER confirmed payment, this one excluded regardless of its own status"
+          },
+          "balanceAfterKobo": {
+            "type": "integer",
+            "description": "balanceBeforeKobo minus this payment's own amount — what confirming it would leave (or already left/would have left, for a CONFIRMED/REJECTED payment)"
+          }
+        },
+        "required": [
+          "id",
+          "amountKobo",
+          "method",
+          "bankReference",
+          "paymentDate",
+          "status",
+          "notes",
+          "recordedByUserId",
+          "recordedByName",
+          "createdAt",
+          "confirmedByUserId",
+          "confirmedByName",
+          "confirmedAt",
+          "student",
+          "class",
+          "feeObligation",
+          "balanceBeforeKobo",
+          "balanceAfterKobo"
+        ]
+      },
       "PaymentWithRelations": {
         "allOf": [
           {
@@ -3181,6 +3339,351 @@
               "receipt"
             ]
           }
+        ]
+      },
+      "StudentStatementResponse": {
+        "type": "object",
+        "properties": {
+          "school": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "address": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "address"
+            ]
+          },
+          "student": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "cuid"
+              },
+              "name": {
+                "type": "string"
+              },
+              "admissionNumber": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "admissionNumber"
+            ]
+          },
+          "obligations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "cuid"
+                },
+                "feeStructureName": {
+                  "type": "string"
+                },
+                "category": {
+                  "$ref": "#/components/schemas/FeeCategory"
+                },
+                "amountDueKobo": {
+                  "type": "integer",
+                  "description": "Amount in kobo (1/100 of a naira)"
+                },
+                "status": {
+                  "$ref": "#/components/schemas/FeeObligationStatus"
+                },
+                "dueDate": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "payments": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "description": "cuid"
+                      },
+                      "amountKobo": {
+                        "type": "integer",
+                        "description": "Amount in kobo (1/100 of a naira)"
+                      },
+                      "status": {
+                        "$ref": "#/components/schemas/PaymentStatus"
+                      },
+                      "bankReference": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "paymentDate": {
+                        "type": "string",
+                        "format": "date-time"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "amountKobo",
+                      "status",
+                      "bankReference",
+                      "paymentDate"
+                    ]
+                  },
+                  "description": "Every payment against this obligation, at every status — not CONFIRMED-only"
+                },
+                "totalConfirmedPaidKobo": {
+                  "type": "integer",
+                  "description": "Amount in kobo (1/100 of a naira)"
+                },
+                "balanceKobo": {
+                  "type": "integer",
+                  "description": "Amount in kobo (1/100 of a naira)"
+                }
+              },
+              "required": [
+                "id",
+                "feeStructureName",
+                "category",
+                "amountDueKobo",
+                "status",
+                "dueDate",
+                "payments",
+                "totalConfirmedPaidKobo",
+                "balanceKobo"
+              ]
+            }
+          }
+        },
+        "required": [
+          "school",
+          "student",
+          "obligations"
+        ]
+      },
+      "PaymentQueueResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PaymentQueueItem"
+            }
+          },
+          "total": {
+            "type": "integer"
+          },
+          "page": {
+            "type": "integer"
+          },
+          "pageSize": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "data",
+          "total",
+          "page",
+          "pageSize"
+        ]
+      },
+      "PaymentQueueItem": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "amountKobo": {
+            "type": "integer",
+            "description": "Amount in kobo (1/100 of a naira)"
+          },
+          "bankReference": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "paymentDate": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PaymentStatus"
+          },
+          "recordedByUserId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "recordedByName": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "student": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "cuid"
+              },
+              "name": {
+                "type": "string"
+              },
+              "admissionNumber": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "admissionNumber"
+            ]
+          },
+          "class": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "cuid"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ]
+          },
+          "feeObligationId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "obligationOutstandingKobo": {
+            "type": "integer",
+            "description": "The obligation's current balance, independent of whether this specific claim is confirmed"
+          }
+        },
+        "required": [
+          "id",
+          "amountKobo",
+          "bankReference",
+          "paymentDate",
+          "status",
+          "recordedByUserId",
+          "recordedByName",
+          "createdAt",
+          "student",
+          "class",
+          "feeObligationId",
+          "obligationOutstandingKobo"
+        ]
+      },
+      "FeesSummaryResponse": {
+        "type": "object",
+        "properties": {
+          "total": {
+            "$ref": "#/components/schemas/FeesSummaryBuckets"
+          },
+          "byClass": {
+            "type": "array",
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/FeesSummaryBuckets"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "classId": {
+                      "type": "string",
+                      "description": "cuid"
+                    },
+                    "className": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "classId",
+                    "className"
+                  ]
+                }
+              ]
+            },
+            "description": "Present only when classId was not given in the request"
+          }
+        },
+        "required": [
+          "total"
+        ]
+      },
+      "FeesSummaryBuckets": {
+        "type": "object",
+        "properties": {
+          "expectedKobo": {
+            "type": "integer",
+            "description": "Sum of amountDueKobo across non-WAIVED obligations in scope"
+          },
+          "collectedKobo": {
+            "type": "integer",
+            "description": "Sum of CONFIRMED payments only"
+          },
+          "pendingKobo": {
+            "type": "integer",
+            "description": "Sum of PENDING (awaiting confirmation) payments — claimed, not yet confirmed"
+          },
+          "outstandingKobo": {
+            "type": "integer",
+            "description": "expectedKobo minus collectedKobo. NOT minus pendingKobo."
+          },
+          "waivedKobo": {
+            "type": "integer",
+            "description": "Sum of amountDueKobo across WAIVED obligations, reported separately"
+          },
+          "fullyPaidCount": {
+            "type": "integer",
+            "description": "Obligations at FeeObligation.status = PAID"
+          },
+          "partiallyPaidCount": {
+            "type": "integer",
+            "description": "Obligations at FeeObligation.status = PARTIALLY_PAID"
+          },
+          "unpaidCount": {
+            "type": "integer",
+            "description": "Obligations with no CONFIRMED payment at all (FeeObligation.status = PENDING)"
+          }
+        },
+        "required": [
+          "expectedKobo",
+          "collectedKobo",
+          "pendingKobo",
+          "outstandingKobo",
+          "waivedKobo",
+          "fullyPaidCount",
+          "partiallyPaidCount",
+          "unpaidCount"
         ]
       },
       "NotificationEventWithDeliveries": {
@@ -3708,6 +4211,183 @@
             "required": [
               "classSubjectAssignment",
               "timeSlot"
+            ]
+          }
+        ]
+      },
+      "DefaulterRow": {
+        "type": "object",
+        "properties": {
+          "studentId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "studentName": {
+            "type": "string"
+          },
+          "admissionNumber": {
+            "type": "string"
+          },
+          "class": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "cuid"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ]
+          },
+          "outstandingKobo": {
+            "type": "integer",
+            "description": "Amount in kobo (1/100 of a naira)"
+          },
+          "primaryContact": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "phone": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "phone"
+            ],
+            "description": "null only if the student has no linked parent at all"
+          }
+        },
+        "required": [
+          "studentId",
+          "studentName",
+          "admissionNumber",
+          "class",
+          "outstandingKobo",
+          "primaryContact"
+        ]
+      },
+      "CollectionsRow": {
+        "type": "object",
+        "properties": {
+          "classId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "className": {
+            "type": "string"
+          },
+          "expectedKobo": {
+            "type": "integer",
+            "description": "Amount in kobo (1/100 of a naira)"
+          },
+          "collectedKobo": {
+            "type": "integer",
+            "description": "Amount in kobo (1/100 of a naira)"
+          },
+          "outstandingKobo": {
+            "type": "integer",
+            "description": "Amount in kobo (1/100 of a naira)"
+          }
+        },
+        "required": [
+          "classId",
+          "className",
+          "expectedKobo",
+          "collectedKobo",
+          "outstandingKobo"
+        ]
+      },
+      "PaymentHistoryRow": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Payment"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "feeObligation": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "cuid"
+                  },
+                  "student": {
+                    "type": "object",
+                    "properties": {
+                      "firstName": {
+                        "type": "string"
+                      },
+                      "lastName": {
+                        "type": "string"
+                      },
+                      "admissionNumber": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "firstName",
+                      "lastName",
+                      "admissionNumber"
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "student"
+                ]
+              }
+            },
+            "required": [
+              "feeObligation"
+            ]
+          }
+        ]
+      },
+      "TermSummaryResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/FeesSummaryBuckets"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "paymentCounts": {
+                "type": "object",
+                "properties": {
+                  "pendingCount": {
+                    "type": "integer"
+                  },
+                  "confirmedCount": {
+                    "type": "integer"
+                  },
+                  "rejectedCount": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "pendingCount",
+                  "confirmedCount",
+                  "rejectedCount"
+                ]
+              }
+            },
+            "required": [
+              "paymentCounts"
             ]
           }
         ]
@@ -13659,12 +14339,8 @@
     },
     "/api/fee-obligations/{id}/payments": {
       "post": {
-        "summary": "Record a payment against a fee obligation",
-        "description": "Roles: ADMIN, BURSAR.",
-        "x-roles": [
-          "ADMIN",
-          "BURSAR"
-        ],
+        "summary": "Record a payment claim against a fee obligation. Always created PENDING regardless of caller — a parent-logged payment is a claim, not a fact, and only ADMIN/BURSAR can confirm or reject one (see those routes below). A non-ADMIN/BURSAR caller is blocked with 409 if they already have a PENDING claim on this same obligation.",
+        "description": "ADMIN, BURSAR, or the obligation's own linked parent — never the student themself, unlike most other fee-read scopes.",
         "security": [
           {
             "bearerAuth": []
@@ -13769,6 +14445,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with the resource's current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictError"
                 }
               }
             }
@@ -14047,6 +14733,87 @@
         }
       }
     },
+    "/api/payments/{id}": {
+      "get": {
+        "summary": "What a bursar needs to accept or decline a claim: the payment, the obligation, the student and class, who logged it, and the obligation's balance before and after this payment would apply.",
+        "description": "ADMIN, BURSAR, the student's linked parent, or the student themself.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentDetailResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/students/{id}/payments": {
       "get": {
         "summary": "List a student's payments",
@@ -14124,6 +14891,341 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/students/{id}/statement": {
+      "get": {
+        "summary": "A family's statement: every obligation in scope with its amount, every payment against it at every status (not CONFIRMED-only, unlike most other fee-read endpoints), and the resulting balance. Plus the school's name/address so the frontend can render a printable document. Structured data, not a PDF — this API never generates one.",
+        "description": "ADMIN, BURSAR, the student's linked parent, or the student themself.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": false,
+            "name": "academicSessionId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": false,
+            "name": "termId",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudentStatementResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/payments": {
+      "get": {
+        "summary": "The bursar's payment queue — paginated, newest first. Defaults to PENDING (the work queue) when status is omitted; pass status explicitly to see confirmed or rejected payments instead. classId filters via the student's current ACTIVE enrollment in that class.",
+        "description": "Roles: ADMIN, BURSAR.",
+        "x-roles": [
+          "ADMIN",
+          "BURSAR"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "PENDING",
+                "CONFIRMED",
+                "REJECTED"
+              ],
+              "default": "PENDING"
+            },
+            "required": false,
+            "name": "status",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": false,
+            "name": "classId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": false,
+            "name": "studentId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "date-time"
+            },
+            "required": false,
+            "name": "from",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "date-time"
+            },
+            "required": false,
+            "name": "to",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "default": 1
+            },
+            "required": false,
+            "name": "page",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 100,
+              "default": 20
+            },
+            "required": false,
+            "name": "pageSize",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentQueueResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/fees/summary": {
+      "get": {
+        "summary": "Dashboard totals, aggregated in SQL. Every amount is in kobo. pendingKobo is its own bucket — money claimed via a PENDING payment but not yet confirmed is neither collected nor outstanding. byClass is present only when classId is omitted from the request.",
+        "description": "Roles: ADMIN, BURSAR.",
+        "x-roles": [
+          "ADMIN",
+          "BURSAR"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": false,
+            "name": "academicSessionId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": false,
+            "name": "termId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": false,
+            "name": "classId",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeesSummaryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
@@ -15192,6 +16294,383 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/reports/defaulters": {
+      "get": {
+        "summary": "Every student with an outstanding balance, by class, with the primary-contact parent's name and phone — a chasing list is useless without contact details.",
+        "description": "Roles: ADMIN, BURSAR.",
+        "x-roles": [
+          "ADMIN",
+          "BURSAR"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": false,
+            "name": "academicSessionId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": false,
+            "name": "termId",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DefaulterRow"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/reports/collections": {
+      "get": {
+        "summary": "Expected, collected, and outstanding kobo per class, so the school can see which arms are behind.",
+        "description": "Roles: ADMIN, BURSAR.",
+        "x-roles": [
+          "ADMIN",
+          "BURSAR"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": false,
+            "name": "academicSessionId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": false,
+            "name": "termId",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CollectionsRow"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/reports/payments": {
+      "get": {
+        "summary": "Every payment in a date range, for reconciling against a bank statement — bankReference is the join key. No PENDING default and no pagination, unlike GET /api/payments: a reconciliation pass needs the whole range. Pass format=csv for a text/csv response instead of JSON, same rows.",
+        "description": "Roles: ADMIN, BURSAR.",
+        "x-roles": [
+          "ADMIN",
+          "BURSAR"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "date-time"
+            },
+            "required": false,
+            "name": "from",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "date-time"
+            },
+            "required": false,
+            "name": "to",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "PENDING",
+                "CONFIRMED",
+                "REJECTED"
+              ]
+            },
+            "required": false,
+            "name": "status",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "json",
+                "csv"
+              ],
+              "default": "json"
+            },
+            "required": false,
+            "name": "format",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK (JSON by default; text/csv when format=csv)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PaymentHistoryRow"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/reports/term-summary": {
+      "get": {
+        "summary": "The dashboard figures plus payment counts by status, in a shape suitable for showing the proprietor.",
+        "description": "Roles: ADMIN, BURSAR.",
+        "x-roles": [
+          "ADMIN",
+          "BURSAR"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": false,
+            "name": "academicSessionId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": false,
+            "name": "termId",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TermSummaryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
                 }
               }
             }
