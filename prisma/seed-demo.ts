@@ -737,10 +737,18 @@ async function seedFees(
     obligationMap: Map<string, { id: string }> = obligationByStudentId,
   ) {
     const obligation = obligationMap.get(students.jss1a[studentKey]!.id)!;
+    // Several students below are paid twice — once for tuition, once for
+    // the levy loop further down — and bankReference is now genuinely
+    // unique (migration 20260930120000_add_payment_bank_reference_unique_
+    // index): a reference derived from studentKey alone collided across
+    // those two calls for every one of them. Suffixed by which obligation
+    // this actually is (the obligation's own id, not a hardcoded label, so
+    // it stays unique even if more pay() call sites are added later)
+    // rather than reverting to a non-unique reference.
     const payment = await feesService.recordPayment(obligation.id, bursarPrincipal, {
       amountKobo,
       paymentDate: new Date("2026-09-15"),
-      bankReference: `DEMO-${studentKey.toUpperCase()}`,
+      bankReference: `DEMO-${studentKey.toUpperCase()}-${obligation.id.slice(-6)}`,
     });
     if (outcome === "confirm") {
       await feesService.confirmPayment(payment.id, actorUserId);
