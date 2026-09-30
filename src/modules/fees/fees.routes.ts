@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { requireAuth, requireRole, requireScope } from "../../authorization/middleware.js";
 import {
+  canCreatePaymentForObligation,
   canReadFeeObligation,
   canReadPayment,
   canReadStudentFinancials,
@@ -11,9 +12,12 @@ import { validate } from "../../http/middleware/validate.js";
 import * as controller from "./fees.controller.js";
 import {
   createFeeStructureSchema,
+  feesSummaryQuerySchema,
   idParamsSchema,
   type IdParams,
+  listPaymentsQuerySchema,
   recordPaymentSchema,
+  studentStatementQuerySchema,
   updateFeeObligationSchema,
   updateFeeStructureSchema,
 } from "./fees.schemas.js";
@@ -80,8 +84,10 @@ feesRouter.patch(
 
 feesRouter.post(
   "/fee-obligations/:id/payments",
-  requireRole("BURSAR", "ADMIN"),
   validate({ params: idParamsSchema, body: recordPaymentSchema }),
+  requireScope((principal, req) =>
+    canCreatePaymentForObligation(principal, (req.params as unknown as IdParams).id),
+  ),
   auditMutation("Payment", "PAYMENT_RECORDED"),
   controller.recordPayment,
 );
@@ -108,10 +114,47 @@ feesRouter.get(
   controller.getReceiptForPayment,
 );
 feesRouter.get(
+  // Same scope as /receipt above (canReadPayment: ADMIN/BURSAR, or via
+  // canReadStudentFinancials on the obligation's student) rather than a
+  // narrower parent-only variant — the spec for this route names ADMIN,
+  // BURSAR and "the linked parent" without mentioning the student, but
+  // fragmenting payment-read access across two slightly different
+  // resolvers for two routes reading the same underlying thing (a payment)
+  // is worse than the alternative: this keeps "who can read a given
+  // payment's detail" answerable in exactly one place.
+  "/payments/:id",
+  validate({ params: idParamsSchema }),
+  requireScope((principal, req) => canReadPayment(principal, (req.params as unknown as IdParams).id)),
+  controller.getPaymentById,
+);
+feesRouter.get(
   "/students/:id/payments",
   validate({ params: idParamsSchema }),
   requireScope((principal, req) =>
     canReadStudentFinancials(principal, (req.params as unknown as IdParams).id),
   ),
   controller.listPaymentsForStudent,
+);
+
+feesRouter.get(
+  "/students/:id/statement",
+  validate({ params: idParamsSchema, query: studentStatementQuerySchema }),
+  requireScope((principal, req) =>
+    canReadStudentFinancials(principal, (req.params as unknown as IdParams).id),
+  ),
+  controller.getStudentStatement,
+);
+
+feesRouter.get(
+  "/payments",
+  requireRole("ADMIN", "BURSAR"),
+  validate({ query: listPaymentsQuerySchema }),
+  controller.listPayments,
+);
+
+feesRouter.get(
+  "/fees/summary",
+  requireRole("ADMIN", "BURSAR"),
+  validate({ query: feesSummaryQuerySchema }),
+  controller.getFeesSummary,
 );

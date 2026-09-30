@@ -52,7 +52,7 @@ export async function listClasses(_req: Request, res: Response): Promise<void> {
 
 export async function listClassStudents(req: Request, res: Response): Promise<void> {
   const { id } = req.params as unknown as IdParams;
-  const { academicSessionId } = req.query as unknown as ListClassStudentsQuery;
+  const { academicSessionId } = req.validatedQuery as ListClassStudentsQuery;
   res.status(200).json(await service.listActiveStudentsForClass(id, academicSessionId));
 }
 

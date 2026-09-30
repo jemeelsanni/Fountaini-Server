@@ -13,7 +13,8 @@ import {
 } from "../modules/auth/auth.schemas.js";
 import { classAttendanceQuerySchema, correctAttendanceSchema, idParamsSchema as attendanceIdParamsSchema, openSessionSchema, scanSchema } from "../modules/attendance/attendance.schemas.js";
 import { listAuditLogQuerySchema } from "../modules/audit/audit.schemas.js";
-import { createFeeStructureSchema, idParamsSchema as feesIdParamsSchema, recordPaymentSchema, updateFeeObligationSchema, updateFeeStructureSchema } from "../modules/fees/fees.schemas.js";
+import { createFeeStructureSchema, feesSummaryQuerySchema, idParamsSchema as feesIdParamsSchema, listPaymentsQuerySchema, recordPaymentSchema, studentStatementQuerySchema, updateFeeObligationSchema, updateFeeStructureSchema } from "../modules/fees/fees.schemas.js";
+import { paymentHistoryQuerySchema, scopedReportQuerySchema } from "../modules/reports/reports.schemas.js";
 import { createAssessmentComponentSchema, createGradeBandSchema, createGradingScaleSchema, idParamsSchema as gradingIdParamsSchema, updateAssessmentComponentSchema, updateGradeBandSchema } from "../modules/grading/grading.schemas.js";
 import { createProgressSchema, idParamsSchema as madrassahIdParamsSchema } from "../modules/madrassah/madrassah.schemas.js";
 import {
@@ -61,7 +62,9 @@ import {
   ClassSchema,
   ClassSubjectAssignmentSchema,
   ClassSubjectAssignmentWithRelationsSchema,
+  CollectionsRowSchema,
   ConvertEnquiryResultSchema,
+  DefaulterRowSchema,
   BulkStudentStatusResultSchema,
   EnrollmentSchema,
   EnrollmentWithRelationsSchema,
@@ -79,8 +82,14 @@ import {
   NotificationEventSchema,
   NotificationEventWithDeliveriesSchema,
   ParentSchema,
+  FeesSummaryResponseSchema,
+  PaymentDetailResponseSchema,
+  PaymentHistoryRowSchema,
+  StudentStatementResponseSchema,
+  PaymentQueueResponseSchema,
   PaymentSchema,
   PaymentWithRelationsSchema,
+  TermSummaryResponseSchema,
   RatingScaleLevelSchema,
   RatingWithTraitSchema,
   ReceiptSchema,
@@ -178,6 +187,9 @@ const SCOPE_NOTES = {
     "ADMIN, BURSAR, or a TEACHER assigned to teach some subject in this class for the resolved session — " +
     "not any teacher unconditionally (unlike GET /api/classes/:id/timetable's own rule), and not the " +
     "form teacher specifically (unlike GET /api/classes/:id/results/:termId's).",
+  canCreatePaymentForObligation:
+    "ADMIN, BURSAR, or the obligation's own linked parent — never the student themself, unlike most " +
+    "other fee-read scopes.",
 } as const;
 
 /// One entry per route in the live route inventory ("METHOD /path", exactly
@@ -508,10 +520,15 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     responses: { 200: { description: "OK", schema: FeeObligationSchema } },
   },
   "POST /api/fee-obligations/:id/payments": {
-    summary: "Record a payment against a fee obligation",
+    summary:
+      "Record a payment claim against a fee obligation. Always created PENDING regardless of caller — " +
+      "a parent-logged payment is a claim, not a fact, and only ADMIN/BURSAR can confirm or reject one " +
+      "(see those routes below). A non-ADMIN/BURSAR caller is blocked with 409 if they already have a " +
+      "PENDING claim on this same obligation.",
     requestParams: feesIdParamsSchema,
     requestBody: recordPaymentSchema,
     responses: { 201: { description: "Created", schema: PaymentSchema } },
+    scopeNote: SCOPE_NOTES.canCreatePaymentForObligation,
   },
   "POST /api/payments/:id/confirm": {
     summary: "Confirm a pending payment",
@@ -529,11 +546,73 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     responses: { 200: { description: "OK", schema: ReceiptSchema } },
     scopeNote: SCOPE_NOTES.canReadStudentFinancials,
   },
+  "GET /api/payments/:id": {
+    summary:
+      "What a bursar needs to accept or decline a claim: the payment, the obligation, the student and " +
+      "class, who logged it, and the obligation's balance before and after this payment would apply.",
+    requestParams: feesIdParamsSchema,
+    responses: { 200: { description: "OK", schema: PaymentDetailResponseSchema } },
+    scopeNote: SCOPE_NOTES.canReadStudentFinancials,
+  },
   "GET /api/students/:id/payments": {
     summary: "List a student's payments",
     requestParams: feesIdParamsSchema,
     responses: { 200: { description: "OK", schema: z.array(PaymentWithRelationsSchema) } },
     scopeNote: SCOPE_NOTES.canReadStudentFinancials,
+  },
+  "GET /api/students/:id/statement": {
+    summary:
+      "A family's statement: every obligation in scope with its amount, every payment against it at " +
+      "every status (not CONFIRMED-only, unlike most other fee-read endpoints), and the resulting " +
+      "balance. Plus the school's name/address so the frontend can render a printable document. " +
+      "Structured data, not a PDF — this API never generates one.",
+    requestParams: feesIdParamsSchema,
+    requestQuery: studentStatementQuerySchema,
+    responses: { 200: { description: "OK", schema: StudentStatementResponseSchema } },
+    scopeNote: SCOPE_NOTES.canReadStudentFinancials,
+  },
+  "GET /api/payments": {
+    summary:
+      "The bursar's payment queue — paginated, newest first. Defaults to PENDING (the work queue) when " +
+      "status is omitted; pass status explicitly to see confirmed or rejected payments instead. " +
+      "classId filters via the student's current ACTIVE enrollment in that class.",
+    requestQuery: listPaymentsQuerySchema,
+    responses: { 200: { description: "OK", schema: PaymentQueueResponseSchema } },
+  },
+  "GET /api/fees/summary": {
+    summary:
+      "Dashboard totals, aggregated in SQL. Every amount is in kobo. pendingKobo is its own bucket — " +
+      "money claimed via a PENDING payment but not yet confirmed is neither collected nor outstanding. " +
+      "byClass is present only when classId is omitted from the request.",
+    requestQuery: feesSummaryQuerySchema,
+    responses: { 200: { description: "OK", schema: FeesSummaryResponseSchema } },
+  },
+
+  // --- reports ------------------------------------------------------------
+  "GET /api/reports/defaulters": {
+    summary:
+      "Every student with an outstanding balance, by class, with the primary-contact parent's name and " +
+      "phone — a chasing list is useless without contact details.",
+    requestQuery: scopedReportQuerySchema,
+    responses: { 200: { description: "OK", schema: z.array(DefaulterRowSchema) } },
+  },
+  "GET /api/reports/collections": {
+    summary: "Expected, collected, and outstanding kobo per class, so the school can see which arms are behind.",
+    requestQuery: scopedReportQuerySchema,
+    responses: { 200: { description: "OK", schema: z.array(CollectionsRowSchema) } },
+  },
+  "GET /api/reports/payments": {
+    summary:
+      "Every payment in a date range, for reconciling against a bank statement — bankReference is the " +
+      "join key. No PENDING default and no pagination, unlike GET /api/payments: a reconciliation pass " +
+      "needs the whole range. Pass format=csv for a text/csv response instead of JSON, same rows.",
+    requestQuery: paymentHistoryQuerySchema,
+    responses: { 200: { description: "OK (JSON by default; text/csv when format=csv)", schema: z.array(PaymentHistoryRowSchema) } },
+  },
+  "GET /api/reports/term-summary": {
+    summary: "The dashboard figures plus payment counts by status, in a shape suitable for showing the proprietor.",
+    requestQuery: scopedReportQuerySchema,
+    responses: { 200: { description: "OK", schema: TermSummaryResponseSchema } },
   },
 
   // --- grading ----------------------------------------------------------------

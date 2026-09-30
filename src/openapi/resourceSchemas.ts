@@ -780,6 +780,175 @@ export const FeeObligationWithBalanceSchema = FeeObligationSchema.extend({
   outstandingKobo: kobo(),
 }).openapi("FeeObligationWithBalance");
 
+/// GET /api/payments's per-row shape — enough to triage a claim without a
+/// second request. recordedByName is resolved server-side (Payment has no
+/// Prisma relation to User — see fees.service.ts's resolveUserNames).
+export const PaymentQueueItemSchema = z
+  .object({
+    id: id(),
+    amountKobo: kobo(),
+    bankReference: z.string().nullable(),
+    paymentDate: isoDateTime(),
+    status: PaymentStatusSchema,
+    recordedByUserId: id(),
+    recordedByName: z.string(),
+    createdAt: isoDateTime(),
+    student: z.object({ id: id(), name: z.string(), admissionNumber: z.string() }),
+    class: z.object({ id: id(), name: z.string() }).nullable(),
+    feeObligationId: id(),
+    obligationOutstandingKobo: kobo().openapi({
+      description: "The obligation's current balance, independent of whether this specific claim is confirmed",
+    }),
+  })
+  .openapi("PaymentQueueItem");
+
+export const PaymentQueueResponseSchema = z
+  .object({
+    data: z.array(PaymentQueueItemSchema),
+    total: z.number().int(),
+    page: z.number().int(),
+    pageSize: z.number().int(),
+  })
+  .openapi("PaymentQueueResponse");
+
+/// Field names deliberately avoid "pending"/"unpaid" colliding across the
+/// two different PENDING meanings in this domain: FeeObligation.status's
+/// PENDING ("nothing confirmed yet", counted in unpaidCount) and
+/// Payment.status's PENDING ("awaiting confirmation", summed in
+/// pendingKobo) are different concepts on different rows.
+export const FeesSummaryBucketsSchema = z
+  .object({
+    expectedKobo: kobo().openapi({ description: "Sum of amountDueKobo across non-WAIVED obligations in scope" }),
+    collectedKobo: kobo().openapi({ description: "Sum of CONFIRMED payments only" }),
+    pendingKobo: kobo().openapi({ description: "Sum of PENDING (awaiting confirmation) payments — claimed, not yet confirmed" }),
+    outstandingKobo: kobo().openapi({ description: "expectedKobo minus collectedKobo. NOT minus pendingKobo." }),
+    waivedKobo: kobo().openapi({ description: "Sum of amountDueKobo across WAIVED obligations, reported separately" }),
+    fullyPaidCount: z.number().int().openapi({ description: "Obligations at FeeObligation.status = PAID" }),
+    partiallyPaidCount: z.number().int().openapi({ description: "Obligations at FeeObligation.status = PARTIALLY_PAID" }),
+    unpaidCount: z.number().int().openapi({ description: "Obligations with no CONFIRMED payment at all (FeeObligation.status = PENDING)" }),
+  })
+  .openapi("FeesSummaryBuckets");
+
+export const FeesSummaryResponseSchema = z
+  .object({
+    total: FeesSummaryBucketsSchema,
+    byClass: z
+      .array(FeesSummaryBucketsSchema.extend({ classId: id(), className: z.string() }))
+      .optional()
+      .openapi({ description: "Present only when classId was not given in the request" }),
+  })
+  .openapi("FeesSummaryResponse");
+
+const StatementPaymentSchema = z.object({
+  id: id(),
+  amountKobo: kobo(),
+  status: PaymentStatusSchema,
+  bankReference: z.string().nullable(),
+  paymentDate: isoDateTime(),
+});
+
+export const StudentStatementResponseSchema = z
+  .object({
+    school: z.object({ name: z.string(), address: z.string().nullable() }),
+    student: z.object({ id: id(), name: z.string(), admissionNumber: z.string() }),
+    obligations: z.array(
+      z.object({
+        id: id(),
+        feeStructureName: z.string(),
+        category: FeeCategorySchema,
+        amountDueKobo: kobo(),
+        status: FeeObligationStatusSchema,
+        dueDate: isoDateTime().nullable(),
+        payments: z.array(StatementPaymentSchema).openapi({
+          description: "Every payment against this obligation, at every status — not CONFIRMED-only",
+        }),
+        totalConfirmedPaidKobo: kobo(),
+        balanceKobo: kobo(),
+      }),
+    ),
+  })
+  .openapi("StudentStatementResponse");
+
+export const PaymentDetailResponseSchema = z
+  .object({
+    id: id(),
+    amountKobo: kobo(),
+    method: PaymentMethodSchema,
+    bankReference: z.string().nullable(),
+    paymentDate: isoDateTime(),
+    status: PaymentStatusSchema,
+    notes: z.string().nullable(),
+    recordedByUserId: id(),
+    recordedByName: z.string(),
+    createdAt: isoDateTime(),
+    confirmedByUserId: id().nullable(),
+    confirmedByName: z.string().nullable(),
+    confirmedAt: isoDateTime().nullable(),
+    student: z.object({ id: id(), name: z.string(), admissionNumber: z.string() }),
+    class: z.object({ id: id(), name: z.string() }).nullable(),
+    feeObligation: z.object({
+      id: id(),
+      feeStructureName: z.string(),
+      amountDueKobo: kobo(),
+      status: FeeObligationStatusSchema,
+    }),
+    balanceBeforeKobo: kobo().openapi({
+      description: "The obligation's balance from every OTHER confirmed payment, this one excluded regardless of its own status",
+    }),
+    balanceAfterKobo: kobo().openapi({
+      description: "balanceBeforeKobo minus this payment's own amount — what confirming it would leave (or already left/would have left, for a CONFIRMED/REJECTED payment)",
+    }),
+  })
+  .openapi("PaymentDetailResponse");
+
+// ---------------------------------------------------------------------------
+// Reports
+// ---------------------------------------------------------------------------
+
+export const DefaulterRowSchema = z
+  .object({
+    studentId: id(),
+    studentName: z.string(),
+    admissionNumber: z.string(),
+    class: z.object({ id: id(), name: z.string() }),
+    outstandingKobo: kobo(),
+    primaryContact: z
+      .object({ name: z.string(), phone: z.string().nullable() })
+      .nullable()
+      .openapi({ description: "null only if the student has no linked parent at all" }),
+  })
+  .openapi("DefaulterRow");
+
+export const CollectionsRowSchema = z
+  .object({
+    classId: id(),
+    className: z.string(),
+    expectedKobo: kobo(),
+    collectedKobo: kobo(),
+    outstandingKobo: kobo(),
+  })
+  .openapi("CollectionsRow");
+
+export const TermSummaryResponseSchema = FeesSummaryBucketsSchema.extend({
+  paymentCounts: z.object({
+    pendingCount: z.number().int(),
+    confirmedCount: z.number().int(),
+    rejectedCount: z.number().int(),
+  }),
+}).openapi("TermSummaryResponse");
+
+/// JSON shape only — ?format=csv returns text/csv instead, same rows, not
+/// representable as a second schema on the one response entry below. A
+/// standalone shape, not PaymentWithRelationsSchema extended: that one
+/// requires a receipt, which this endpoint's own query never fetches
+/// (reconciling against a bank statement has no use for it).
+export const PaymentHistoryRowSchema = PaymentSchema.extend({
+  feeObligation: z.object({
+    id: id(),
+    student: z.object({ firstName: z.string(), lastName: z.string(), admissionNumber: z.string() }),
+  }),
+}).openapi("PaymentHistoryRow");
+
 // ---------------------------------------------------------------------------
 // Attendance (QR-based)
 // ---------------------------------------------------------------------------

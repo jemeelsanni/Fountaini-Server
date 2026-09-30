@@ -3,8 +3,11 @@ import { AppError } from "../../errors/AppError.js";
 import * as service from "./fees.service.js";
 import type {
   CreateFeeStructureBody,
+  FeesSummaryQuery,
   IdParams,
+  ListPaymentsQuery,
   RecordPaymentBody,
+  StudentStatementQuery,
   UpdateFeeObligationBody,
   UpdateFeeStructureBody,
 } from "./fees.schemas.js";
@@ -55,7 +58,7 @@ export async function updateObligation(req: Request, res: Response): Promise<voi
 export async function recordPayment(req: Request, res: Response): Promise<void> {
   if (!req.principal) throw AppError.unauthorized();
   const { id } = req.params as unknown as IdParams;
-  const payment = await service.recordPayment(id, req.principal.userId, req.body as RecordPaymentBody);
+  const payment = await service.recordPayment(id, req.principal, req.body as RecordPaymentBody);
   res.status(201).json(payment);
 }
 
@@ -79,4 +82,22 @@ export async function listPaymentsForStudent(req: Request, res: Response): Promi
 export async function getReceiptForPayment(req: Request, res: Response): Promise<void> {
   const { id } = req.params as unknown as IdParams;
   res.status(200).json(await service.getReceiptForPayment(id));
+}
+
+export async function listPayments(req: Request, res: Response): Promise<void> {
+  res.status(200).json(await service.listPayments(req.validatedQuery as ListPaymentsQuery));
+}
+
+export async function getFeesSummary(req: Request, res: Response): Promise<void> {
+  res.status(200).json(await service.getFeesSummary(req.validatedQuery as FeesSummaryQuery));
+}
+
+export async function getStudentStatement(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as unknown as IdParams;
+  res.status(200).json(await service.getStudentStatement(id, req.validatedQuery as StudentStatementQuery));
+}
+
+export async function getPaymentById(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as unknown as IdParams;
+  res.status(200).json(await service.getPaymentById(id));
 }

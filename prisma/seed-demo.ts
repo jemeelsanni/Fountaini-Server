@@ -81,6 +81,10 @@ process.env.DB_TRANSACTION_MAX_WAIT_MS = "15000";
 // notifications generally) — see config/env.ts's own comment on why.
 process.env.SUPPRESS_CREDENTIAL_NOTIFICATIONS = "true";
 
+// Type-only — erased at compile time, so unlike the value imports below it
+// has no runtime ordering dependency on the env vars set above.
+import type { Principal } from "../src/authorization/types.js";
+
 const { prisma } = await import("../src/db/client.js");
 const { drainFireAndForget } = await import("../src/lib/fireAndForget.js");
 const { hashPassword } = await import("../src/modules/auth/password.js");
@@ -681,6 +685,16 @@ async function seedFees(
   results: Awaited<ReturnType<typeof seedScoresAttendanceAndResults>>,
 ) {
   const actorUserId = staff.bursar.userId;
+  // recordPayment() takes the full Principal, not just a userId, since it
+  // needs to know the caller's role (ADMIN/BURSAR are exempt from the
+  // one-pending-claim-per-obligation check that applies to a PARENT).
+  const bursarPrincipal: Principal = {
+    userId: staff.bursar.userId,
+    roles: new Set(["BURSAR"]),
+    staffId: staff.bursar.id,
+    parentId: null,
+    studentId: null,
+  };
   const TUITION_KOBO = 8_500_000; // ₦85,000
 
   const jss1aTuition = await feesService.createFeeStructure({
@@ -723,7 +737,7 @@ async function seedFees(
     obligationMap: Map<string, { id: string }> = obligationByStudentId,
   ) {
     const obligation = obligationMap.get(students.jss1a[studentKey]!.id)!;
-    const payment = await feesService.recordPayment(obligation.id, actorUserId, {
+    const payment = await feesService.recordPayment(obligation.id, bursarPrincipal, {
       amountKobo,
       paymentDate: new Date("2026-09-15"),
       bankReference: `DEMO-${studentKey.toUpperCase()}`,

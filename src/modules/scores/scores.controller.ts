@@ -34,7 +34,7 @@ export async function submitScores(req: Request, res: Response): Promise<void> {
 
 export async function getScoresForAssignment(req: Request, res: Response): Promise<void> {
   const { id } = req.params as unknown as IdParams;
-  const { termId } = req.query as unknown as ScoresForAssignmentQuery;
+  const { termId } = req.validatedQuery as ScoresForAssignmentQuery;
   res.status(200).json(await service.getScoresForAssignment(id, termId));
 }
 

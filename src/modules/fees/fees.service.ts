@@ -1,10 +1,13 @@
 import { randomBytes } from "node:crypto";
-import type { Prisma } from "../../../generated/prisma/index.js";
+import { Prisma } from "../../../generated/prisma/index.js";
+import type { Principal } from "../../authorization/types.js";
 import { logger } from "../../config/logger.js";
 import { prisma } from "../../db/client.js";
 import { AppError } from "../../errors/AppError.js";
 import { fireAndForget } from "../../lib/fireAndForget.js";
+import { toNumber } from "../../lib/sqlNumeric.js";
 import { createNotification } from "../notifications/notifications.service.js";
+import { getSchool } from "../school/school.service.js";
 import type {
   CreateFeeStructureBody,
   RecordPaymentBody,
@@ -232,10 +235,30 @@ async function recomputeObligationStatus(client: Prisma.TransactionClient, feeOb
 // Payments
 // ---------------------------------------------------------------------------
 
-export async function recordPayment(feeObligationId: string, actorUserId: string, input: RecordPaymentBody) {
+/// A parent-logged payment is a claim, not a fact: status is never taken
+/// from input (recordPaymentSchema has no status field at all — Zod strips
+/// one if sent) and always lands PENDING, same as staff-recorded ones. The
+/// only behavioral difference for a PARENT caller is the queue-hygiene
+/// check below; ADMIN/BURSAR are exempt since a legitimate multi-
+/// installment manual entry can mean more than one PENDING payment on the
+/// same obligation at once.
+export async function recordPayment(feeObligationId: string, principal: Principal, input: RecordPaymentBody) {
   const obligation = await prisma.feeObligation.findUnique({ where: { id: feeObligationId } });
   if (!obligation) {
     throw AppError.notFound("Fee obligation not found");
+  }
+
+  if (!principal.roles.has("ADMIN") && !principal.roles.has("BURSAR")) {
+    const existingPending = await prisma.payment.findFirst({
+      where: { feeObligationId, status: "PENDING" },
+      select: { id: true },
+    });
+    if (existingPending) {
+      throw AppError.conflict(
+        "There is already a pending payment claim on this obligation — wait for it to be confirmed or " +
+          "rejected before submitting another.",
+      );
+    }
   }
 
   return prisma.payment.create({
@@ -245,7 +268,7 @@ export async function recordPayment(feeObligationId: string, actorUserId: string
       bankReference: input.bankReference,
       paymentDate: input.paymentDate,
       notes: input.notes,
-      recordedByUserId: actorUserId,
+      recordedByUserId: principal.userId,
     },
   });
 }
@@ -359,4 +382,448 @@ export async function getReceiptForPayment(paymentId: string) {
     throw AppError.notFound("No receipt has been issued for this payment yet");
   }
   return receipt;
+}
+
+// ---------------------------------------------------------------------------
+// Bursar payment queue
+// ---------------------------------------------------------------------------
+
+interface ListPaymentsFilter {
+  status: "PENDING" | "CONFIRMED" | "REJECTED";
+  classId?: string;
+  studentId?: string;
+  from?: Date;
+  to?: Date;
+  page: number;
+  pageSize: number;
+}
+
+/// recordedByUserId/confirmedByUserId are plain scalar columns, not Prisma
+/// relations to User (see schema.prisma's own Payment model) — there's
+/// nothing to `include` them through, so resolving "who logged it" to a
+/// name is a second, batched query (one User.findMany for every distinct
+/// id on this page), not a join. A recorder is always Staff (ADMIN/BURSAR)
+/// or Parent, never Student — canCreatePaymentForObligation doesn't grant
+/// STUDENT — so checking both covers every real case.
+async function resolveUserNames(userIds: string[]): Promise<Map<string, string>> {
+  const unique = [...new Set(userIds)];
+  const users = await prisma.user.findMany({
+    where: { id: { in: unique } },
+    select: {
+      id: true,
+      staff: { select: { firstName: true, lastName: true } },
+      parent: { select: { firstName: true, lastName: true } },
+    },
+  });
+  const names = new Map<string, string>();
+  for (const user of users) {
+    const person = user.staff ?? user.parent;
+    names.set(user.id, person ? `${person.firstName} ${person.lastName}` : "Unknown");
+  }
+  return names;
+}
+
+/// The bursar's work queue: enough per row to triage without a second
+/// request. classId filters via the student's ACTIVE enrollment in that
+/// class — a pragmatic proxy, not an exact match against the obligation's
+/// own academicSessionId (Prisma's relational filters can't compare two
+/// fields on different rows without raw SQL) — correct for the common
+/// case of filtering the current queue by class, since a past session's
+/// enrollment is no longer ACTIVE once a new one starts.
+export async function listPayments(filter: ListPaymentsFilter) {
+  const where: Prisma.PaymentWhereInput = {
+    status: filter.status,
+    feeObligation: {
+      studentId: filter.studentId,
+      student: filter.classId
+        ? { enrollments: { some: { classId: filter.classId, status: "ACTIVE" } } }
+        : undefined,
+    },
+    paymentDate: filter.from ?? filter.to ? { gte: filter.from, lte: filter.to } : undefined,
+  };
+
+  const [total, payments] = await Promise.all([
+    prisma.payment.count({ where }),
+    prisma.payment.findMany({
+      where,
+      include: {
+        feeObligation: {
+          include: {
+            student: {
+              include: { enrollments: { where: { status: "ACTIVE" }, include: { class: true }, take: 1 } },
+            },
+            payments: { where: { status: "CONFIRMED" } },
+          },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+      skip: (filter.page - 1) * filter.pageSize,
+      take: filter.pageSize,
+    }),
+  ]);
+
+  const names = await resolveUserNames(payments.map((p) => p.recordedByUserId));
+
+  const data = payments.map((payment) => {
+    const { student } = payment.feeObligation;
+    const enrollment = student.enrollments[0];
+    const { outstandingKobo } = withBalance(payment.feeObligation);
+    return {
+      id: payment.id,
+      amountKobo: payment.amountKobo,
+      bankReference: payment.bankReference,
+      paymentDate: payment.paymentDate,
+      status: payment.status,
+      recordedByUserId: payment.recordedByUserId,
+      recordedByName: names.get(payment.recordedByUserId) ?? "Unknown",
+      createdAt: payment.createdAt,
+      student: {
+        id: student.id,
+        name: `${student.firstName} ${student.lastName}`,
+        admissionNumber: student.admissionNumber,
+      },
+      class: enrollment
+        ? {
+            id: enrollment.class.id,
+            name: `${enrollment.class.gradeName}${enrollment.class.arm ? ` ${enrollment.class.arm}` : ""}`,
+          }
+        : null,
+      feeObligationId: payment.feeObligationId,
+      obligationOutstandingKobo: outstandingKobo,
+    };
+  });
+
+  return { data, total, page: filter.page, pageSize: filter.pageSize };
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard summary
+// ---------------------------------------------------------------------------
+
+interface FeesSummaryFilter {
+  academicSessionId?: string;
+  termId?: string;
+  classId?: string;
+}
+
+/// Raw row shape from summaryByClassSql below — bigint/numeric columns come
+/// back as JS `bigint` or `string` from node-postgres depending on type, not
+/// `number`; normalizeBucketRow() below converts every one to a real number
+/// (kobo amounts and counts are both always well within Number's safe
+/// integer range for a school this size) so callers never have to think
+/// about it.
+interface RawClassBucketRow {
+  classId: string;
+  gradeName: string;
+  arm: string | null;
+  expectedKobo: bigint | number | string;
+  waivedKobo: bigint | number | string;
+  fullyPaidCount: bigint | number | string;
+  partiallyPaidCount: bigint | number | string;
+  unpaidCount: bigint | number | string;
+  collectedKobo: bigint | number | string;
+  pendingKobo: bigint | number | string;
+}
+
+/// Field names deliberately avoid "pending" on the FeeObligation side and
+/// "unpaid"/"paid" on the Payment side — FeeObligation.status's PENDING
+/// ("nothing confirmed yet") and Payment.status's PENDING ("awaiting
+/// confirmation") are different concepts on different rows, and blurring
+/// their names in this response is exactly how a bursar ends up unable to
+/// tell which one a number refers to.
+export interface FeesSummaryBuckets {
+  expectedKobo: number;
+  collectedKobo: number;
+  pendingKobo: number;
+  outstandingKobo: number;
+  waivedKobo: number;
+  fullyPaidCount: number;
+  partiallyPaidCount: number;
+  unpaidCount: number;
+}
+
+function bucketsFromRow(row: RawClassBucketRow): FeesSummaryBuckets {
+  const expectedKobo = toNumber(row.expectedKobo);
+  const collectedKobo = toNumber(row.collectedKobo);
+  return {
+    expectedKobo,
+    collectedKobo,
+    pendingKobo: toNumber(row.pendingKobo),
+    // expected minus collected, deliberately NOT minus pending too — a
+    // claimed-but-unconfirmed payment is neither collected nor outstanding,
+    // it's its own bucket above. Folding it into either one is exactly the
+    // mistake that makes this dashboard stop matching the bank statement.
+    outstandingKobo: expectedKobo - collectedKobo,
+    waivedKobo: toNumber(row.waivedKobo),
+    fullyPaidCount: toNumber(row.fullyPaidCount),
+    partiallyPaidCount: toNumber(row.partiallyPaidCount),
+    unpaidCount: toNumber(row.unpaidCount),
+  };
+}
+
+function sumBuckets(rows: FeesSummaryBuckets[]): FeesSummaryBuckets {
+  return rows.reduce(
+    (acc, r) => ({
+      expectedKobo: acc.expectedKobo + r.expectedKobo,
+      collectedKobo: acc.collectedKobo + r.collectedKobo,
+      pendingKobo: acc.pendingKobo + r.pendingKobo,
+      outstandingKobo: acc.outstandingKobo + r.outstandingKobo,
+      waivedKobo: acc.waivedKobo + r.waivedKobo,
+      fullyPaidCount: acc.fullyPaidCount + r.fullyPaidCount,
+      partiallyPaidCount: acc.partiallyPaidCount + r.partiallyPaidCount,
+      unpaidCount: acc.unpaidCount + r.unpaidCount,
+    }),
+    {
+      expectedKobo: 0,
+      collectedKobo: 0,
+      pendingKobo: 0,
+      outstandingKobo: 0,
+      waivedKobo: 0,
+      fullyPaidCount: 0,
+      partiallyPaidCount: 0,
+      unpaidCount: 0,
+    },
+  );
+}
+
+/// Everything aggregated in SQL, in one query, never by fetching obligation/
+/// payment rows and reducing them in application code. Three CTEs:
+///   1. obligation_scope — every FeeObligation in the requested session/
+///      term/class, resolved to its class via the student's Enrollment for
+///      THAT SAME academicSessionId (FeeObligation has no classId of its
+///      own — see listPayments()'s own comment on the same join).
+///   2. obligation_agg — expectedKobo/waivedKobo/the three status counts,
+///      grouped by class, computed straight from obligation_scope (no join
+///      to Payment here, so no risk of the fan-out a direct join would
+///      cause — one obligation can have several payments, which would
+///      otherwise multiply amountDueKobo once per matching payment row).
+///   3. payment_agg — collectedKobo/pendingKobo, separately, joining
+///      obligation_scope to Payment and grouping by class — fan-out here is
+///      fine and correct, since this branch only ever sums Payment.amountKobo,
+///      never amountDueKobo.
+/// The final SELECT joins the two pre-aggregated CTEs by class. The grand
+/// total (always returned) is then computed by summing these already-
+/// aggregated per-class rows in application code — arithmetic over at most
+/// a few dozen numbers, not a reduce over raw obligation/payment rows, so
+/// it isn't the thing "aggregate in SQL" is warning against.
+export async function getFeesSummary(filter: FeesSummaryFilter) {
+  const conditions: Prisma.Sql[] = [];
+  if (filter.academicSessionId) {
+    conditions.push(Prisma.sql`fo."academicSessionId" = ${filter.academicSessionId}`);
+  }
+  if (filter.termId) {
+    conditions.push(Prisma.sql`fo."termId" = ${filter.termId}`);
+  }
+  if (filter.classId) {
+    conditions.push(Prisma.sql`e."classId" = ${filter.classId}`);
+  }
+  // Prisma.sql fragments compose by concatenation, not by interpolating
+  // into the middle of an existing one — the `WHERE 1=1` below is what
+  // lets an arbitrary number of AND-ed conditions (zero or more) attach
+  // cleanly regardless of which filters were actually given.
+  const whereClause = conditions.length > 0 ? Prisma.sql`AND ${Prisma.join(conditions, " AND ")}` : Prisma.empty;
+
+  const rows = await prisma.$queryRaw<RawClassBucketRow[]>`
+    WITH obligation_scope AS (
+      SELECT fo.id, fo."amountDueKobo", fo.status, e."classId"
+      FROM "FeeObligation" fo
+      JOIN "Enrollment" e
+        ON e."studentId" = fo."studentId"
+       AND e."academicSessionId" = fo."academicSessionId"
+      WHERE 1=1 ${whereClause}
+    ),
+    obligation_agg AS (
+      SELECT
+        "classId",
+        COALESCE(SUM(CASE WHEN status != 'WAIVED' THEN "amountDueKobo" ELSE 0 END), 0) AS "expectedKobo",
+        COALESCE(SUM(CASE WHEN status = 'WAIVED' THEN "amountDueKobo" ELSE 0 END), 0) AS "waivedKobo",
+        COUNT(*) FILTER (WHERE status = 'PAID') AS "fullyPaidCount",
+        COUNT(*) FILTER (WHERE status = 'PARTIALLY_PAID') AS "partiallyPaidCount",
+        COUNT(*) FILTER (WHERE status = 'PENDING') AS "unpaidCount"
+      FROM obligation_scope
+      GROUP BY "classId"
+    ),
+    payment_agg AS (
+      SELECT
+        os."classId",
+        COALESCE(SUM(CASE WHEN p.status = 'CONFIRMED' THEN p."amountKobo" ELSE 0 END), 0) AS "collectedKobo",
+        COALESCE(SUM(CASE WHEN p.status = 'PENDING' THEN p."amountKobo" ELSE 0 END), 0) AS "pendingKobo"
+      FROM obligation_scope os
+      JOIN "Payment" p ON p."feeObligationId" = os.id
+      GROUP BY os."classId"
+    )
+    SELECT
+      cls.id AS "classId", cls."gradeName", cls.arm,
+      oa."expectedKobo", oa."waivedKobo", oa."fullyPaidCount", oa."partiallyPaidCount", oa."unpaidCount",
+      COALESCE(pa."collectedKobo", 0) AS "collectedKobo",
+      COALESCE(pa."pendingKobo", 0) AS "pendingKobo"
+    FROM obligation_agg oa
+    JOIN "Class" cls ON cls.id = oa."classId"
+    LEFT JOIN payment_agg pa ON pa."classId" = oa."classId"
+    ORDER BY cls."order"
+  `;
+
+  const byClass = rows.map((row) => ({
+    classId: row.classId,
+    className: `${row.gradeName}${row.arm ? ` ${row.arm}` : ""}`,
+    ...bucketsFromRow(row),
+  }));
+
+  const total = sumBuckets(byClass);
+
+  // Per-class breakdown only when the caller didn't already scope to one
+  // class — a single-class request already IS the "breakdown".
+  return filter.classId ? { total } : { total, byClass };
+}
+
+// ---------------------------------------------------------------------------
+// Student statement
+// ---------------------------------------------------------------------------
+
+interface StatementFilter {
+  academicSessionId?: string;
+  termId?: string;
+}
+
+/// Every obligation in scope, every payment against it at every status
+/// (unlike listObligationsForStudent/withBalance, which only ever include
+/// CONFIRMED payments — a family statement should show a pending or
+/// rejected claim too, not just what's already settled), and the resulting
+/// balance — computed from CONFIRMED payments only, same rule as
+/// recomputeObligationStatus, regardless of what else is shown alongside
+/// it. Plus the school's own name/address so the frontend can render this
+/// as a printable document without a second request.
+export async function getStudentStatement(studentId: string, filter: StatementFilter) {
+  const student = await prisma.student.findUnique({
+    where: { id: studentId },
+    select: { id: true, firstName: true, lastName: true, admissionNumber: true },
+  });
+  if (!student) {
+    throw AppError.notFound("Student not found");
+  }
+
+  const [school, obligations] = await Promise.all([
+    getSchool(),
+    prisma.feeObligation.findMany({
+      where: { studentId, academicSessionId: filter.academicSessionId, termId: filter.termId },
+      include: { feeStructure: true, payments: { orderBy: { paymentDate: "asc" } } },
+      orderBy: { createdAt: "asc" },
+    }),
+  ]);
+
+  return {
+    school: { name: school.name, address: school.address },
+    student: {
+      id: student.id,
+      name: `${student.firstName} ${student.lastName}`,
+      admissionNumber: student.admissionNumber,
+    },
+    obligations: obligations.map((obligation) => {
+      const confirmedPaidKobo = obligation.payments
+        .filter((p) => p.status === "CONFIRMED")
+        .reduce((sum, p) => sum + p.amountKobo, 0);
+      return {
+        id: obligation.id,
+        feeStructureName: obligation.feeStructure.name,
+        category: obligation.feeStructure.category,
+        amountDueKobo: obligation.amountDueKobo,
+        status: obligation.status,
+        dueDate: obligation.dueDate,
+        payments: obligation.payments.map((p) => ({
+          id: p.id,
+          amountKobo: p.amountKobo,
+          status: p.status,
+          bankReference: p.bankReference,
+          paymentDate: p.paymentDate,
+        })),
+        totalConfirmedPaidKobo: confirmedPaidKobo,
+        balanceKobo: obligation.amountDueKobo - confirmedPaidKobo,
+      };
+    }),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Payment detail
+// ---------------------------------------------------------------------------
+
+/// What a bursar needs to decide on a claim: the payment, the obligation,
+/// the student/class it's for, who logged it, and the balance before/after
+/// — computed the same way regardless of this payment's own status (PENDING,
+/// CONFIRMED, or REJECTED), so it reads consistently whether the bursar is
+/// still deciding or looking back at a past decision. "Before" is the
+/// balance from every OTHER CONFIRMED payment on this obligation (this one
+/// excluded, whatever its status); "after" is that minus this payment's own
+/// amount — "would this confirmation settle the account, or leave a
+/// remainder" for a still-PENDING claim, and "did/would" for a CONFIRMED/
+/// REJECTED one.
+export async function getPaymentById(paymentId: string) {
+  const payment = await prisma.payment.findUnique({
+    where: { id: paymentId },
+    include: {
+      feeObligation: {
+        include: {
+          feeStructure: true,
+          payments: { where: { status: "CONFIRMED" } },
+          student: {
+            include: { enrollments: { where: { status: "ACTIVE" }, include: { class: true }, take: 1 } },
+          },
+        },
+      },
+    },
+  });
+  if (!payment) {
+    throw AppError.notFound("Payment not found");
+  }
+
+  const { feeObligation } = payment;
+  const otherConfirmedPaidKobo = feeObligation.payments
+    .filter((p) => p.id !== payment.id)
+    .reduce((sum, p) => sum + p.amountKobo, 0);
+  const balanceBeforeKobo = feeObligation.amountDueKobo - otherConfirmedPaidKobo;
+  const balanceAfterKobo = balanceBeforeKobo - payment.amountKobo;
+
+  const [recordedByName, confirmedByName] = await Promise.all([
+    resolveUserNames([payment.recordedByUserId]).then((m) => m.get(payment.recordedByUserId) ?? "Unknown"),
+    payment.confirmedByUserId
+      ? resolveUserNames([payment.confirmedByUserId]).then((m) => m.get(payment.confirmedByUserId!) ?? "Unknown")
+      : Promise.resolve(null),
+  ]);
+
+  const enrollment = feeObligation.student.enrollments[0];
+
+  return {
+    id: payment.id,
+    amountKobo: payment.amountKobo,
+    method: payment.method,
+    bankReference: payment.bankReference,
+    paymentDate: payment.paymentDate,
+    status: payment.status,
+    notes: payment.notes,
+    recordedByUserId: payment.recordedByUserId,
+    recordedByName,
+    createdAt: payment.createdAt,
+    confirmedByUserId: payment.confirmedByUserId,
+    confirmedByName,
+    confirmedAt: payment.confirmedAt,
+    student: {
+      id: feeObligation.student.id,
+      name: `${feeObligation.student.firstName} ${feeObligation.student.lastName}`,
+      admissionNumber: feeObligation.student.admissionNumber,
+    },
+    class: enrollment
+      ? {
+          id: enrollment.class.id,
+          name: `${enrollment.class.gradeName}${enrollment.class.arm ? ` ${enrollment.class.arm}` : ""}`,
+        }
+      : null,
+    feeObligation: {
+      id: feeObligation.id,
+      feeStructureName: feeObligation.feeStructure.name,
+      amountDueKobo: feeObligation.amountDueKobo,
+      status: feeObligation.status,
+    },
+    balanceBeforeKobo,
+    balanceAfterKobo,
+  };
 }

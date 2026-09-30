@@ -18,6 +18,7 @@ import { madrassahRouter } from "./modules/madrassah/madrassah.routes.js";
 import { notificationsRouter } from "./modules/notifications/notifications.routes.js";
 import { parentsRouter } from "./modules/parents/parents.routes.js";
 import { ratingsRouter } from "./modules/ratings/ratings.routes.js";
+import { reportsRouter } from "./modules/reports/reports.routes.js";
 import { resultsRouter } from "./modules/results/results.routes.js";
 import { schoolRouter } from "./modules/school/school.routes.js";
 import { scoresRouter } from "./modules/scores/scores.routes.js";
@@ -62,6 +63,7 @@ export const routeMounts: RouteMount[] = [
   { prefix: "/api", router: notificationsRouter },
   { prefix: "/api", router: madrassahRouter },
   { prefix: "/api", router: timetableRouter },
+  { prefix: "/api/reports", router: reportsRouter },
 ];
 
 export function createApp() {
