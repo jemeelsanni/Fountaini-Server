@@ -11,13 +11,22 @@
 //   destructive deletes for anything referenced by historical academic or financial data.
 //
 // NOTE — partial unique indexes: Prisma's schema DSL cannot express a `WHERE`
-// clause on a unique index, so the four "at most one X is currently
-// active/current/primary" invariants in this schema are declared here only as
-// plain columns; the actual enforcement lives in raw-SQL migrations instead:
+// clause on a unique index, so the five invariants below are declared here
+// only as plain columns; the actual enforcement lives in raw-SQL migrations
+// instead:
 //   1. AcademicSession.isCurrent      — migration add_current_session_term_partial_indexes
+//      ("at most one X is currently active/current/primary")
 //   2. Term.isCurrent                 — migration add_current_session_term_partial_indexes
+//      ("at most one X is currently active/current/primary")
 //   3. StudentQrCode.isActive         — migration add_qr_code_one_active_partial_index
+//      ("at most one X is currently active/current/primary")
 //   4. StudentParent.isPrimaryContact — migration add_login_id_and_identifier_counters
+//      ("at most one X is currently active/current/primary")
+//   5. Payment.bankReference          — migration add_payment_bank_reference_unique_index
+//      (a different shape: not "at most one active", but "this value never
+//      repeats among non-REJECTED rows" — a real bank reference identifies
+//      one transfer, so the same one logged twice is a genuine duplicate
+//      claim, not a race)
 // The first three are backed by an app-layer transaction that clears the flag on
 // siblings before setting it on the new row AND a DB-level partial unique index — see
 // each field's own comment; the app-layer step alone was found to have a real gap
@@ -1019,6 +1028,11 @@ model Payment {
   feeObligation     FeeObligation @relation(fields: [feeObligationId], references: [id])
   amountKobo        Int
   method            PaymentMethod @default(BANK_TRANSFER)
+  /// Nullable (a claim can be logged without one), but never duplicated
+  /// among non-REJECTED rows — enforced by a partial unique index (migration
+  /// add_payment_bank_reference_unique_index; see the caveat at the top of
+  /// this file), not just app logic: a real bank reference identifies one
+  /// transfer, so it can't legitimately fund two different claims.
   bankReference     String?
   paymentDate       DateTime
   status            PaymentStatus @default(PENDING)
