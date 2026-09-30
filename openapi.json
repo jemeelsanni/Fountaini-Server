@@ -493,6 +493,49 @@
           "INACTIVE"
         ]
       },
+      "StudentSearchResult": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "admissionNumber": {
+            "type": "string"
+          },
+          "firstName": {
+            "type": "string"
+          },
+          "lastName": {
+            "type": "string"
+          },
+          "otherNames": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/StudentStatus"
+          },
+          "className": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The student's class for the current academic session, or null if not enrolled this session."
+          }
+        },
+        "required": [
+          "id",
+          "admissionNumber",
+          "firstName",
+          "lastName",
+          "otherNames",
+          "status",
+          "className"
+        ]
+      },
       "BulkStudentStatusResult": {
         "type": "object",
         "properties": {
@@ -5383,6 +5426,109 @@
                   "items": {
                     "$ref": "#/components/schemas/Student"
                   }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/students/search": {
+      "get": {
+        "summary": "ADMIN and BURSAR only — a student picker/lookup, not GET /api/students' full roster: q (min 2 characters) does a case-insensitive contains match against admissionNumber, firstName, lastName and otherNames (so '2026/001', '001' and a first name all match), ranked exact match first, then prefix match, then contains-anywhere, ties broken by name. limit defaults to 20 and is capped at 50. All statuses match by default, including WITHDRAWN and GRADUATED — a student who left still owing fees must stay findable; status narrows to one value when given. Minimally projected: no dateOfBirth, gender, userId, or any parent/family data — see StudentSearchResult.",
+        "description": "Roles: ADMIN, BURSAR.",
+        "x-roles": [
+          "ADMIN",
+          "BURSAR"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 2
+            },
+            "required": true,
+            "name": "q",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "ACTIVE",
+                "GRADUATED",
+                "WITHDRAWN",
+                "INACTIVE"
+              ]
+            },
+            "required": false,
+            "name": "status",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 50,
+              "default": 20
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/StudentSearchResult"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
                 }
               }
             }

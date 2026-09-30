@@ -176,6 +176,25 @@ export const StudentWithOptionalTemporaryPasswordSchema = StudentSchema.extend({
   }),
 }).openapi("StudentWithOptionalTemporaryPassword");
 
+/// GET /api/students/search's minimal projection — deliberately NOT
+/// StudentSchema: no dateOfBirth, no gender, no userId, and className
+/// (resolved via the student's current-session Enrollment, null if they
+/// have none) replaces the fields this picker doesn't need. See
+/// students.service.ts's searchStudents for the query contract.
+export const StudentSearchResultSchema = z
+  .object({
+    id: id(),
+    admissionNumber: z.string(),
+    firstName: z.string(),
+    lastName: z.string(),
+    otherNames: z.string().nullable(),
+    status: StudentStatusSchema,
+    className: z.string().nullable().openapi({
+      description: "The student's class for the current academic session, or null if not enrolled this session.",
+    }),
+  })
+  .openapi("StudentSearchResult");
+
 export const StudentParentSchema = z
   .object({
     id: id(),

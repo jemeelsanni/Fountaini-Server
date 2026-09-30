@@ -6,6 +6,7 @@ import type {
   CreateEnrollmentBody,
   CreateStudentBody,
   IdParams,
+  SearchStudentsQuery,
   TransferStudentBody,
   UpdateStudentBody,
 } from "./students.schemas.js";
@@ -17,6 +18,11 @@ export async function createStudent(req: Request, res: Response): Promise<void> 
 
 export async function listStudents(_req: Request, res: Response): Promise<void> {
   res.status(200).json(await service.listStudents());
+}
+
+export async function searchStudents(req: Request, res: Response): Promise<void> {
+  const query = req.validatedQuery as SearchStudentsQuery;
+  res.status(200).json(await service.searchStudents(query));
 }
 
 export async function getStudent(req: Request, res: Response): Promise<void> {

@@ -57,6 +57,20 @@ export const bulkUpdateStudentStatusSchema = z.object({
 });
 export type BulkUpdateStudentStatusBody = z.infer<typeof bulkUpdateStudentStatusSchema>;
 
+// Minimum 2 characters — a single character against a whole-school ILIKE
+// '%q%' scan is both a near-useless result set and needless load; the
+// picker this feeds is typeahead-style, so the UI can simply wait for a
+// second keystroke rather than this endpoint doing anything cleverer.
+// limit: default 20 (a picker dropdown's visible page), hard-capped at 50 —
+// this is a typeahead lookup, not a paginated list, so there's no page/
+// offset, only a result-count ceiling.
+export const searchStudentsQuerySchema = z.object({
+  q: z.string().trim().min(2),
+  status: z.enum(["ACTIVE", "GRADUATED", "WITHDRAWN", "INACTIVE"]).optional(),
+  limit: z.coerce.number().int().positive().max(50).default(20),
+});
+export type SearchStudentsQuery = z.infer<typeof searchStudentsQuerySchema>;
+
 export const createEnrollmentSchema = z.object({
   classId: z.string().min(1),
   academicSessionId: z.string().min(1),

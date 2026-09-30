@@ -92,6 +92,7 @@ const academicStructure = await import("../src/modules/academic-structure/academ
 const grading = await import("../src/modules/grading/grading.service.js");
 const ratings = await import("../src/modules/ratings/ratings.service.js");
 const timetable = await import("../src/modules/timetable/timetable.service.js");
+const schoolService = await import("../src/modules/school/school.service.js");
 const staffService = await import("../src/modules/staff/staff.service.js");
 const studentsService = await import("../src/modules/students/students.service.js");
 const parentsService = await import("../src/modules/parents/parents.service.js");
@@ -119,6 +120,7 @@ const credentialRows: CredentialRow[] = [];
 
 interface DemoSeedManifest {
   createdAt: string;
+  schoolId: string | null;
   userIds: string[];
   staffIds: string[];
   staffNumbers: string[];
@@ -142,6 +144,7 @@ interface DemoSeedManifest {
 }
 const manifest: DemoSeedManifest = {
   createdAt: new Date().toISOString(),
+  schoolId: null,
   userIds: [],
   staffIds: [],
   staffNumbers: [],
@@ -190,7 +193,25 @@ async function guardAgainstDoubleSeed(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// 1. Academic structure
+// 1. School
+// ---------------------------------------------------------------------------
+// Neither this script nor prisma/seed.ts has ever created one — every route
+// that reads it (e.g. GET /api/students/:id/statement, via getStudentStatement)
+// 404s on a database seeded by either script alone. A real, if previously
+// unnoticed, gap: the bursar's Invoices screen can find and bill a student
+// but can't open their statement without this row existing first.
+async function seedSchool() {
+  const school = await schoolService.createSchool({
+    name: "Fountaini International School",
+    address: "12 Unity Crescent, Ilorin, Kwara State",
+    contactEmail: `info@${EMAIL_DOMAIN}`,
+    contactPhone: "+2348000000000",
+  });
+  manifest.schoolId = school.id;
+}
+
+// ---------------------------------------------------------------------------
+// 2. Academic structure
 // ---------------------------------------------------------------------------
 async function seedAcademicStructure() {
   const session = await academicStructure.createAcademicSession({
@@ -303,7 +324,7 @@ async function seedAcademicStructure() {
 }
 
 // ---------------------------------------------------------------------------
-// 2. Staff — every role and relationship
+// 3. Staff — every role and relationship
 // ---------------------------------------------------------------------------
 async function seedStaff() {
   async function staff(role: "ADMIN" | "TEACHER" | "BURSAR", firstName: string, lastName: string, department?: string) {
@@ -329,7 +350,7 @@ async function seedStaff() {
 }
 
 // ---------------------------------------------------------------------------
-// 3. Students and parents
+// 4. Students and parents
 // ---------------------------------------------------------------------------
 interface StudentPlan {
   key: string;
@@ -439,7 +460,7 @@ async function seedStudentsAndParents(structure: Awaited<ReturnType<typeof seedA
 }
 
 // ---------------------------------------------------------------------------
-// 4. Class-subject assignments, form teacher, timetable
+// 5. Class-subject assignments, form teacher, timetable
 // ---------------------------------------------------------------------------
 async function seedAssignments(
   structure: Awaited<ReturnType<typeof seedAcademicStructure>>,
@@ -510,7 +531,7 @@ async function seedAssignments(
 }
 
 // ---------------------------------------------------------------------------
-// 5. Scores, attendance, ratings, comments, finalize, override, release
+// 6. Scores, attendance, ratings, comments, finalize, override, release
 // ---------------------------------------------------------------------------
 async function seedScoresAttendanceAndResults(
   structure: Awaited<ReturnType<typeof seedAcademicStructure>>,
@@ -676,7 +697,7 @@ async function seedScoresAttendanceAndResults(
 }
 
 // ---------------------------------------------------------------------------
-// 6. Fees — every withholding case
+// 7. Fees — every withholding case
 // ---------------------------------------------------------------------------
 async function seedFees(
   structure: Awaited<ReturnType<typeof seedAcademicStructure>>,
@@ -737,10 +758,18 @@ async function seedFees(
     obligationMap: Map<string, { id: string }> = obligationByStudentId,
   ) {
     const obligation = obligationMap.get(students.jss1a[studentKey]!.id)!;
+    // Several students below are paid twice — once for tuition, once for
+    // the levy loop further down — and bankReference is now genuinely
+    // unique (migration 20260930120000_add_payment_bank_reference_unique_
+    // index): a reference derived from studentKey alone collided across
+    // those two calls for every one of them. Suffixed by which obligation
+    // this actually is (the obligation's own id, not a hardcoded label, so
+    // it stays unique even if more pay() call sites are added later)
+    // rather than reverting to a non-unique reference.
     const payment = await feesService.recordPayment(obligation.id, bursarPrincipal, {
       amountKobo,
       paymentDate: new Date("2026-09-15"),
-      bankReference: `DEMO-${studentKey.toUpperCase()}`,
+      bankReference: `DEMO-${studentKey.toUpperCase()}-${obligation.id.slice(-6)}`,
     });
     if (outcome === "confirm") {
       await feesService.confirmPayment(payment.id, actorUserId);
@@ -782,7 +811,7 @@ async function seedFees(
 }
 
 // ---------------------------------------------------------------------------
-// 7. Madrassah progress
+// 8. Madrassah progress
 // ---------------------------------------------------------------------------
 async function seedMadrassah(
   structure: Awaited<ReturnType<typeof seedAcademicStructure>>,
@@ -828,7 +857,7 @@ async function seedMadrassah(
 }
 
 // ---------------------------------------------------------------------------
-// 8. Admission enquiries
+// 9. Admission enquiries
 // ---------------------------------------------------------------------------
 async function seedAdmissions(
   structure: Awaited<ReturnType<typeof seedAcademicStructure>>,
@@ -886,6 +915,7 @@ async function seedAdmissions(
 async function main() {
   await guardAgainstDoubleSeed();
 
+  await seedSchool();
   const structure = await seedAcademicStructure();
   const staff = await seedStaff();
   const students = await seedStudentsAndParents(structure);

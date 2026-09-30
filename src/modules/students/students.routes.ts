@@ -11,6 +11,7 @@ import {
   createStudentSchema,
   idParamsSchema,
   type IdParams,
+  searchStudentsQuerySchema,
   transferStudentSchema,
   updateStudentSchema,
 } from "./students.schemas.js";
@@ -31,6 +32,17 @@ studentsRouter.post(
   controller.createStudent,
 );
 studentsRouter.get("/", requireRole("ADMIN"), controller.listStudents);
+// Registered before "/:id" or Express would match "search" as :id. Narrower
+// than GET / on purpose — ADMIN and BURSAR (a bursar needs to find a
+// student to bill or record a payment for; they have no reason to browse
+// GET /'s full, unfiltered roster with every field). See
+// students.service.ts's searchStudents for the query/projection contract.
+studentsRouter.get(
+  "/search",
+  requireRole("ADMIN", "BURSAR"),
+  validate({ query: searchStudentsQuerySchema }),
+  controller.searchStudents,
+);
 // Registered before "/:id" or Express would match "status" as :id.
 // GRADUATED/WITHDRAWN also close each student's active enrollment(s) — see
 // ENROLLMENT_CLOSING_STATUS (students.service.ts). INACTIVE is a label

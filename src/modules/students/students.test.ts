@@ -7,9 +7,11 @@ import {
   createAdmin,
   createAssignment,
   createBareStudent,
+  createBursar,
   createClass,
   createCurrentAcademicSession,
   createParent,
+  createStudentWithLogin,
   createSubject,
   createTeacher,
   enrollStudent,
@@ -572,5 +574,212 @@ describe("POST /api/students/:id/transfer", () => {
     expect(entry).not.toBeNull();
     expect((entry?.beforeData as { classId: string } | null)?.classId).toBe(classA.id);
     expect((entry?.afterData as { classId: string } | null)?.classId).toBe(classB.id);
+  });
+});
+
+describe("GET /api/students/search", () => {
+  async function seedSearchWorld() {
+    const session = await createCurrentAcademicSession("2026/2027");
+    const klass = await createClass("JSS1", "A");
+
+    const ada = await prisma.student.create({
+      data: { admissionNumber: "FIA/2026/001", firstName: "Ada", lastName: "Lovelace", status: "ACTIVE" },
+    });
+    await enrollStudent(ada.id, klass.id, session.id);
+
+    const grace = await prisma.student.create({
+      data: { admissionNumber: "FIA/2026/002", firstName: "Grace", lastName: "Hopper", status: "ACTIVE" },
+    });
+
+    const fatima = await prisma.student.create({
+      data: {
+        admissionNumber: "FIA/2026/003",
+        firstName: "Fatima",
+        lastName: "Bello",
+        otherNames: "Amina",
+        dateOfBirth: new Date("2015-03-10"),
+        gender: "FEMALE",
+        status: "ACTIVE",
+      },
+    });
+
+    const withdrawn = await prisma.student.create({
+      data: {
+        admissionNumber: "FIA/2025/010",
+        firstName: "Zainab",
+        lastName: "Ibrahim",
+        status: "WITHDRAWN",
+      },
+    });
+
+    return { session, klass, ada, grace, fatima, withdrawn };
+  }
+
+  it("BURSAR gets 200 and finds a student by (partial, case-insensitive) name", async () => {
+    const { token } = await createBursar("bursar@test.local");
+    await seedSearchWorld();
+
+    const res = await request(server)
+      .get("/api/students/search?q=fatima")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].firstName).toBe("Fatima");
+  });
+
+  it("ADMIN gets 200 too", async () => {
+    const { token } = await createAdmin("admin@test.local");
+    await seedSearchWorld();
+
+    const res = await request(server)
+      .get("/api/students/search?q=fatima")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+  });
+
+  it("rejects TEACHER, PARENT and STUDENT with 403", async () => {
+    const { token: teacherToken } = await createTeacher("teacher@test.local");
+    const { token: parentToken } = await createParent("parent@test.local");
+    const { token: studentToken } = await createStudentWithLogin("student@test.local", "FIA/2026/999");
+    await seedSearchWorld();
+
+    for (const token of [teacherToken, parentToken, studentToken]) {
+      const res = await request(server)
+        .get("/api/students/search?q=fatima")
+        .set("Authorization", `Bearer ${token}`);
+      expect(res.status).toBe(403);
+    }
+  });
+
+  it("matches by full admission number, and resolves the current-session class name", async () => {
+    const { token } = await createBursar("bursar@test.local");
+    const { ada } = await seedSearchWorld();
+
+    const res = await request(server)
+      .get("/api/students/search?q=FIA/2026/001")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].id).toBe(ada.id);
+    expect(res.body[0].className).toBe("JSS1 A");
+  });
+
+  it("matches by partial admission number", async () => {
+    const { token } = await createBursar("bursar@test.local");
+    await seedSearchWorld();
+
+    const res = await request(server)
+      .get("/api/students/search?q=001")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].admissionNumber).toBe("FIA/2026/001");
+  });
+
+  it("returns a WITHDRAWN student by default, with no status filter given", async () => {
+    const { token } = await createBursar("bursar@test.local");
+    await seedSearchWorld();
+
+    const res = await request(server)
+      .get("/api/students/search?q=Zainab")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].status).toBe("WITHDRAWN");
+  });
+
+  it("narrows to one status when an explicit status filter is given", async () => {
+    const { token } = await createBursar("bursar@test.local");
+    await seedSearchWorld();
+
+    const res = await request(server)
+      .get("/api/students/search?q=ib&status=WITHDRAWN")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body.every((s: { status: string }) => s.status === "WITHDRAWN")).toBe(true);
+  });
+
+  it("never returns dateOfBirth, gender, or any parent/family data", async () => {
+    const { token } = await createBursar("bursar@test.local");
+    await seedSearchWorld();
+
+    const res = await request(server)
+      .get("/api/students/search?q=fatima")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    const [student] = res.body;
+    expect(student).not.toHaveProperty("dateOfBirth");
+    expect(student).not.toHaveProperty("gender");
+    expect(student).not.toHaveProperty("parents");
+    // The full projection contract: present, minimal, nothing more.
+    expect(Object.keys(student).sort()).toEqual(
+      ["admissionNumber", "className", "firstName", "id", "lastName", "otherNames", "status"].sort(),
+    );
+  });
+
+  it("rejects q shorter than 2 characters with 400", async () => {
+    const { token } = await createBursar("bursar@test.local");
+
+    const res = await request(server)
+      .get("/api/students/search?q=a")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(400);
+  });
+
+  // Mirrors audit.test.ts's limit-ceiling coverage: an explicit value above
+  // the cap is rejected outright (400), never silently truncated to 50 —
+  // and the cap itself is still usable right up to its own edge.
+  it("rejects an explicit limit above the 50-row cap with 400, not a truncated 50", async () => {
+    const { token } = await createBursar("bursar@test.local");
+
+    const res = await request(server)
+      .get("/api/students/search?q=aa&limit=51")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(400);
+  });
+
+  it("accepts an explicit limit at the 50-row cap", async () => {
+    const { token } = await createBursar("bursar@test.local");
+
+    const res = await request(server)
+      .get("/api/students/search?q=aa&limit=50")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+  });
+
+  it("ranks an exact match first, then a prefix match, then a contains-anywhere match", async () => {
+    const { token } = await createBursar("bursar@test.local");
+    await prisma.student.create({
+      data: { admissionNumber: "FIA/2026/101", firstName: "Ade", lastName: "Williams" },
+    });
+    await prisma.student.create({
+      data: { admissionNumber: "FIA/2026/102", firstName: "Adebayo", lastName: "Chukwu" },
+    });
+    await prisma.student.create({
+      data: { admissionNumber: "FIA/2026/103", firstName: "Chidi", lastName: "Wade" },
+    });
+
+    const res = await request(server)
+      .get("/api/students/search?q=ade")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.map((s: { firstName: string; lastName: string }) => `${s.firstName} ${s.lastName}`)).toEqual([
+      "Ade Williams",
+      "Adebayo Chukwu",
+      "Chidi Wade",
+    ]);
   });
 });

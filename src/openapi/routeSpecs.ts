@@ -43,7 +43,7 @@ import {
 import { createSchoolSchema, updateSchoolSchema } from "../modules/school/school.schemas.js";
 import { bulkUpsertScoresSchema, idParamsSchema as scoresIdParamsSchema, scoresForAssignmentQuerySchema, submitScoresSchema } from "../modules/scores/scores.schemas.js";
 import { createStaffSchema, idParamsSchema as staffIdParamsSchema, updateStaffSchema } from "../modules/staff/staff.schemas.js";
-import { bulkUpdateStudentStatusSchema, createEnrollmentSchema, createStudentSchema, idParamsSchema as studentsIdParamsSchema, transferStudentSchema, updateStudentSchema } from "../modules/students/students.schemas.js";
+import { bulkUpdateStudentStatusSchema, createEnrollmentSchema, createStudentSchema, idParamsSchema as studentsIdParamsSchema, searchStudentsQuerySchema, transferStudentSchema, updateStudentSchema } from "../modules/students/students.schemas.js";
 import { createTimeSlotSchema, createTimetableEntrySchema, idParamsSchema as timetableIdParamsSchema } from "../modules/timetable/timetable.schemas.js";
 import { createUserSchema, userIdParamsSchema } from "../modules/users/users.schemas.js";
 import {
@@ -109,6 +109,7 @@ import {
   StudentParentWithStudentSchema,
   StudentQrCodeSchema,
   StudentSchema,
+  StudentSearchResultSchema,
   StudentWithOptionalTemporaryPasswordSchema,
   SubjectResultSchema,
   SubjectResultWithRelationsSchema,
@@ -1018,6 +1019,19 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
   "GET /api/students": {
     summary: "List students",
     responses: { 200: { description: "OK", schema: z.array(StudentSchema) } },
+  },
+  "GET /api/students/search": {
+    summary:
+      "ADMIN and BURSAR only — a student picker/lookup, not GET /api/students' full roster: q " +
+      "(min 2 characters) does a case-insensitive contains match against admissionNumber, " +
+      "firstName, lastName and otherNames (so '2026/001', '001' and a first name all match), " +
+      "ranked exact match first, then prefix match, then contains-anywhere, ties broken by name. " +
+      "limit defaults to 20 and is capped at 50. All statuses match by default, including " +
+      "WITHDRAWN and GRADUATED — a student who left still owing fees must stay findable; status " +
+      "narrows to one value when given. Minimally projected: no dateOfBirth, gender, userId, or " +
+      "any parent/family data — see StudentSearchResult.",
+    requestQuery: searchStudentsQuerySchema,
+    responses: { 200: { description: "OK", schema: z.array(StudentSearchResultSchema) } },
   },
   "GET /api/students/:id": {
     summary: "Get one student",

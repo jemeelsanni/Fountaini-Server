@@ -15,6 +15,7 @@ import type {
   BulkUpdateStudentStatusBody,
   CreateEnrollmentBody,
   CreateStudentBody,
+  SearchStudentsQuery,
   UpdateStudentBody,
 } from "./students.schemas.js";
 
@@ -232,6 +233,114 @@ export async function createStudent(input: CreateStudentBody) {
 
 export function listStudents() {
   return prisma.student.findMany({ orderBy: [{ lastName: "asc" }, { firstName: "asc" }] });
+}
+
+export interface StudentSearchResult {
+  id: string;
+  admissionNumber: string;
+  firstName: string;
+  lastName: string;
+  otherNames: string | null;
+  status: StudentStatus;
+  className: string | null;
+}
+
+interface RawStudentSearchRow {
+  id: string;
+  admissionNumber: string;
+  firstName: string;
+  lastName: string;
+  otherNames: string | null;
+  status: StudentStatus;
+  gradeName: string | null;
+  arm: string | null;
+}
+
+// Postgres's default LIKE/ILIKE escape character is already backslash, so
+// doubling a literal backslash and prefixing % and _ here is enough to make
+// a search term that happens to contain one of them match literally rather
+// than act as a wildcard — no explicit ESCAPE clause needed below.
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
+/// Backs the student picker on screens like the bursar's Invoices page
+/// (POST /api/fee-obligations/:id/payments needs a studentId the bursar has
+/// no other way to find — GET /api/students is ADMIN-only and returns every
+/// field on every student, neither of which this route should do). Minimal
+/// projection only: id, admissionNumber, name fields, status, and
+/// current-session class name — deliberately never dateOfBirth, gender, or
+/// anything from a parent, none of which a picker needs.
+///
+/// All statuses match by default, including WITHDRAWN and GRADUATED — a
+/// student who left still owing fees must stay findable by whoever's
+/// chasing that balance; `status` narrows only when explicitly given.
+///
+/// Relevance-then-name ordering, computed as a three-tier rank in SQL:
+///   0. exact (case-insensitive) match on admissionNumber, firstName or
+///      lastName
+///   1. prefix match on the same three fields
+///   2. contains-anywhere match — the fallback, and the only tier an
+///      otherNames-only hit or a mid-string admission-number fragment
+///      (e.g. "001") ever lands in
+/// Ties within a tier break by lastName, firstName, matching listStudents().
+///
+/// Class name is resolved via the student's CURRENT-session, ACTIVE
+/// Enrollment (LEFT JOIN — a withdrawn/graduated student, or one not
+/// enrolled this session, correctly comes back with className: null rather
+/// than a stale class from some past session).
+export async function searchStudents(query: SearchStudentsQuery): Promise<StudentSearchResult[]> {
+  const escaped = escapeLikePattern(query.q);
+  const containsPattern = `%${escaped}%`;
+  const prefixPattern = `${escaped}%`;
+
+  const statusClause = query.status
+    ? Prisma.sql`AND s.status = ${query.status}::"StudentStatus"`
+    : Prisma.empty;
+
+  const rows = await prisma.$queryRaw<RawStudentSearchRow[]>`
+    SELECT
+      s.id, s."admissionNumber", s."firstName", s."lastName", s."otherNames", s.status,
+      cls."gradeName", cls.arm
+    FROM "Student" s
+    LEFT JOIN "Enrollment" e
+      ON e."studentId" = s.id
+     AND e.status = 'ACTIVE'
+     AND e."academicSessionId" = (SELECT id FROM "AcademicSession" WHERE "isCurrent" = true LIMIT 1)
+    LEFT JOIN "Class" cls ON cls.id = e."classId"
+    WHERE (
+      s."admissionNumber" ILIKE ${containsPattern}
+      OR s."firstName" ILIKE ${containsPattern}
+      OR s."lastName" ILIKE ${containsPattern}
+      OR s."otherNames" ILIKE ${containsPattern}
+    )
+    ${statusClause}
+    ORDER BY
+      CASE
+        WHEN LOWER(s."admissionNumber") = LOWER(${query.q})
+          OR LOWER(s."firstName") = LOWER(${query.q})
+          OR LOWER(s."lastName") = LOWER(${query.q})
+          THEN 0
+        WHEN s."admissionNumber" ILIKE ${prefixPattern}
+          OR s."firstName" ILIKE ${prefixPattern}
+          OR s."lastName" ILIKE ${prefixPattern}
+          THEN 1
+        ELSE 2
+      END,
+      s."lastName" ASC,
+      s."firstName" ASC
+    LIMIT ${query.limit}
+  `;
+
+  return rows.map((row) => ({
+    id: row.id,
+    admissionNumber: row.admissionNumber,
+    firstName: row.firstName,
+    lastName: row.lastName,
+    otherNames: row.otherNames,
+    status: row.status,
+    className: row.gradeName ? `${row.gradeName}${row.arm ? ` ${row.arm}` : ""}` : null,
+  }));
 }
 
 export async function getStudentById(id: string) {
