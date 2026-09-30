@@ -368,3 +368,52 @@ describe("POST .../scores/submit", () => {
     expect(subjectResult.maxScore?.toNumber()).toBe(100);
   });
 });
+
+// Investigation, not a regression test for a fix: what Decimal fields
+// (totalScore, maxScore) actually serialize as on the wire, over a real
+// HTTP response — not what the Prisma client returns in-process (a real
+// Decimal object, with real methods like .toNumber(), confirmed just
+// above) and not what openapi.json declares. Read directly with typeof
+// against the parsed JSON body, since JSON itself has no way to
+// distinguish "the number 85" from "the string '85.00'" except by
+// inspecting the parsed type.
+describe("Decimal field wire format investigation", () => {
+  it("reports typeof for totalScore/maxScore on GET /api/students/:id/scores", async () => {
+    const { session, term, klass, subject, ca1, exam } = await setupClassroom();
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const { staff, token: teacherToken } = await createTeacher("teacher@test.local");
+    const assignment = await createAssignment(klass.id, subject.id, staff.id, session.id);
+    const student = await createBareStudent("DECIMAL-1");
+    await enrollStudent(student.id, klass.id, session.id);
+
+    await request(server)
+      .put(`/api/class-subject-assignments/${assignment.id}/scores`)
+      .set("Authorization", `Bearer ${teacherToken}`)
+      .send({
+        termId: term.id,
+        entries: [
+          { studentId: student.id, assessmentComponentId: ca1.id, rawScore: 18 },
+          { studentId: student.id, assessmentComponentId: exam.id, rawScore: 60 },
+        ],
+      });
+    await request(server)
+      .post(`/api/class-subject-assignments/${assignment.id}/scores/submit`)
+      .set("Authorization", `Bearer ${teacherToken}`)
+      .send({ termId: term.id });
+
+    const res = await request(server)
+      .get(`/api/students/${student.id}/scores`)
+      .set("Authorization", `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(200);
+    const row = res.body[0];
+    // Confirmed once, directly (values logged during investigation:
+    // totalScore "78", maxScore "100" — trailing zeros trimmed, not padded
+    // to the column's @db.Decimal(5,2) precision): both are JSON strings,
+    // matching resourceSchemas.ts's decimalString() declaration for these
+    // fields exactly. openapi.json declares "type": "string" here too —
+    // the contract is accurate, not silently wrong.
+    expect(typeof row.totalScore).toBe("string");
+    expect(typeof row.maxScore).toBe("string");
+  });
+});
