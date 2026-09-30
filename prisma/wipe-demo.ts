@@ -33,6 +33,9 @@ const fs = await import("node:fs/promises");
 
 interface DemoSeedManifest {
   createdAt: string;
+  // Optional: a manifest written before seed-demo.ts started creating a
+  // School row (see that file's own comment) won't have this field at all.
+  schoolId?: string | null;
   userIds: string[];
   staffIds: string[];
   staffNumbers: string[];
@@ -163,7 +166,8 @@ async function wipe(manifest: DemoSeedManifest): Promise<void> {
     prisma.term.deleteMany({ where: { id: { in: manifest.termIds } } }),
     prisma.subject.deleteMany({ where: { id: { in: manifest.subjectIds } } }),
     prisma.class.deleteMany({ where: { id: { in: manifest.classIds } } }),
-    // No School row here — seed-demo.ts never creates or touches one.
+    // { in: [] } (an older manifest with no schoolId) safely deletes nothing.
+    prisma.school.deleteMany({ where: { id: { in: manifest.schoolId ? [manifest.schoolId] : [] } } }),
     prisma.academicSession.deleteMany({ where: { id: { in: manifest.academicSessionIds } } }),
     prisma.userRole.deleteMany({ where: { userId: { in: userIds } } }),
     prisma.user.deleteMany({ where: { id: { in: userIds } } }),
