@@ -235,13 +235,32 @@ async function recomputeObligationStatus(client: Prisma.TransactionClient, feeOb
 // Payments
 // ---------------------------------------------------------------------------
 
+function isUniqueConstraintError(err: unknown): boolean {
+  return err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002";
+}
+
+/// Deliberately narrow: catches an accidental resubmission of the SAME
+/// transfer (a parent unsure whether their first claim went through,
+/// re-submitting minutes later), not a second, genuinely different
+/// instalment. Nigerian parents routinely pay in parts — ₦30,000 this
+/// week, ₦25,000 next — and an earlier version of this check (a flat cap
+/// of one outstanding PENDING claim per obligation, any amount) blocked
+/// exactly that: it protected the bursar from noise, not from fraud, and
+/// was blunter than the problem required. This version only fires when
+/// BOTH the amount and the obligation match an existing PENDING claim
+/// (never CONFIRMED — already settled, a new claim after that is a new
+/// instalment, not a resubmission; never REJECTED — already decided
+/// invalid, a retry afterward is legitimate) from within the last 10
+/// minutes. Two genuine instalments of the same size, submitted minutes
+/// apart, are rare enough that a clean 409 (try again shortly, or contact
+/// the office) is an acceptable cost for catching the actual noise
+/// pattern. ADMIN/BURSAR stay exempt — a legitimate manual/bulk entry can
+/// mean more than one identical-amount payment recorded close together.
+const NEAR_DUPLICATE_WINDOW_MS = 10 * 60 * 1000;
+
 /// A parent-logged payment is a claim, not a fact: status is never taken
 /// from input (recordPaymentSchema has no status field at all — Zod strips
-/// one if sent) and always lands PENDING, same as staff-recorded ones. The
-/// only behavioral difference for a PARENT caller is the queue-hygiene
-/// check below; ADMIN/BURSAR are exempt since a legitimate multi-
-/// installment manual entry can mean more than one PENDING payment on the
-/// same obligation at once.
+/// one if sent) and always lands PENDING, same as staff-recorded ones.
 export async function recordPayment(feeObligationId: string, principal: Principal, input: RecordPaymentBody) {
   const obligation = await prisma.feeObligation.findUnique({ where: { id: feeObligationId } });
   if (!obligation) {
@@ -249,28 +268,51 @@ export async function recordPayment(feeObligationId: string, principal: Principa
   }
 
   if (!principal.roles.has("ADMIN") && !principal.roles.has("BURSAR")) {
-    const existingPending = await prisma.payment.findFirst({
-      where: { feeObligationId, status: "PENDING" },
+    const nearDuplicate = await prisma.payment.findFirst({
+      where: {
+        feeObligationId,
+        status: "PENDING",
+        amountKobo: input.amountKobo,
+        createdAt: { gte: new Date(Date.now() - NEAR_DUPLICATE_WINDOW_MS) },
+      },
       select: { id: true },
     });
-    if (existingPending) {
+    if (nearDuplicate) {
       throw AppError.conflict(
-        "There is already a pending payment claim on this obligation — wait for it to be confirmed or " +
-          "rejected before submitting another.",
+        "A pending claim for this exact amount was already logged on this obligation in the last few " +
+          "minutes — if that one didn't go through, wait for it to be confirmed or rejected rather than " +
+          "resubmitting immediately.",
       );
     }
   }
 
-  return prisma.payment.create({
-    data: {
-      feeObligationId,
-      amountKobo: input.amountKobo,
-      bankReference: input.bankReference,
-      paymentDate: input.paymentDate,
-      notes: input.notes,
-      recordedByUserId: principal.userId,
-    },
-  });
+  try {
+    return await prisma.payment.create({
+      data: {
+        feeObligationId,
+        amountKobo: input.amountKobo,
+        bankReference: input.bankReference,
+        paymentDate: input.paymentDate,
+        notes: input.notes,
+        recordedByUserId: principal.userId,
+      },
+    });
+  } catch (err) {
+    // A real bank reference identifies one transfer — the same reference
+    // logged twice (Payment_bankReference_key, a partial unique index:
+    // WHERE "bankReference" IS NOT NULL AND status != 'REJECTED') is the
+    // actual duplicate this schema can prove, unlike the amount+window
+    // heuristic above, which is inference. Unscoped by caller on purpose:
+    // a real transfer can't legitimately fund two different claims
+    // regardless of who's submitting, so ADMIN/BURSAR aren't exempt here.
+    if (isUniqueConstraintError(err)) {
+      throw AppError.conflict(
+        "This bank reference has already been used on another payment claim — a reference identifies one " +
+          "transfer, so it can't be logged twice.",
+      );
+    }
+    throw err;
+  }
 }
 
 function generateReceiptNumber(): string {

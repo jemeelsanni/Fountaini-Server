@@ -115,4 +115,32 @@ describe("admin mutation auditing", () => {
     expect(res.status).toBe(200);
     expect(res.body.length).toBe(100);
   });
+
+  // The ceiling (listAuditLogQuerySchema's .max(500)) is a validation rule,
+  // not a transform — it was never actually reachable through the
+  // req.query bug above: safeParse()/rejection reads the real, current
+  // req.query directly, at the point validate() runs, independent of the
+  // broken write-back that only affected what the CONTROLLER saw
+  // afterward. Verified directly rather than assumed: an explicit
+  // over-ceiling value was already rejected before today's fix, and still
+  // is now.
+  it("rejects an explicit limit above the 500-row ceiling with 400, not a truncated 500", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+
+    const res = await request(server)
+      .get("/api/audit-log?limit=501")
+      .set("Authorization", `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(400);
+  });
+
+  it("accepts an explicit limit at the 500-row ceiling", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+
+    const res = await request(server)
+      .get("/api/audit-log?limit=500")
+      .set("Authorization", `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(200);
+  });
 });

@@ -615,7 +615,7 @@ describe("PARENT logs a payment against their own child's obligation", () => {
     expect(afterConfirm.status).toBe("PAID");
   });
 
-  it("blocks a second pending claim from a parent on the same obligation, but not from staff", async () => {
+  it("blocks a same-amount near-duplicate claim from a parent on the same obligation, but not from staff", async () => {
     const { adminToken, parentToken, obligation } = await setupLinkedObligation();
 
     const first = await request(server)
@@ -637,6 +637,93 @@ describe("PARENT logs a payment against their own child's obligation", () => {
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ amountKobo: 1_000_000, paymentDate: "2026-09-12" });
     expect(staffEntry.status).toBe(201);
+  });
+
+  // The exact scenario the old flat "one outstanding claim, any amount"
+  // cap got wrong: Nigerian parents routinely pay fees in parts. Two
+  // genuinely different instalments, still unconfirmed, must both succeed.
+  it("allows two different-amount instalments from the same parent while the first is still pending", async () => {
+    const { parentToken, obligation } = await setupLinkedObligation();
+
+    const first = await request(server)
+      .post(`/api/fee-obligations/${obligation.id}/payments`)
+      .set("Authorization", `Bearer ${parentToken}`)
+      .send({ amountKobo: 3_000_000, paymentDate: "2026-09-10", bankReference: "INSTALMENT-1" });
+    expect(first.status).toBe(201);
+    expect(first.body.status).toBe("PENDING");
+
+    const second = await request(server)
+      .post(`/api/fee-obligations/${obligation.id}/payments`)
+      .set("Authorization", `Bearer ${parentToken}`)
+      .send({ amountKobo: 2_500_000, paymentDate: "2026-09-17", bankReference: "INSTALMENT-2" });
+    expect(second.status).toBe(201);
+    expect(second.body.status).toBe("PENDING");
+
+    const pendingCount = await prisma.payment.count({ where: { feeObligationId: obligation.id, status: "PENDING" } });
+    expect(pendingCount).toBe(2);
+  });
+
+  it("allows a same-amount resubmission once the first claim has been rejected", async () => {
+    const { adminToken, parentToken, obligation } = await setupLinkedObligation();
+
+    const first = await request(server)
+      .post(`/api/fee-obligations/${obligation.id}/payments`)
+      .set("Authorization", `Bearer ${parentToken}`)
+      .send({ amountKobo: 2_000_000, paymentDate: "2026-09-10" });
+    await request(server).post(`/api/payments/${first.body.id}/reject`).set("Authorization", `Bearer ${adminToken}`);
+
+    const retry = await request(server)
+      .post(`/api/fee-obligations/${obligation.id}/payments`)
+      .set("Authorization", `Bearer ${parentToken}`)
+      .send({ amountKobo: 2_000_000, paymentDate: "2026-09-11" });
+
+    expect(retry.status).toBe(201);
+  });
+
+  it("rejects a duplicate bank reference on a second claim, even from a different obligation or ADMIN", async () => {
+    const { adminToken, obligation } = await setupObligation();
+    const otherStudent = await createBareStudent("REF-OTHER");
+    const otherKlass = await createClass("JSS2", "A");
+    const session = await prisma.academicSession.findFirstOrThrow();
+    await enrollStudent(otherStudent.id, otherKlass.id, session.id);
+    const otherStructureRes = await request(server)
+      .post("/api/fee-structures")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ name: "Other Fee", category: "OTHER", classId: otherKlass.id, academicSessionId: session.id, amountKobo: 1_000_000 });
+    await request(server)
+      .post(`/api/fee-structures/${otherStructureRes.body.id}/generate-obligations`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    const otherObligation = await prisma.feeObligation.findFirstOrThrow({ where: { studentId: otherStudent.id } });
+
+    const first = await request(server)
+      .post(`/api/fee-obligations/${obligation.id}/payments`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ amountKobo: 1_000_000, paymentDate: "2026-09-10", bankReference: "SHARED-REF" });
+    expect(first.status).toBe(201);
+
+    const second = await request(server)
+      .post(`/api/fee-obligations/${otherObligation.id}/payments`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ amountKobo: 9_999, paymentDate: "2026-09-11", bankReference: "SHARED-REF" });
+
+    expect(second.status).toBe(409);
+  });
+
+  it("allows a bank reference to be reused once the payment holding it is rejected", async () => {
+    const { adminToken, obligation } = await setupObligation();
+
+    const first = await request(server)
+      .post(`/api/fee-obligations/${obligation.id}/payments`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ amountKobo: 1_000_000, paymentDate: "2026-09-10", bankReference: "REUSABLE-REF" });
+    await request(server).post(`/api/payments/${first.body.id}/reject`).set("Authorization", `Bearer ${adminToken}`);
+
+    const second = await request(server)
+      .post(`/api/fee-obligations/${obligation.id}/payments`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ amountKobo: 1_000_000, paymentDate: "2026-09-11", bankReference: "REUSABLE-REF" });
+
+    expect(second.status).toBe(201);
   });
 });
 

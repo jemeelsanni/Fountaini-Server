@@ -353,6 +353,12 @@ describe("full report card lifecycle", () => {
       .get(`/api/results/${student1.id}/${term.id}`)
       .set("Authorization", `Bearer ${student1Token}`);
     expect(asStudent.status).toBe(200);
+    // Decimal serialization: confirmed directly (not assumed from
+    // SubjectResult's own behavior, a different model) — Result.totalScore
+    // comes back as a JSON string over the wire too, matching
+    // resourceSchemas.ts's decimalString() declaration for this field. The
+    // Number() wrap above was already silently correct for this reason.
+    expect(typeof asStudent.body.totalScore).toBe("string");
     expect(Number(asStudent.body.totalScore)).toBe(85);
 
     const asParent = await request(server)

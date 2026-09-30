@@ -450,3 +450,42 @@ describe("GET /api/students/:id/attendance — data-scoped", () => {
     expect(asSelf.body).toHaveLength(1);
   });
 });
+
+// No existing coverage exercised ?date= on this route at all before this —
+// classAttendanceQuerySchema's date field is the one query-schema field in
+// this file that uses z.coerce.date() (a genuine transform, unlike the
+// plain-string filters elsewhere), so it's the one place validate.ts's
+// req.query/req.validatedQuery fix could plausibly have changed real
+// behavior here. It didn't, in this specific case: getAttendanceForClass's
+// own startOfDay() helper does `new Date(date)` unconditionally, which
+// re-parses a raw query string into a real Date just as well as an
+// already-coerced one — but that's incidental to this function, not
+// guaranteed by the route in general, so it's worth having this test
+// rather than reasoning about it from the source alone.
+describe("GET /api/classes/:id/attendance — ?date= filters to one day", () => {
+  it("returns only the session on the requested date, not sessions on other dates", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const { token: teacherToken } = await createTeacher("teacher@test.local");
+    const { session, term, klass } = await setupClass();
+
+    const matching = await prisma.attendanceSession.create({
+      data: { classId: klass.id, academicSessionId: session.id, termId: term.id, date: new Date("2026-09-15"), openedByUserId: "seed" },
+    });
+    await prisma.attendanceSession.create({
+      data: { classId: klass.id, academicSessionId: session.id, termId: term.id, date: new Date("2026-09-16"), openedByUserId: "seed" },
+    });
+
+    const res = await request(server)
+      .get(`/api/classes/${klass.id}/attendance?date=2026-09-15`)
+      .set("Authorization", `Bearer ${teacherToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].id).toBe(matching.id);
+
+    const unfiltered = await request(server)
+      .get(`/api/classes/${klass.id}/attendance`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(unfiltered.body).toHaveLength(2);
+  });
+});
