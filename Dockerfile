@@ -22,11 +22,23 @@ COPY src ./src
 RUN npx prisma generate
 RUN npm run build
 
-# ---- prod-deps: production-only install (smaller, no dev tooling) -------
+# ---- prod-deps: production-only install, plus tsx for the ops scripts --
+# `npm ci --omit=dev` alone used to leave the runtime image unable to run
+# any of the TypeScript admin scripts (prisma/seed.ts, scripts/preflight.ts,
+# scripts/assertDbEmpty.ts, ...) at all — tsx (needed to run a .ts file
+# directly, no separate build step) is a devDependency, correctly excluded
+# by --omit=dev for the app's own runtime, but these scripts are real,
+# documented operational tooling (see docs/go-live.md) meant to run
+# `npm run db:seed`/`db:assert-empty`/`preflight` from exactly this
+# container via `railway run`/the Railway console — not just from a
+# developer's own machine. `--no-save` keeps it out of package.json's
+# committed dependency list — this is an image-build decision, not an
+# app dependency.
 FROM node:22-alpine AS prod-deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
+RUN npm install tsx --no-save
 
 # ---- runtime --------------------------------------------------------------
 FROM node:22-alpine AS runtime
@@ -52,6 +64,16 @@ COPY package.json ./
 # package.json's real `dependencies`, not `devDependencies`: an
 # --omit=dev install must still include it.
 COPY prisma ./prisma
+# scripts/ and src/ ship too — the ops scripts themselves (prisma/*.ts
+# already came along above; scripts/preflight.ts and
+# scripts/assertDbEmpty.ts need this directory too), and src/ because
+# every one of those scripts imports real application code from it
+# (e.g. prisma/seed.ts -> src/lib/seedAdmin.ts, scripts/preflight.ts ->
+# src/modules/admin/admin.service.ts) — tsx (added to prod-deps above)
+# transpiles .ts on the fly, so no separate build step is needed for
+# these, only the raw source actually being present.
+COPY scripts ./scripts
+COPY src ./src
 
 USER app
 
