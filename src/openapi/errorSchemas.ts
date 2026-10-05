@@ -35,6 +35,17 @@ export const UnauthorizedErrorSchema = errorSchema(
     "login/refresh specifically, the credentials or refresh token themselves were rejected.",
 );
 
+/// POST /api/auth/login only — distinct from UnauthorizedError: the
+/// credentials presented are CORRECT, but the server-generated password
+/// has outlived PASSWORD_TEMP_EXPIRY_DAYS (password.ts) unused. See
+/// AppError.credentialExpired's own comment.
+export const CredentialExpiredErrorSchema = errorSchema(
+  "CredentialExpiredError",
+  "CREDENTIAL_EXPIRED",
+  "The password presented is correct, but it was server-generated and has expired unused — ask an " +
+    "admin to reissue credentials, or use POST /api/auth/forgot-password.",
+);
+
 export const ForbiddenErrorSchema = errorSchema(
   "ForbiddenError",
   "FORBIDDEN",

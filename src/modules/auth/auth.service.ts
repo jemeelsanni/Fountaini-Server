@@ -4,7 +4,7 @@ import { AppError } from "../../errors/AppError.js";
 import { createNotification } from "../notifications/notifications.service.js";
 import { resolvePrimaryContactParent } from "../users/users.service.js";
 import { type AccessTokenPayload, signAccessToken } from "./jwt.js";
-import { hashPassword, verifyPassword } from "./password.js";
+import { hashPassword, isTemporaryPasswordExpired, verifyPassword } from "./password.js";
 import { generateOpaqueToken, hashOpaqueToken } from "./tokens.js";
 
 const PASSWORD_RESET_TOKEN_TTL_MINUTES = 30;
@@ -119,6 +119,17 @@ export async function login(input: LoginInput): Promise<IssuedTokens> {
     throw AppError.unauthorized("Invalid identifier or password");
   }
 
+  // Checked only after the password is confirmed correct — telling an
+  // attacker who doesn't know the password "this one's expired" would leak
+  // account-state for free; only someone who already knows the right
+  // password reaches this branch at all.
+  if (isTemporaryPasswordExpired(user)) {
+    throw AppError.credentialExpired(
+      "This temporary password has expired. Ask an admin to reissue your credentials, or request a " +
+        "password reset yourself via POST /api/auth/forgot-password.",
+    );
+  }
+
   await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
 
   return issueTokenPair(user.id, input.ip, input.userAgent);
@@ -198,7 +209,11 @@ export async function changePassword(
   await prisma.$transaction([
     prisma.user.update({
       where: { id: userId },
-      data: { passwordHash: newHash, mustChangePassword: false },
+      // passwordIssuedAt cleared: this is now a password the owner chose
+      // themselves, not a server-generated one — see that column's own
+      // comment (schema.prisma) and isTemporaryPasswordExpired (password.ts),
+      // which never expires a null value regardless of mustChangePassword.
+      data: { passwordHash: newHash, mustChangePassword: false, passwordIssuedAt: null },
     }),
     prisma.refreshToken.updateMany({
       where: { userId, revokedAt: null },
@@ -305,7 +320,16 @@ export async function resetPassword(rawToken: string, newPassword: string): Prom
 
   const newHash = await hashPassword(newPassword);
   await prisma.$transaction([
-    prisma.user.update({ where: { id: existing.userId }, data: { passwordHash: newHash } }),
+    // passwordIssuedAt cleared — same reasoning as changePassword()'s own
+    // update. mustChangePassword is deliberately left as-is here (a
+    // pre-existing behavior this change doesn't touch): if it was already
+    // true, isTemporaryPasswordExpired still safely reads "never expires"
+    // once passwordIssuedAt is null, so this doesn't introduce a
+    // lockout risk either way.
+    prisma.user.update({
+      where: { id: existing.userId },
+      data: { passwordHash: newHash, passwordIssuedAt: null },
+    }),
     prisma.refreshToken.updateMany({
       where: { userId: existing.userId, revokedAt: null },
       data: { revokedAt: new Date() },

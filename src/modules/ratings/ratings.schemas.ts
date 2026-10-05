@@ -18,6 +18,13 @@ export const createTraitSchema = z.object({
 });
 export type CreateTraitBody = z.infer<typeof createTraitSchema>;
 
+// Every field optional, none nullable — same shape as
+// updateAssessmentComponentSchema (grading.schemas.ts): Trait has no
+// nullable columns here either, so there's no undefined-vs-null
+// distinction to preserve.
+export const updateTraitSchema = createTraitSchema.partial();
+export type UpdateTraitBody = z.infer<typeof updateTraitSchema>;
+
 /// value is bound-checked here (1-5) rather than against RatingScaleLevel in
 /// the service: unlike AssessmentComponent.maxScore (which genuinely varies
 /// per component), the 5-point scale is fixed and shared by both trait

@@ -28,6 +28,7 @@ import {
   classTermParamsSchema as ratingsClassTermParamsSchema,
   createTraitSchema,
   idParamsSchema as ratingsIdParamsSchema,
+  updateTraitSchema,
 } from "../modules/ratings/ratings.schemas.js";
 import {
   classTermParamsSchema,
@@ -46,7 +47,7 @@ import { bulkUpsertScoresSchema, idParamsSchema as scoresIdParamsSchema, scoresF
 import { createStaffSchema, idParamsSchema as staffIdParamsSchema, updateStaffSchema } from "../modules/staff/staff.schemas.js";
 import { bulkUpdateStudentStatusSchema, createEnrollmentSchema, createStudentSchema, idParamsSchema as studentsIdParamsSchema, searchStudentsQuerySchema, transferStudentSchema, updateStudentSchema } from "../modules/students/students.schemas.js";
 import { createTimeSlotSchema, createTimetableEntrySchema, idParamsSchema as timetableIdParamsSchema } from "../modules/timetable/timetable.schemas.js";
-import { createUserSchema, userIdParamsSchema } from "../modules/users/users.schemas.js";
+import { createUserSchema, updateUserEmailSchema, userIdParamsSchema } from "../modules/users/users.schemas.js";
 import {
   AcademicSessionSchema,
   AdmissionEnquirySchema,
@@ -126,6 +127,7 @@ import {
   TimetableEntryForClassViewSchema,
   TimetableEntryForStaffViewSchema,
   TimetableEntrySchema,
+  UpdateUserEmailResultSchema,
   UserSummarySchema,
 } from "./resourceSchemas.js";
 
@@ -832,6 +834,20 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     requestParams: ratingsIdParamsSchema,
     responses: { 200: { description: "OK", schema: z.array(TraitSchema) } },
   },
+  "PATCH /api/traits/:id": {
+    summary: "Update a trait's category, name, or order",
+    requestParams: ratingsIdParamsSchema,
+    requestBody: updateTraitSchema,
+    responses: { 200: { description: "OK", schema: TraitSchema } },
+  },
+  "POST /api/traits/:id/deactivate": {
+    summary:
+      "Deactivate a trait — soft, not a delete: it can no longer be rated against " +
+      "(PUT /api/classes/:id/results/:termId/ratings rejects it), but ratings already recorded " +
+      "against it are untouched. Idempotent — deactivating an already-inactive trait is still a 200.",
+    requestParams: ratingsIdParamsSchema,
+    responses: { 200: { description: "OK", schema: TraitSchema } },
+  },
   "GET /api/rating-scale": {
     summary: "List the fixed 5-point rating scale shared by both trait categories (static reference data)",
     responses: { 200: { description: "OK", schema: z.array(RatingScaleLevelSchema) } },
@@ -1228,5 +1244,19 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
       "ever present in the response for that last case, when no such parent with an email exists.",
     requestParams: userIdParamsSchema,
     responses: { 200: { description: "OK", schema: ReissueCredentialsResultSchema } },
+  },
+  "PATCH /api/users/:id/email": {
+    summary:
+      "ADMIN only — changes an account's login email, treated as exactly as sensitive as a reissue " +
+      "(it effectively is one, to the new address): 409 if the new address collides with any " +
+      "existing email or loginId; for a parent or bare account, loginId is updated to match (they " +
+      "mirror each other — see User.loginId's own schema comment); staff keep their staffNumber as " +
+      "loginId, only their delivery email changes; a student-linked account is rejected outright " +
+      "(400) — students have no email of their own to change. Revokes every live refresh token, " +
+      "resets mustChangePassword, and delivers a fresh generated password to the NEW address " +
+      "(awaited, same as POST .../reissue-credentials).",
+    requestParams: userIdParamsSchema,
+    requestBody: updateUserEmailSchema,
+    responses: { 200: { description: "OK", schema: UpdateUserEmailResultSchema } },
   },
 };

@@ -52,14 +52,16 @@ run either form again.
    `identifiers.service.ts`), and every check from here on that depends on
    "the current session" will FAIL until this step is done.
 
-   **Re-run `npm run db:seed` right after this step.** It's idempotent
-   (every row is an upsert), and it's the *only* thing that seeds
-   behaviour/skills traits (`Trait` rows) — there is no API route for
-   them. `seed.ts` seeds traits for whichever session is current *at the
-   time it runs*; if it ran before step 3 (it did, as part of the initial
-   reset), traits don't exist for the session you just created. Skipping
-   this re-run leaves `GET /api/admin/setup-status`'s "Behaviour and
-   skills traits" check FAILing with no obvious cause.
+   **Run `npm run db:seed:traits` right after this step.** It seeds the
+   default behaviour/skills trait lists for whichever session is current
+   *at the time it runs* — it fails loudly (non-zero exit, clear message)
+   if none is, rather than silently doing nothing. It's idempotent, safe
+   to re-run any time a new session becomes current. Trait rows can also
+   be managed individually from here on via `POST`/`PATCH .../traits/:id`
+   and `POST .../traits/:id/deactivate` (see `ratings.routes.ts`) — this
+   script is only for the default starting lists. Skipping this step
+   leaves `GET /api/admin/setup-status`'s "Behaviour and skills traits"
+   check FAILing with no obvious cause.
 
 4. **Create the school record.** `POST /api/school` — `name`, `address`,
    `contactEmail`, `contactPhone`. **Get these from the school in
@@ -129,4 +131,9 @@ onboarding.
 After each day's batch, check `GET /api/users/pending-activation` — every
 row still there with `latestCredentialDeliveryStatus: "FAILED"` is an
 account nobody can get into yet; reissue those first before creating the
-next batch.
+next batch. `latestCredentialDeliveryErrorCategory` tells you whether to
+just wait (`QUOTA_EXCEEDED`/`RATE_LIMITED` — the cap will reset) or act
+now (`INVALID_RECIPIENT` — the address itself is wrong; fix it with
+`PATCH /api/users/:id/email`, which also reissues automatically). Rows
+with `credentialExpired: true` need a fresh reissue regardless of
+delivery status — their 7-day window ran out before anyone signed in.

@@ -16,6 +16,7 @@ import {
 } from "../../test/factories.js";
 import { resetDb } from "../../test/resetDb.js";
 import { waitForNotification } from "../../test/waitForNotification.js";
+import { categorizeProviderError } from "./notifications.service.js";
 
 const app = createApp();
 let server: Server;
@@ -100,6 +101,7 @@ describe("fee reminder trigger", () => {
     // No phone on file — that channel fails cleanly rather than silently dropping.
     expect(sms?.status).toBe("FAILED");
     expect(sms?.error).toBeTruthy();
+    expect(sms?.errorCategory).toBe("INVALID_RECIPIENT");
     // Email is always present (required at account creation), so it succeeds.
     expect(email?.status).toBe("SENT");
   });
@@ -360,5 +362,48 @@ describe("sensitive notification bodies are never persisted in plaintext", () =>
     // scrubbing the notification body must not break the reset flow itself.
     const resetToken = await prisma.passwordResetToken.findFirstOrThrow({ where: { userId: parent.userId } });
     expect(resetToken.tokenHash).not.toBe(event?.body);
+  });
+});
+
+describe("categorizeProviderError", () => {
+  it("classifies rate-limit, quota, and invalid-recipient messages distinctly, with a PROVIDER_ERROR catch-all", () => {
+    expect(categorizeProviderError("Rate limit exceeded, please slow down", "body").category).toBe("RATE_LIMITED");
+    expect(categorizeProviderError("Too many requests in a short period", "body").category).toBe("RATE_LIMITED");
+    expect(categorizeProviderError("Daily quota exceeded for this account", "body").category).toBe(
+      "QUOTA_EXCEEDED",
+    );
+    expect(categorizeProviderError("Invalid recipient email address", "body").category).toBe("INVALID_RECIPIENT");
+    expect(categorizeProviderError("The `to` field contains an invalid address", "body").category).toBe(
+      "INVALID_RECIPIENT",
+    );
+    expect(categorizeProviderError("Some unrecognized vendor failure", "body").category).toBe("PROVIDER_ERROR");
+  });
+
+  it("returns UNKNOWN with no error text when there is no message at all", () => {
+    const result = categorizeProviderError(undefined, "the real body");
+    expect(result).toEqual({ category: "UNKNOWN", error: null });
+  });
+
+  it("truncates a long-but-safe message to ~200 characters while still persisting its category", () => {
+    const longMessage = `Invalid recipient: ${"x".repeat(300)}`;
+    const result = categorizeProviderError(longMessage, "unrelated body");
+    expect(result.category).toBe("INVALID_RECIPIENT");
+    expect(result.error).not.toBeNull();
+    expect(result.error!.length).toBeLessThanOrEqual(201); // 200 chars + the ellipsis
+  });
+
+  it("drops the message (category only) when it contains the real body that was sent", () => {
+    const realBody = "Temporary password: SOME-REAL-SECRET-VALUE-0123456789";
+    const suspiciousMessage = `Delivery failed for message with content: ${realBody}`;
+    const result = categorizeProviderError(suspiciousMessage, realBody);
+    expect(result.error).toBeNull();
+    // Category is still computed — pattern-matching a string can't itself leak anything.
+    expect(result.category).not.toBeNull();
+  });
+
+  it("drops an implausibly long message (category only), even without containing the real body", () => {
+    const result = categorizeProviderError("x".repeat(5000), "a short, unrelated body");
+    expect(result.error).toBeNull();
+    expect(result.category).toBe("PROVIDER_ERROR");
   });
 });

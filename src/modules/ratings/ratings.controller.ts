@@ -1,7 +1,13 @@
 import type { Request, Response } from "express";
 import { AppError } from "../../errors/AppError.js";
 import * as service from "./ratings.service.js";
-import type { BulkUpsertRatingsBody, ClassTermParams, CreateTraitBody, IdParams } from "./ratings.schemas.js";
+import type {
+  BulkUpsertRatingsBody,
+  ClassTermParams,
+  CreateTraitBody,
+  IdParams,
+  UpdateTraitBody,
+} from "./ratings.schemas.js";
 
 export async function createTrait(req: Request, res: Response): Promise<void> {
   const { id } = req.params as unknown as IdParams;
@@ -12,6 +18,16 @@ export async function createTrait(req: Request, res: Response): Promise<void> {
 export async function listTraits(req: Request, res: Response): Promise<void> {
   const { id } = req.params as unknown as IdParams;
   res.status(200).json(await service.listTraits(id));
+}
+
+export async function updateTrait(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as unknown as IdParams;
+  res.status(200).json(await service.updateTrait(id, req.body as UpdateTraitBody));
+}
+
+export async function deactivateTrait(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as unknown as IdParams;
+  res.status(200).json(await service.deactivateTrait(id));
 }
 
 export async function listRatingScale(_req: Request, res: Response): Promise<void> {

@@ -6,8 +6,11 @@ import { prisma } from "../../db/client.js";
 import {
   createAdmin,
   createBareStudent,
+  createBursar,
   createClass,
   createCurrentAcademicSession,
+  createParent,
+  createStudentWithLogin,
   createSubject,
   createTeacher,
   createTermForSession,
@@ -156,5 +159,94 @@ describe("GET /api/rating-scale", () => {
     const res = await request(server).get("/api/rating-scale").set("Authorization", `Bearer ${adminToken}`);
     expect(res.status).toBe(200);
     expect(res.body.map((l: { value: number }) => l.value)).toEqual([5, 4, 3, 2, 1]);
+  });
+});
+
+describe("PATCH /api/traits/:id", () => {
+  it("updates name/order and rejects TEACHER, BURSAR, PARENT and STUDENT", async () => {
+    const world = await setupRatingsWorld();
+
+    const res = await request(server)
+      .patch(`/api/traits/${world.traitId}`)
+      .set("Authorization", `Bearer ${world.adminToken}`)
+      .send({ name: "Punctuality and timeliness", order: 2 });
+    expect(res.status).toBe(200);
+    expect(res.body.name).toBe("Punctuality and timeliness");
+    expect(res.body.order).toBe(2);
+
+    const { token: bursarToken } = await createBursar("bursar@test.local");
+    const { token: parentToken } = await createParent("parent@test.local");
+    const { token: studentToken } = await createStudentWithLogin("student@test.local", "FIA/2026/900");
+    for (const token of [world.formTeacherToken, bursarToken, parentToken, studentToken]) {
+      const denied = await request(server)
+        .patch(`/api/traits/${world.traitId}`)
+        .set("Authorization", `Bearer ${token}`)
+        .send({ name: "x" });
+      expect(denied.status).toBe(403);
+    }
+  });
+
+  it("returns 404 for a nonexistent trait", async () => {
+    const { token } = await createAdmin("admin@test.local");
+    const res = await request(server)
+      .patch("/api/traits/does-not-exist")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ name: "x" });
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("POST /api/traits/:id/deactivate", () => {
+  it("deactivates a trait, is idempotent, and rejects TEACHER, BURSAR, PARENT and STUDENT", async () => {
+    const world = await setupRatingsWorld();
+
+    const res = await request(server)
+      .post(`/api/traits/${world.traitId}/deactivate`)
+      .set("Authorization", `Bearer ${world.adminToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.isActive).toBe(false);
+
+    const again = await request(server)
+      .post(`/api/traits/${world.traitId}/deactivate`)
+      .set("Authorization", `Bearer ${world.adminToken}`);
+    expect(again.status).toBe(200);
+    expect(again.body.isActive).toBe(false);
+
+    const { token: bursarToken } = await createBursar("bursar@test.local");
+    const { token: parentToken } = await createParent("parent@test.local");
+    const { token: studentToken } = await createStudentWithLogin("student@test.local", "FIA/2026/900");
+    for (const token of [world.formTeacherToken, bursarToken, parentToken, studentToken]) {
+      const denied = await request(server)
+        .post(`/api/traits/${world.traitId}/deactivate`)
+        .set("Authorization", `Bearer ${token}`);
+      expect(denied.status).toBe(403);
+    }
+  });
+
+  it("stops a deactivated trait from being rated against, without touching ratings already recorded", async () => {
+    const world = await setupRatingsWorld();
+
+    const before = await request(server)
+      .put(`/api/classes/${world.klass.id}/results/${world.term.id}/ratings`)
+      .set("Authorization", `Bearer ${world.formTeacherToken}`)
+      .send({ entries: [{ studentId: world.student.id, traitId: world.traitId, value: 4 }] });
+    expect(before.status).toBe(200);
+
+    const deactivateRes = await request(server)
+      .post(`/api/traits/${world.traitId}/deactivate`)
+      .set("Authorization", `Bearer ${world.adminToken}`);
+    expect(deactivateRes.status).toBe(200);
+
+    const afterDeactivate = await request(server)
+      .put(`/api/classes/${world.klass.id}/results/${world.term.id}/ratings`)
+      .set("Authorization", `Bearer ${world.formTeacherToken}`)
+      .send({ entries: [{ studentId: world.student.id, traitId: world.traitId, value: 5 }] });
+    expect(afterDeactivate.status).toBe(400);
+
+    // The rating recorded before deactivation is untouched.
+    const rating = await prisma.rating.findFirstOrThrow({
+      where: { studentId: world.student.id, termId: world.term.id, traitId: world.traitId },
+    });
+    expect(rating.value).toBe(4);
   });
 });

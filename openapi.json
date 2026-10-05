@@ -118,6 +118,34 @@
         ],
         "description": "The Authorization header is missing or the access token is invalid/expired — or, for login/refresh specifically, the credentials or refresh token themselves were rejected."
       },
+      "CredentialExpiredError": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "CREDENTIAL_EXPIRED"
+                ]
+              },
+              "message": {
+                "type": "string"
+              },
+              "details": {}
+            },
+            "required": [
+              "code",
+              "message"
+            ]
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "description": "The password presented is correct, but it was server-generated and has expired unused — ask an admin to reissue credentials, or use POST /api/auth/forgot-password."
+      },
       "NoRolesAssignedError": {
         "type": "object",
         "properties": {
@@ -459,6 +487,19 @@
           },
           "latestCredentialDeliveryStatus": {
             "$ref": "#/components/schemas/NotificationDeliveryStatus"
+          },
+          "latestCredentialDeliveryError": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "latestCredentialDeliveryErrorCategory": {
+            "$ref": "#/components/schemas/NotificationErrorCategory"
+          },
+          "credentialExpired": {
+            "type": "boolean",
+            "description": "True once this account's server-generated password has outlived PASSWORD_TEMP_EXPIRY_DAYS (7) unused — login() rejects it outright at that point (CREDENTIAL_EXPIRED), distinct from simply not having signed in yet."
           }
         },
         "required": [
@@ -467,7 +508,10 @@
           "email",
           "roles",
           "createdAt",
-          "latestCredentialDeliveryStatus"
+          "latestCredentialDeliveryStatus",
+          "latestCredentialDeliveryError",
+          "latestCredentialDeliveryErrorCategory",
+          "credentialExpired"
         ]
       },
       "NotificationDeliveryStatus": {
@@ -483,6 +527,20 @@
           null
         ],
         "description": "null = no CREDENTIALS_ISSUED email was ever recorded for this account at all."
+      },
+      "NotificationErrorCategory": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "enum": [
+          "QUOTA_EXCEEDED",
+          "RATE_LIMITED",
+          "INVALID_RECIPIENT",
+          "PROVIDER_ERROR",
+          "UNKNOWN",
+          null
+        ]
       },
       "NotFoundError": {
         "type": "object",
@@ -526,6 +584,24 @@
         },
         "required": [
           "id"
+        ]
+      },
+      "UpdateUserEmailResult": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ReissueCredentialsResult"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "email": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "email"
+            ]
+          }
         ]
       },
       "Student": {
@@ -2607,6 +2683,10 @@
           "order": {
             "type": "integer"
           },
+          "isActive": {
+            "type": "boolean",
+            "description": "False once deactivated (POST .../traits/:id/deactivate) — can no longer be rated against, but ratings already recorded against it are untouched."
+          },
           "createdAt": {
             "type": "string",
             "format": "date-time"
@@ -2618,6 +2698,7 @@
           "category",
           "name",
           "order",
+          "isActive",
           "createdAt"
         ]
       },
@@ -3881,7 +3962,9 @@
           "FEE_REMINDER",
           "PAYMENT_CONFIRMATION",
           "ACADEMIC",
-          "ADMIN_GENERAL"
+          "ADMIN_GENERAL",
+          "PASSWORD_RESET",
+          "CREDENTIALS_ISSUED"
         ]
       },
       "NotificationDelivery": {
@@ -4112,7 +4195,10 @@
               "string",
               "null"
             ],
-            "description": "Truncated to 200 characters."
+            "description": "The vendor's own message, truncated to ~200 characters — null if this delivery never failed, or if the message didn't look safe to persist verbatim (see categorizeProviderError, notifications.service.ts), in which case errorCategory alone is still populated."
+          },
+          "errorCategory": {
+            "$ref": "#/components/schemas/NotificationErrorCategory"
           },
           "attemptedAt": {
             "type": [
@@ -4142,6 +4228,7 @@
           "recipientName",
           "status",
           "error",
+          "errorCategory",
           "attemptedAt",
           "deliveredAt",
           "createdAt"
@@ -4773,11 +4860,18 @@
             }
           },
           "401": {
-            "description": "Missing, invalid, or expired credentials",
+            "description": "Missing, invalid, or expired credentials — OR, login only, correct credentials presented past their server-generated password's validity window (see CredentialExpiredError).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/UnauthorizedError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/UnauthorizedError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/CredentialExpiredError"
+                    }
+                  ]
                 }
               }
             }
@@ -5713,6 +5807,118 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/users/{id}/email": {
+      "patch": {
+        "summary": "ADMIN only — changes an account's login email, treated as exactly as sensitive as a reissue (it effectively is one, to the new address): 409 if the new address collides with any existing email or loginId; for a parent or bare account, loginId is updated to match (they mirror each other — see User.loginId's own schema comment); staff keep their staffNumber as loginId, only their delivery email changes; a student-linked account is rejected outright (400) — students have no email of their own to change. Revokes every live refresh token, resets mustChangePassword, and delivers a fresh generated password to the NEW address (awaited, same as POST .../reissue-credentials).",
+        "description": "Roles: ADMIN.",
+        "x-roles": [
+          "ADMIN"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email"
+                  }
+                },
+                "required": [
+                  "email"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateUserEmailResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with the resource's current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictError"
                 }
               }
             }
@@ -13110,6 +13316,213 @@
                   "items": {
                     "$ref": "#/components/schemas/Trait"
                   }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/traits/{id}": {
+      "patch": {
+        "summary": "Update a trait's category, name, or order",
+        "description": "Roles: ADMIN.",
+        "x-roles": [
+          "ADMIN"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "category": {
+                    "type": "string",
+                    "enum": [
+                      "AFFECTIVE",
+                      "PSYCHOMOTOR"
+                    ]
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "order": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Trait"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with the resource's current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/traits/{id}/deactivate": {
+      "post": {
+        "summary": "Deactivate a trait — soft, not a delete: it can no longer be rated against (PUT /api/classes/:id/results/:termId/ratings rejects it), but ratings already recorded against it are untouched. Idempotent — deactivating an already-inactive trait is still a 200.",
+        "description": "Roles: ADMIN.",
+        "x-roles": [
+          "ADMIN"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Trait"
                 }
               }
             }

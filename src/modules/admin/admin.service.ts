@@ -235,8 +235,8 @@ export async function getSetupStatus(): Promise<SetupStatus> {
         "behaviourSkillsTraits",
         "Behaviour and skills traits",
         `Report-card ratings will have nothing to rate against: ${missing.join("; ")}.`,
-        "npm run db:seed (traits are seeded for whichever session is current when it runs — " +
-          "re-run it after creating/switching the current session)",
+        "npm run db:seed:traits (seeds the default lists for whichever session is current when it " +
+          "runs — fails loudly if none is)",
       ),
     );
   } else {

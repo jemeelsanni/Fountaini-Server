@@ -99,6 +99,14 @@ model User {
   /// except GET /api/auth/me and POST /api/auth/change-password 403s while
   /// this is true.
   mustChangePassword Boolean   @default(false)
+  /// Set every time a server-generated password is issued or reissued —
+  /// paired with mustChangePassword, never read when that's false (a
+  /// password the owner chose themselves doesn't expire). Null for every
+  /// account that existed before this column did: expiry is enforced only
+  /// going forward, never retroactively locking someone out of an account
+  /// that was already fine. See login()'s own comment for the check this
+  /// feeds and PASSWORD_TEMP_EXPIRY_DAYS for the window.
+  passwordIssuedAt   DateTime?
   isActive           Boolean   @default(true)
   lastLoginAt        DateTime?
   createdAt          DateTime  @default(now())
@@ -612,6 +620,14 @@ model Trait {
   category          TraitCategory
   name              String
   order             Int
+  /// Soft-deactivation, not delete: a Rating references its trait by FK
+  /// (RESTRICT, same posture as AssessmentComponent/Score), so a trait
+  /// already used can't be removed outright without orphaning historical
+  /// ratings. Deactivating stops it accepting new ratings
+  /// (bulkUpsertRatings, ratings.service.ts) without touching what's
+  /// already recorded. Defaults true so every pre-existing row (and every
+  /// newly created one) starts usable with no extra step.
+  isActive          Boolean         @default(true)
   createdAt         DateTime        @default(now())
 
   ratings Rating[]
@@ -1282,6 +1298,22 @@ enum NotificationDeliveryStatus {
   DELIVERED
 }
 
+/// A normalized classification of why a send failed — the admin-facing
+/// deliveries view (and each pending-activation row) needs to tell "wait
+/// for the cap to reset" apart from "fix the address" apart from "we don't
+/// know, go look at the logs," which the raw vendor error alone doesn't
+/// reliably support (every provider phrases these differently, and some
+/// vendor error text could itself be unsafe to persist — see
+/// categorizeProviderError, notifications.service.ts). Null for a delivery
+/// that never failed (PENDING/SENT/DELIVERED) or predates this column.
+enum NotificationErrorCategory {
+  QUOTA_EXCEEDED
+  RATE_LIMITED
+  INVALID_RECIPIENT
+  PROVIDER_ERROR
+  UNKNOWN
+}
+
 model NotificationDelivery {
   id                  String                     @id @default(cuid())
   notificationEventId String
@@ -1290,7 +1322,11 @@ model NotificationDelivery {
   status              NotificationDeliveryStatus @default(PENDING)
   providerName        String?
   providerMessageId   String?
+  /// The vendor message, truncated to ~200 characters before it's ever
+  /// written — see categorizeProviderError's own comment on why the length
+  /// cap is enforced at write time, not just read time.
   error               String?
+  errorCategory       NotificationErrorCategory?
   attemptedAt         DateTime?
   deliveredAt         DateTime?
   createdAt           DateTime                   @default(now())

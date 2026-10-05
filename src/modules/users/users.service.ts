@@ -3,7 +3,7 @@ import { logger } from "../../config/logger.js";
 import { prisma } from "../../db/client.js";
 import { AppError } from "../../errors/AppError.js";
 import { fireAndForget } from "../../lib/fireAndForget.js";
-import { generateTemporaryPassword, hashPassword } from "../auth/password.js";
+import { generateTemporaryPassword, hashPassword, isTemporaryPasswordExpired } from "../auth/password.js";
 import {
   createNotification,
   suppressCredentialNotifications,
@@ -54,6 +54,7 @@ export async function createUser(input: { email: string; role: Role }) {
         email: input.email,
         passwordHash,
         mustChangePassword: true,
+        passwordIssuedAt: new Date(),
         roles: { create: [{ role: input.role }] },
       },
       select: userListSelect,
@@ -183,7 +184,10 @@ export async function reissueCredentialsForUser(userId: string) {
   const passwordHash = await hashPassword(temporaryPassword);
 
   await prisma.$transaction([
-    prisma.user.update({ where: { id: userId }, data: { passwordHash, mustChangePassword: true } }),
+    prisma.user.update({
+      where: { id: userId },
+      data: { passwordHash, mustChangePassword: true, passwordIssuedAt: new Date() },
+    }),
     prisma.refreshToken.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: new Date() } }),
   ]);
 
@@ -252,6 +256,8 @@ export async function listPendingActivation() {
       loginId: true,
       email: true,
       createdAt: true,
+      mustChangePassword: true,
+      passwordIssuedAt: true,
       roles: { select: { role: true } },
       student: { select: { id: true } },
     },
@@ -278,7 +284,11 @@ export async function listPendingActivation() {
       recipientUserId: true,
       relatedEntityType: true,
       relatedEntityId: true,
-      deliveries: { where: { channel: "EMAIL" }, select: { status: true }, take: 1 },
+      deliveries: {
+        where: { channel: "EMAIL" },
+        select: { status: true, error: true, errorCategory: true },
+        take: 1,
+      },
     },
     orderBy: { createdAt: "desc" },
   });
@@ -298,13 +308,61 @@ export async function listPendingActivation() {
 
   return users.map((user) => {
     const event = user.student ? latestByStudent.get(user.student.id) : latestByDirectUser.get(user.id);
+    const delivery = event?.deliveries[0];
     return {
       id: user.id,
       loginId: user.loginId,
       email: user.email,
       roles: user.roles.map((ur) => ur.role),
       createdAt: user.createdAt,
-      latestCredentialDeliveryStatus: event?.deliveries[0]?.status ?? null,
+      latestCredentialDeliveryStatus: delivery?.status ?? null,
+      latestCredentialDeliveryError: delivery?.error ?? null,
+      latestCredentialDeliveryErrorCategory: delivery?.errorCategory ?? null,
+      credentialExpired: isTemporaryPasswordExpired(user),
     };
   });
+}
+
+/// Changes an account's login email — the one PATCH that genuinely needs
+/// to touch loginId too, for a parent or bare account (see
+/// resolvePrimaryContactParent's own "loginId already IS their email"
+/// framing): updating one without the other would leave them silently
+/// diverged. Staff keep their staffNumber as loginId regardless — only
+/// their delivery email changes. Students have no email of their own at
+/// all (see User.email's own schema comment) — rejected outright, there's
+/// nothing here to change.
+///
+/// Treated as exactly as sensitive as a reissue, because it effectively is
+/// one: whoever had the OLD address can no longer reach this account by
+/// email, so this reuses reissueCredentialsForUser directly rather than a
+/// second copy of its mechanics — it re-reads this account's (now-updated)
+/// email/loginId, so the fresh credentials it generates are naturally
+/// delivered to the NEW address, not the old one.
+export async function updateUserEmail(userId: string, newEmail: string) {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    include: { staff: true, student: true },
+  });
+  if (!user) {
+    throw AppError.notFound("User not found");
+  }
+  if (user.student) {
+    throw AppError.badRequest("Students have no email on file — there is nothing here to change");
+  }
+
+  const collision = await prisma.user.findFirst({
+    where: { id: { not: userId }, OR: [{ email: newEmail }, { loginId: newEmail }] },
+  });
+  if (collision) {
+    throw AppError.conflict("A user with this email already exists");
+  }
+
+  const updateData: Prisma.UserUpdateInput = { email: newEmail };
+  if (!user.staff) {
+    updateData.loginId = newEmail;
+  }
+  await prisma.user.update({ where: { id: userId }, data: updateData });
+
+  const reissued = await reissueCredentialsForUser(userId);
+  return { ...reissued, email: newEmail };
 }

@@ -63,12 +63,15 @@ const AttendanceStatusSchema = z.enum(["PRESENT", "ABSENT", "LATE"]).openapi("At
 const AttendanceMethodSchema = z.enum(["QR_SCAN", "MANUAL"]).openapi("AttendanceMethod");
 const EnquiryStatusSchema = z.enum(["NEW", "CONTACTED", "CONVERTED", "CLOSED"]).openapi("EnquiryStatus");
 const NotificationTypeSchema = z
-  .enum(["FEE_REMINDER", "PAYMENT_CONFIRMATION", "ACADEMIC", "ADMIN_GENERAL"])
+  .enum(["FEE_REMINDER", "PAYMENT_CONFIRMATION", "ACADEMIC", "ADMIN_GENERAL", "PASSWORD_RESET", "CREDENTIALS_ISSUED"])
   .openapi("NotificationType");
 const NotificationChannelSchema = z.enum(["SMS", "EMAIL", "WHATSAPP", "IN_APP"]).openapi("NotificationChannel");
 const NotificationDeliveryStatusSchema = z
   .enum(["PENDING", "SENT", "FAILED", "DELIVERED"])
   .openapi("NotificationDeliveryStatus");
+const NotificationErrorCategorySchema = z
+  .enum(["QUOTA_EXCEEDED", "RATE_LIMITED", "INVALID_RECIPIENT", "PROVIDER_ERROR", "UNKNOWN"])
+  .openapi("NotificationErrorCategory");
 
 // ---------------------------------------------------------------------------
 // School / auth / users
@@ -123,6 +126,14 @@ export const PendingActivationUserSchema = z
     latestCredentialDeliveryStatus: NotificationDeliveryStatusSchema.nullable().openapi({
       description: "null = no CREDENTIALS_ISSUED email was ever recorded for this account at all.",
     }),
+    latestCredentialDeliveryError: z.string().nullable(),
+    latestCredentialDeliveryErrorCategory: NotificationErrorCategorySchema.nullable(),
+    credentialExpired: z.boolean().openapi({
+      description:
+        "True once this account's server-generated password has outlived PASSWORD_TEMP_EXPIRY_DAYS " +
+        "(7) unused — login() rejects it outright at that point (CREDENTIAL_EXPIRED), distinct from " +
+        "simply not having signed in yet.",
+    }),
   })
   .openapi("PendingActivationUser");
 
@@ -144,6 +155,13 @@ export const ReissueCredentialsResultSchema = z
     }),
   })
   .openapi("ReissueCredentialsResult");
+
+/// PATCH /api/users/:id/email's result shape — ReissueCredentialsResult
+/// plus the new address, since this route's whole point is changing it
+/// (useful in the audit trail's afterData, not just the live response).
+export const UpdateUserEmailResultSchema = ReissueCredentialsResultSchema.extend({
+  email: z.string(),
+}).openapi("UpdateUserEmailResult");
 
 export const StaffSchema = z
   .object({
@@ -546,6 +564,10 @@ export const TraitSchema = z
     category: TraitCategorySchema,
     name: z.string(),
     order: z.number().int(),
+    isActive: z.boolean().openapi({
+      description: "False once deactivated (POST .../traits/:id/deactivate) — can no longer be rated " +
+        "against, but ratings already recorded against it are untouched.",
+    }),
     createdAt: isoDateTime(),
   })
   .openapi("Trait");
@@ -1179,7 +1201,13 @@ export const NotificationDeliveryListRowSchema = z
     recipientUserId: id(),
     recipientName: z.string(),
     status: NotificationDeliveryStatusSchema,
-    error: z.string().nullable().openapi({ description: "Truncated to 200 characters." }),
+    error: z.string().nullable().openapi({
+      description:
+        "The vendor's own message, truncated to ~200 characters — null if this delivery never " +
+        "failed, or if the message didn't look safe to persist verbatim (see categorizeProviderError, " +
+        "notifications.service.ts), in which case errorCategory alone is still populated.",
+    }),
+    errorCategory: NotificationErrorCategorySchema.nullable(),
     attemptedAt: isoDateTime().nullable(),
     deliveredAt: isoDateTime().nullable(),
     createdAt: isoDateTime(),

@@ -4,7 +4,7 @@ import { prisma } from "../../db/client.js";
 import { auditMutation } from "../../http/middleware/auditMutation.js";
 import { validate } from "../../http/middleware/validate.js";
 import * as usersController from "./users.controller.js";
-import { createUserSchema, userIdParamsSchema } from "./users.schemas.js";
+import { createUserSchema, updateUserEmailSchema, userIdParamsSchema } from "./users.schemas.js";
 
 export const usersRouter = Router();
 
@@ -52,4 +52,14 @@ usersRouter.post(
   validate({ params: userIdParamsSchema }),
   auditMutation("User", "USER_CREDENTIALS_REISSUED", { fetchBefore: fetchUserBefore }),
   usersController.reissueCredentials,
+);
+// Treated as exactly as sensitive as reissue-credentials above (see
+// updateUserEmail's own comment, users.service.ts) — same fetchBefore, same
+// audit action family, same REDACTED_RESPONSE_FIELDS protection for the
+// rare temporaryPassword-in-response case.
+usersRouter.patch(
+  "/:id/email",
+  validate({ params: userIdParamsSchema, body: updateUserEmailSchema }),
+  auditMutation("User", "USER_EMAIL_CHANGED", { fetchBefore: fetchUserBefore }),
+  usersController.updateEmail,
 );

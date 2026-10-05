@@ -65,6 +65,7 @@ export async function issueFirstLoginForStudent(
           email: null,
           passwordHash,
           mustChangePassword: true,
+          passwordIssuedAt: new Date(),
           roles: { create: [{ role: "STUDENT" }] },
         },
       });

@@ -38,7 +38,11 @@ export class ResendNotificationProvider implements NotificationProvider {
 
     if (error || !data) {
       logger.error({ err: error, recipient: input.recipient, channel: input.channel }, "Resend send failed");
-      return { status: "FAILED", error: "Failed to send email" };
+      // The real vendor message, not a generic string — categorizeProviderError
+      // (notifications.service.ts) is what decides how much of this, if
+      // any, actually gets persisted; this is still just an in-memory
+      // return value at this point, same posture as `body` itself.
+      return { status: "FAILED", error: error?.message ?? "Resend returned no data and no error" };
     }
 
     return { status: "SENT", providerMessageId: data.id };

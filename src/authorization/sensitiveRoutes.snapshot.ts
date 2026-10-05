@@ -44,6 +44,10 @@ export const SENSITIVE_ROUTE_ROLES: Readonly<Record<string, readonly Role[]>> = 
   // parent, or student), not just a student's. Same blast radius: it
   // rewrites someone's credentials and revokes their live sessions.
   "POST /api/users/:id/reissue-credentials": ["ADMIN"],
+  // Changes who an account signs in as and where its credentials go —
+  // same blast radius as the reissue row above (it IS a reissue, to a new
+  // address), plus it can also repoint loginId for a parent/bare account.
+  "PATCH /api/users/:id/email": ["ADMIN"],
   // Bulk lifecycle: up to 500 students at once, and GRADUATED/WITHDRAWN
   // also close each one's active enrollment(s) — same blast-radius class
   // as the account-lifecycle rows above, just batched.

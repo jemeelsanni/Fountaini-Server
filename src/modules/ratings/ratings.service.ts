@@ -1,7 +1,7 @@
 import { Prisma } from "../../../generated/prisma/index.js";
 import { prisma } from "../../db/client.js";
 import { AppError } from "../../errors/AppError.js";
-import type { BulkUpsertRatingsBody, CreateTraitBody } from "./ratings.schemas.js";
+import type { BulkUpsertRatingsBody, CreateTraitBody, UpdateTraitBody } from "./ratings.schemas.js";
 
 function isUniqueConstraintError(err: unknown): boolean {
   return err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002";
@@ -28,6 +28,33 @@ export function listTraits(academicSessionId: string) {
     where: { academicSessionId },
     orderBy: [{ category: "asc" }, { order: "asc" }],
   });
+}
+
+export async function updateTrait(id: string, input: UpdateTraitBody) {
+  const trait = await prisma.trait.findUnique({ where: { id } });
+  if (!trait) {
+    throw AppError.notFound("Trait not found");
+  }
+
+  try {
+    return await prisma.trait.update({ where: { id }, data: input });
+  } catch (err) {
+    if (isUniqueConstraintError(err)) {
+      throw AppError.conflict("A trait with this name already exists in this category for this session");
+    }
+    throw err;
+  }
+}
+
+/// Soft, not a delete — see Trait.isActive's own comment (schema.prisma).
+/// Idempotent: deactivating an already-inactive trait is still a 200, not
+/// an error — the caller wanted it off, and it already is.
+export async function deactivateTrait(id: string) {
+  const trait = await prisma.trait.findUnique({ where: { id } });
+  if (!trait) {
+    throw AppError.notFound("Trait not found");
+  }
+  return prisma.trait.update({ where: { id }, data: { isActive: false } });
 }
 
 export function listRatingScale() {
@@ -94,8 +121,15 @@ export async function bulkUpsertRatings(
   const enrolledStudentIds = new Set(enrollments.map((e) => e.studentId));
 
   for (const entry of input.entries) {
-    if (!traitById.has(entry.traitId)) {
+    const trait = traitById.get(entry.traitId);
+    if (!trait) {
       throw AppError.badRequest(`Trait ${entry.traitId} does not belong to this term's academic session`);
+    }
+    // Existing ratings against a now-deactivated trait stay exactly as
+    // they are (deactivating never touches recorded Rating rows) — this
+    // only stops a NEW or updated rating from being entered against it.
+    if (!trait.isActive) {
+      throw AppError.badRequest(`Trait ${entry.traitId} has been deactivated and can no longer be rated against`);
     }
     if (!enrolledStudentIds.has(entry.studentId)) {
       throw AppError.badRequest(`Student ${entry.studentId} is not actively enrolled in this class/session`);

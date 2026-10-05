@@ -59,6 +59,7 @@ export async function createParent(input: CreateParentBody) {
           email: input.email,
           passwordHash,
           mustChangePassword: true,
+          passwordIssuedAt: new Date(),
           roles: { create: [{ role: "PARENT" }] },
         },
       });

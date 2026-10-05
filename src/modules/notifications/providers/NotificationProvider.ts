@@ -11,6 +11,12 @@ export interface SendMessageInput {
 export interface SendMessageResult {
   status: "SENT" | "FAILED";
   providerMessageId?: string;
+  /// The real vendor error message, un-redacted, un-truncated — this is
+  /// still just an in-memory value at this point, same as a notification's
+  /// own `body`. createNotification (notifications.service.ts) is the one
+  /// place that decides how much of it, if any, is safe to persist (see
+  /// categorizeProviderError there) — a provider should never pre-emptively
+  /// sanitize or shorten this itself.
   error?: string;
 }
 

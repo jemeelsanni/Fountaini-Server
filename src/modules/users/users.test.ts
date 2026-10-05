@@ -241,6 +241,27 @@ describe("GET /api/users/pending-activation", () => {
     expect(ids).toContain(pendingUser.id);
     expect(ids).not.toContain(activatedUser.id);
   });
+
+  it("shows an expired temporary password distinctly from one still within its window", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const { user: expiredUser } = await createTeacher("expired@test.local");
+    const { user: freshUser } = await createParent("fresh@test.local");
+    const EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
+    await prisma.user.update({
+      where: { id: expiredUser.id },
+      data: { mustChangePassword: true, passwordIssuedAt: new Date(Date.now() - (EXPIRY_MS + 1000)) },
+    });
+    await prisma.user.update({
+      where: { id: freshUser.id },
+      data: { mustChangePassword: true, passwordIssuedAt: new Date() },
+    });
+
+    const res = await request(server).get("/api/users/pending-activation").set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    const rows = res.body as { id: string; credentialExpired: boolean }[];
+    expect(rows.find((r) => r.id === expiredUser.id)?.credentialExpired).toBe(true);
+    expect(rows.find((r) => r.id === freshUser.id)?.credentialExpired).toBe(false);
+  });
 });
 
 describe("POST /api/users/:id/reissue-credentials", () => {
@@ -354,5 +375,138 @@ describe("POST /api/users/:id/reissue-credentials", () => {
 
     const userAfter = await prisma.user.findUniqueOrThrow({ where: { id: student.userId! } });
     expect(userAfter.mustChangePassword).toBe(true);
+  });
+});
+
+describe("PATCH /api/users/:id/email", () => {
+  it("returns 404 for a nonexistent user", async () => {
+    const adminToken = await createAdminAndLogin();
+    const res = await request(server)
+      .patch("/api/users/does-not-exist/email")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ email: "new@test.local" });
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects TEACHER, BURSAR, PARENT and STUDENT with 403", async () => {
+    const { user: target } = await createTeacher("target@test.local");
+    const { token: teacherToken } = await createTeacher("teacher@test.local");
+    const { token: parentToken } = await createParent("parent@test.local");
+    const { token: studentToken } = await createStudentWithLogin("student@test.local", "FIA/2026/001");
+
+    for (const token of [teacherToken, parentToken, studentToken]) {
+      const res = await request(server)
+        .patch(`/api/users/${target.id}/email`)
+        .set("Authorization", `Bearer ${token}`)
+        .send({ email: "new@test.local" });
+      expect(res.status).toBe(403);
+    }
+  });
+
+  it("staff: updates email but keeps staffNumber as loginId", async () => {
+    const adminToken = await createAdminAndLogin();
+    const { user: teacherUser, staff } = await createTeacher("teacher@test.local");
+
+    const res = await request(server)
+      .patch(`/api/users/${teacherUser.id}/email`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ email: "new-staff-email@test.local" });
+    expect(res.status).toBe(200);
+    expect(res.body.email).toBe("new-staff-email@test.local");
+
+    const after = await prisma.user.findUniqueOrThrow({ where: { id: teacherUser.id } });
+    expect(after.email).toBe("new-staff-email@test.local");
+    expect(after.loginId).toBe(staff.staffNumber);
+  });
+
+  it("parent: updates email AND loginId to match (they mirror each other)", async () => {
+    const adminToken = await createAdminAndLogin();
+    const { user: parentUser } = await createParent("parent@test.local");
+
+    const res = await request(server)
+      .patch(`/api/users/${parentUser.id}/email`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ email: "new-parent-email@test.local" });
+    expect(res.status).toBe(200);
+
+    const after = await prisma.user.findUniqueOrThrow({ where: { id: parentUser.id } });
+    expect(after.email).toBe("new-parent-email@test.local");
+    expect(after.loginId).toBe("new-parent-email@test.local");
+  });
+
+  it("rejects a student-linked account with 400 — students have no email to change", async () => {
+    const adminToken = await createAdminAndLogin();
+    const { student } = await createStudentWithLogin("student@test.local", "FIA/2026/001");
+
+    const res = await request(server)
+      .patch(`/api/users/${student.userId}/email`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ email: "student-new@test.local" });
+    expect(res.status).toBe(400);
+  });
+
+  it("409s on collision with another account's existing email or loginId", async () => {
+    const adminToken = await createAdminAndLogin();
+    const { user: teacherUser } = await createTeacher("teacher@test.local");
+    const { user: otherParentUser } = await createParent("taken@test.local");
+
+    const res = await request(server)
+      .patch(`/api/users/${teacherUser.id}/email`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ email: "taken@test.local" });
+    expect(res.status).toBe(409);
+    void otherParentUser;
+  });
+
+  it("revokes live sessions, resets mustChangePassword, and delivers fresh credentials to the NEW address — old password stops working", async () => {
+    const adminToken = await createAdminAndLogin();
+    const { user: parentUser } = await createParent("parent@test.local");
+
+    const loginRes = await request(server)
+      .post("/api/auth/login")
+      .send({ identifier: "parent@test.local", password: "password-123456" });
+    expect(loginRes.status).toBe(200);
+    const oldRefreshToken = loginRes.body.refreshToken as string;
+
+    const res = await request(server)
+      .patch(`/api/users/${parentUser.id}/email`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ email: "parent-new@test.local" });
+    expect(res.status).toBe(200);
+    expect(res.body.temporaryPassword).toBeUndefined();
+
+    const after = await prisma.user.findUniqueOrThrow({ where: { id: parentUser.id } });
+    expect(after.mustChangePassword).toBe(true);
+
+    const refreshAttempt = await request(server).post("/api/auth/refresh").send({ refreshToken: oldRefreshToken });
+    expect(refreshAttempt.status).toBe(401);
+
+    const oldLoginAttempt = await request(server)
+      .post("/api/auth/login")
+      .send({ identifier: "parent@test.local", password: "password-123456" });
+    expect(oldLoginAttempt.status).toBe(401);
+  });
+
+  it("never persists the generated password into the response or the audit log", async () => {
+    const adminToken = await createAdminAndLogin();
+    const { user: teacherUser } = await createTeacher("teacher@test.local");
+    const { passwordHash: oldHash } = await prisma.user.findUniqueOrThrow({ where: { id: teacherUser.id } });
+
+    const res = await request(server)
+      .patch(`/api/users/${teacherUser.id}/email`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ email: "teacher-new@test.local" });
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(res.body)).not.toContain(oldHash);
+
+    const entry = await waitForAuditLog("User", teacherUser.id, "USER_EMAIL_CHANGED");
+    expect(entry).not.toBeNull();
+    const afterData = entry?.afterData as Record<string, unknown> | null;
+    const beforeData = entry?.beforeData as Record<string, unknown> | null;
+    expect(afterData?.temporaryPassword).toBeUndefined();
+    expect(beforeData?.passwordHash).toBeUndefined();
+    expect(afterData?.email).toBe("teacher-new@test.local");
+    expect(JSON.stringify(afterData)).not.toContain(oldHash);
+    expect(JSON.stringify(beforeData)).not.toContain(oldHash);
   });
 });

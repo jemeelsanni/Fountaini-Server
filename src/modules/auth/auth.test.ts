@@ -112,6 +112,96 @@ describe("POST /api/auth/login", () => {
   });
 });
 
+describe("POST /api/auth/login — temporary password expiry", () => {
+  const PASSWORD_TEMP_EXPIRY_DAYS = 7;
+
+  async function createPendingUser(email: string, password: string, passwordIssuedAt: Date) {
+    const passwordHash = await hashPassword(password);
+    return prisma.user.create({
+      data: {
+        loginId: email,
+        email,
+        passwordHash,
+        mustChangePassword: true,
+        passwordIssuedAt,
+        roles: { create: [{ role: "ADMIN" }] },
+      },
+    });
+  }
+
+  it("rejects correct credentials with CREDENTIAL_EXPIRED once the temp password has outlived its window", async () => {
+    const issuedAt = new Date(Date.now() - (PASSWORD_TEMP_EXPIRY_DAYS * 24 * 60 * 60 * 1000 + 1000));
+    await createPendingUser("expired@test.local", "correct-horse-battery-staple", issuedAt);
+
+    const res = await request(server)
+      .post("/api/auth/login")
+      .send({ identifier: "expired@test.local", password: "correct-horse-battery-staple" });
+
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe("CREDENTIAL_EXPIRED");
+    // Names a recovery path, not just a status code.
+    expect(res.body.error.message).toMatch(/forgot-password|admin/i);
+  });
+
+  it("still rejects a WRONG password for an expired account as ordinary UNAUTHORIZED, not CREDENTIAL_EXPIRED", async () => {
+    const issuedAt = new Date(Date.now() - (PASSWORD_TEMP_EXPIRY_DAYS * 24 * 60 * 60 * 1000 + 1000));
+    await createPendingUser("expired2@test.local", "correct-horse-battery-staple", issuedAt);
+
+    const res = await request(server)
+      .post("/api/auth/login")
+      .send({ identifier: "expired2@test.local", password: "totally-wrong-password" });
+
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe("UNAUTHORIZED");
+  });
+
+  it("accepts correct credentials for a temp password still within its window", async () => {
+    const issuedAt = new Date(Date.now() - 24 * 60 * 60 * 1000); // 1 day ago
+    await createPendingUser("fresh@test.local", "correct-horse-battery-staple", issuedAt);
+
+    const res = await request(server)
+      .post("/api/auth/login")
+      .send({ identifier: "fresh@test.local", password: "correct-horse-battery-staple" });
+
+    expect(res.status).toBe(200);
+  });
+
+  it("never expires an already-activated account (mustChangePassword: false), however old passwordIssuedAt is", async () => {
+    const { email, password, user } = await createTestUser();
+    // Simulate a long-past issuance date on an otherwise normal, already-
+    // activated account — isTemporaryPasswordExpired only ever reads this
+    // while mustChangePassword is true, which createTestUser's account
+    // never is.
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { passwordIssuedAt: new Date("2000-01-01") },
+    });
+
+    const res = await request(server).post("/api/auth/login").send({ identifier: email, password });
+    expect(res.status).toBe(200);
+  });
+
+  it("never expires an account with no recorded passwordIssuedAt (predates the column)", async () => {
+    const passwordHash = await hashPassword("correct-horse-battery-staple");
+    await prisma.user.create({
+      data: {
+        loginId: "predates-column@test.local",
+        email: "predates-column@test.local",
+        passwordHash,
+        mustChangePassword: true,
+        // passwordIssuedAt deliberately omitted — null, same as every
+        // account that existed before this column did.
+        roles: { create: [{ role: "ADMIN" }] },
+      },
+    });
+
+    const res = await request(server)
+      .post("/api/auth/login")
+      .send({ identifier: "predates-column@test.local", password: "correct-horse-battery-staple" });
+    expect(res.status).toBe(200);
+  });
+});
+
 describe("POST /api/auth/login — identifier resolution", () => {
   it("logs in by admission number, by staff number, and by parent email", async () => {
     const { student, token: expectedStudentToken } = await createStudentWithLogin(

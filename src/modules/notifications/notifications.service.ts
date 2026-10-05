@@ -2,6 +2,7 @@ import {
   Prisma,
   type NotificationChannel,
   type NotificationDeliveryStatus,
+  type NotificationErrorCategory,
   type NotificationType,
 } from "../../../generated/prisma/index.js";
 import { env } from "../../config/env.js";
@@ -51,6 +52,80 @@ interface CreateNotificationInput {
 }
 
 const PERSISTED_SENSITIVE_BODY = "[redacted — sensitive content, not stored]";
+
+const ERROR_MESSAGE_MAX_LENGTH = 200;
+// A real per-send API error is normally a short, specific sentence or two.
+// Nothing beyond this is assumed to be a legitimate error description —
+// treated as implausible and dropped by the safety check below rather than
+// truncated and stored anyway.
+const ERROR_MESSAGE_PLAUSIBLE_LENGTH = 1000;
+
+/// Best-effort classification from the vendor's own message text — not a
+/// verified 1:1 match against Resend's internal error-code taxonomy (its
+/// exact codes aren't hardcoded against here), just a reasonable heuristic
+/// over the patterns its documented error messages commonly use. Revisit
+/// if a specific miscategorization turns up in practice. Order matters:
+/// more specific checks first, PROVIDER_ERROR is the catch-all for "we got
+/// a real error, just not one of the above."
+function categorizeByMessage(message: string): NotificationErrorCategory {
+  const lower = message.toLowerCase();
+  if (lower.includes("rate limit") || lower.includes("too many requests")) {
+    return "RATE_LIMITED";
+  }
+  if (lower.includes("quota") || lower.includes("daily limit") || lower.includes("usage limit")) {
+    return "QUOTA_EXCEEDED";
+  }
+  if (
+    lower.includes("invalid") &&
+    (lower.includes("recipient") ||
+      lower.includes("email") ||
+      lower.includes("address") ||
+      lower.includes("domain") ||
+      lower.includes("to field"))
+  ) {
+    return "INVALID_RECIPIENT";
+  }
+  if (lower.includes("no contact address")) {
+    return "INVALID_RECIPIENT";
+  }
+  return "PROVIDER_ERROR";
+}
+
+/// Decides both the normalized category AND whether the raw vendor message
+/// is actually safe to persist at all — the deliveries view (and each
+/// pending-activation row) needs to tell "wait, the cap will reset" apart
+/// from "fix the address," which the raw message alone doesn't reliably
+/// support (every provider phrases these differently). Category is always
+/// computed (pattern-matching a string into one of five labels can't itself
+/// leak anything) and always returned; the raw `error` text is persisted
+/// only when it looks like an ordinary API error description, not
+/// something that could be echoing the notification's own (possibly
+/// `sensitive`) body back — this is a defensive check, not a proven leak
+/// (nothing in Resend's documented error shape echoes request content),
+/// but an unusually long message, or one that literally contains the real
+/// body just sent, is treated as untrustworthy to store verbatim. When
+/// unsure, the category is still persisted — only the message is dropped.
+export function categorizeProviderError(
+  rawMessage: string | undefined,
+  realBodySent: string,
+): { category: NotificationErrorCategory; error: string | null } {
+  if (!rawMessage) {
+    return { category: "UNKNOWN", error: null };
+  }
+
+  const category = categorizeByMessage(rawMessage);
+
+  const looksLikeItCouldLeakTheBody =
+    rawMessage.length > ERROR_MESSAGE_PLAUSIBLE_LENGTH ||
+    (realBodySent.length > 20 && rawMessage.includes(realBodySent));
+  if (looksLikeItCouldLeakTheBody) {
+    return { category, error: null };
+  }
+
+  const error =
+    rawMessage.length > ERROR_MESSAGE_MAX_LENGTH ? `${rawMessage.slice(0, ERROR_MESSAGE_MAX_LENGTH)}…` : rawMessage;
+  return { category, error };
+}
 
 async function resolveRecipientAddress(userId: string, channel: NotificationChannel): Promise<string | null> {
   const user = await prisma.user.findUnique({ where: { id: userId } });
@@ -118,19 +193,25 @@ export async function createNotification(input: CreateNotificationInput) {
           data: {
             status: "FAILED",
             error: "No contact address on file for this channel",
+            errorCategory: "INVALID_RECIPIENT",
             attemptedAt: new Date(),
           },
         });
       }
 
       const result = await provider.send({ channel, recipient, subject: input.subject, body: input.body });
+      const { category, error } =
+        result.status === "FAILED"
+          ? categorizeProviderError(result.error, input.body)
+          : { category: null, error: null };
       return prisma.notificationDelivery.update({
         where: { id: delivery.id },
         data: {
           status: result.status,
           providerName: provider.name,
           providerMessageId: result.providerMessageId,
-          error: result.error,
+          error,
+          errorCategory: category,
           attemptedAt: new Date(),
         },
       });
@@ -221,13 +302,6 @@ export interface ListDeliveriesFilter {
   pageSize: number;
 }
 
-// A provider error can legitimately be a full stack-trace-shaped string
-// (ResendNotificationProvider currently never produces one that long, but
-// nothing stops a future provider from doing so) — this is an admin list
-// of many rows, not a single incident's detail view, so each row carries
-// enough to triage, not the whole thing.
-const ERROR_TRUNCATE_LENGTH = 200;
-
 // Same batched-lookup shape as fees.service.ts's resolveUserNames — one
 // User.findMany, not N+1 — extended with `student` since a notification
 // recipient can be a student directly (not just staff/parent), unlike a
@@ -288,6 +362,7 @@ export async function listDeliveries(filter: ListDeliveriesFilter) {
         channel: true,
         status: true,
         error: true,
+        errorCategory: true,
         attemptedAt: true,
         deliveredAt: true,
         createdAt: true,
@@ -317,7 +392,8 @@ export async function listDeliveries(filter: ListDeliveriesFilter) {
     recipientUserId: r.notificationEvent.recipientUserId,
     recipientName: names.get(r.notificationEvent.recipientUserId) ?? "Unknown",
     status: r.status,
-    error: r.error ? r.error.slice(0, ERROR_TRUNCATE_LENGTH) : null,
+    error: r.error,
+    errorCategory: r.errorCategory,
     attemptedAt: r.attemptedAt,
     deliveredAt: r.deliveredAt,
     createdAt: r.createdAt,

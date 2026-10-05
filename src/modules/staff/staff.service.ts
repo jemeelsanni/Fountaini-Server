@@ -73,6 +73,7 @@ export async function createStaff(input: CreateStaffBody) {
           email: input.email,
           passwordHash,
           mustChangePassword: true,
+          passwordIssuedAt: new Date(),
           roles: { create: [{ role: input.role }] },
         },
       });
