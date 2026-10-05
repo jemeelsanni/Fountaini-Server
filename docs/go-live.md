@@ -35,12 +35,12 @@ run either form again.
    row traces back to the demo seed manifest. Either way, this step never
    runs again after this point.
 
-2. **Change the bootstrap admin's password.** The bootstrap account
-   (`admin@school.test` by default, or `SEED_ADMIN_EMAIL` if that was set
-   when `npm run db:seed` ran) ships with a known default password
-   (`ChangeMe123!` unless `SEED_ADMIN_PASSWORD` was set). Log in and
-   `POST /api/auth/change-password` immediately — this account has full
-   admin access until step 5 retires it.
+2. **Sign in as the bootstrap admin.** `POST /api/auth/login` with
+   identifier `admin@school.test` (or `SEED_ADMIN_EMAIL` if that was set
+   when `npm run db:seed` ran) and password `ChangeMe123!` (or
+   `SEED_ADMIN_PASSWORD` if that was set). This account has full admin
+   access until step 7 retires it — keep its access token for every call
+   below.
 
 3. **Create the academic session and terms.** `POST
    /api/academic-sessions`, then `PATCH
@@ -52,25 +52,32 @@ run either form again.
    `identifiers.service.ts`), and every check from here on that depends on
    "the current session" will FAIL until this step is done.
 
-   **Run `npm run db:seed:traits` right after this step.** It seeds the
-   default behaviour/skills trait lists for whichever session is current
-   *at the time it runs* — it fails loudly (non-zero exit, clear message)
-   if none is, rather than silently doing nothing. It's idempotent, safe
-   to re-run any time a new session becomes current. Trait rows can also
-   be managed individually from here on via `POST`/`PATCH .../traits/:id`
-   and `POST .../traits/:id/deactivate` (see `ratings.routes.ts`) — this
-   script is only for the default starting lists. Skipping this step
-   leaves `GET /api/admin/setup-status`'s "Behaviour and skills traits"
-   check FAILing with no obvious cause.
+4. **Run `npm run db:seed:traits`.** It seeds the default behaviour/skills
+   trait lists for whichever session is current *at the time it runs* —
+   it fails loudly (non-zero exit, clear message) if none is, rather than
+   silently doing nothing, so this has to come after step 3, not before
+   it. It's idempotent, safe to re-run any time a new session becomes
+   current — but it's a one-time step in this sequence, not something to
+   repeat on every later change: trait rows are managed individually from
+   here on via `POST`/`PATCH .../traits/:id` and `POST
+   .../traits/:id/deactivate` (see `ratings.routes.ts`); this script is
+   only for the starting lists. Skipping it leaves `GET
+   /api/admin/setup-status`'s "Behaviour and skills traits" check FAILing
+   with no obvious cause. Re-running `npm run db:seed` itself is **not**
+   part of this sequence — `seedAdmin()` is the only thing in it, and it
+   already ran as part of step 1's reset.
 
-4. **Create the school record.** `POST /api/school` — `name`, `address`,
+5. **Change the bootstrap admin's password.** `POST
+   /api/auth/change-password`, still on the session from step 2.
+
+6. **Create the school record.** `POST /api/school` — `name`, `address`,
    `contactEmail`, `contactPhone`. **Get these from the school in
    writing, not from memory or a placeholder** — this is what's printed on
    every statement and report card the school hands out from this point
    on. A wrong address or phone number here isn't a bug to fix later,
    it's wrong paperwork already in a parent's hand.
 
-5. **Create the real admin, retire the bootstrap one.** `POST
+7. **Create the real admin, retire the bootstrap one.** `POST
    /api/staff` with `role: ADMIN` and the real administrator's own email —
    this is what `GET /api/admin/setup-status`'s "Admin account" check
    looks for specifically (an ADMIN with a linked Staff record; the
@@ -80,7 +87,7 @@ run either form again.
    recoverable (`POST /api/users/:id/activate`) if something's wrong with
    the new one.
 
-6. **Enter the rest of configuration.** Subjects (`POST /api/subjects`),
+8. **Enter the rest of configuration.** Subjects (`POST /api/subjects`),
    classes (`POST /api/classes`), time slots (`POST /api/time-slots`),
    assessment components (`POST
    /api/academic-sessions/:id/assessment-components` — must sum to
@@ -89,26 +96,26 @@ run either form again.
    then `POST /api/grading-scales/:id/bands`). Then real staff, students,
    and parents.
 
-7. **Run `npm run preflight`.** `ready: true`, no FAIL rows. Read the
+9. **Run `npm run preflight`.** `ready: true`, no FAIL rows. Read the
    WARN rows too — they don't block, but each one is a real, specific
    thing (see the check's own `message`) worth deciding about on purpose
    rather than by accident.
 
-8. **Rotate database credentials.** The database has been reachable via
-   Railway's public proxy throughout this sequence (for `npm run
-   db:seed`/`db:seed:demo`/`db:wipe:demo`/`preflight`/`db:reset`, all run
-   from outside Railway). Rotate the Postgres password in Railway's
-   dashboard now that setup is done, and update `DATABASE_URL` in the
-   app service's own environment to match — the deployed app itself
-   always uses the **internal** URL (see `README.md`'s "Database URL:
-   internal, not public"), so this doesn't touch app traffic at all.
+10. **Rotate database credentials.** The database has been reachable via
+    Railway's public proxy throughout this sequence (for `npm run
+    db:seed`/`db:seed:demo`/`db:wipe:demo`/`preflight`/`db:reset`, all run
+    from outside Railway). Rotate the Postgres password in Railway's
+    dashboard now that setup is done, and update `DATABASE_URL` in the
+    app service's own environment to match — the deployed app itself
+    always uses the **internal** URL (see `README.md`'s "Database URL:
+    internal, not public"), so this doesn't touch app traffic at all.
 
-9. **Close the public proxy.** Once step 8 is done, nothing legitimate
-   needs public access to the database anymore — the app uses the
-   internal network, and setup is finished. Disable the Postgres
-   service's public networking in Railway's dashboard. (If a future admin
-   genuinely needs direct DB access again, re-enable it, do the thing,
-   disable it again — not leave it open indefinitely "in case.")
+11. **Close the public proxy.** Once step 10 is done, nothing legitimate
+    needs public access to the database anymore — the app uses the
+    internal network, and setup is finished. Disable the Postgres
+    service's public networking in Railway's dashboard. (If a future admin
+    genuinely needs direct DB access again, re-enable it, do the thing,
+    disable it again — not leave it open indefinitely "in case.")
 
 ## Onboarding pace, given the email cap
 

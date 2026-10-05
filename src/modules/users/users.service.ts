@@ -3,6 +3,7 @@ import { logger } from "../../config/logger.js";
 import { prisma } from "../../db/client.js";
 import { AppError } from "../../errors/AppError.js";
 import { fireAndForget } from "../../lib/fireAndForget.js";
+import { normalizeEmail } from "../auth/loginIdentifier.js";
 import { generateTemporaryPassword, hashPassword, isTemporaryPasswordExpired } from "../auth/password.js";
 import {
   createNotification,
@@ -31,7 +32,8 @@ function flattenRoles<T extends { roles: { role: Role }[] }>(
 }
 
 export async function createUser(input: { email: string; role: Role }) {
-  const existing = await prisma.user.findUnique({ where: { email: input.email } });
+  const email = normalizeEmail(input.email);
+  const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) {
     throw AppError.conflict("A user with this email already exists");
   }
@@ -50,8 +52,8 @@ export async function createUser(input: { email: string; role: Role }) {
   try {
     user = await prisma.user.create({
       data: {
-        loginId: input.email,
-        email: input.email,
+        loginId: email,
+        email,
         passwordHash,
         mustChangePassword: true,
         passwordIssuedAt: new Date(),
@@ -76,7 +78,7 @@ export async function createUser(input: { email: string; role: Role }) {
       recipientUserId: user.id,
       subject: "Your school portal login",
       body:
-        `Your login ID is ${input.email}. Temporary password: ${temporaryPassword}. ` +
+        `Your login ID is ${email}. Temporary password: ${temporaryPassword}. ` +
         `You'll be asked to change it the first time you sign in.`,
       channels: ["EMAIL"],
       relatedEntityType: "User",
@@ -338,7 +340,48 @@ export async function listPendingActivation() {
 /// second copy of its mechanics — it re-reads this account's (now-updated)
 /// email/loginId, so the fresh credentials it generates are naturally
 /// delivered to the NEW address, not the old one.
-export async function updateUserEmail(userId: string, newEmail: string) {
+// "m***@gmail.com" — first character of the local part, then a fixed mask,
+// never the rest of it. Used only in the OLD-address notice below; nothing
+// about the account's real new address needs hiding from the account
+// holder's OWN old inbox beyond this.
+function maskEmail(email: string): string {
+  const atIndex = email.indexOf("@");
+  if (atIndex <= 0) {
+    return email;
+  }
+  return `${email[0]}***${email.slice(atIndex)}`;
+}
+
+function buildEmailChangedNoticeBody(
+  newEmail: string,
+  school: { name: string; contactEmail: string | null; contactPhone: string | null } | null,
+): string {
+  const maskedNew = maskEmail(newEmail);
+  const contact =
+    school && (school.contactEmail || school.contactPhone)
+      ? ` Contact ${school.name}${school.contactEmail ? ` at ${school.contactEmail}` : ""}${
+          school.contactPhone ? ` or ${school.contactPhone}` : ""
+        } immediately if you did not request this.`
+      : " Contact the school office immediately if you did not request this.";
+  return `The login email on this school portal account was changed to ${maskedNew}.${contact}`;
+}
+
+/// Changes an account's login email (and, for a parent or bare account,
+/// loginId to match — see resolveUserEmail/loginId's own framing elsewhere
+/// in this file). Staff keep their staffNumber as loginId; students are
+/// rejected outright (no email of their own to change).
+///
+/// Notifies the OLD address first, before the row is actually updated —
+/// deliberately in that order: createNotification resolves the EMAIL
+/// channel's recipient from the User row's CURRENT email at send time, so
+/// calling it after the update would silently send this "your email
+/// changed" notice to the NEW address instead of the old one. Awaited, not
+/// fire-and-forget, for the same reason: a fire-and-forget call here could
+/// still be mid-flight (its own internal address lookup not yet run) when
+/// the update below lands, racing the same way. Never `sensitive` — no
+/// secret in it, just a masked address and the school's contact details.
+export async function updateUserEmail(userId: string, rawNewEmail: string) {
+  const newEmail = normalizeEmail(rawNewEmail);
   const user = await prisma.user.findUnique({
     where: { id: userId },
     include: { staff: true, student: true },
@@ -355,6 +398,19 @@ export async function updateUserEmail(userId: string, newEmail: string) {
   });
   if (collision) {
     throw AppError.conflict("A user with this email already exists");
+  }
+
+  if (user.email) {
+    const school = await prisma.school.findFirst();
+    await createNotification({
+      type: "EMAIL_CHANGED",
+      recipientUserId: userId,
+      subject: "Your school portal login email was changed",
+      body: buildEmailChangedNoticeBody(newEmail, school),
+      channels: ["EMAIL"],
+      relatedEntityType: "User",
+      relatedEntityId: userId,
+    });
   }
 
   const updateData: Prisma.UserUpdateInput = { email: newEmail };

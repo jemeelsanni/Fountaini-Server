@@ -10,7 +10,7 @@ export type TriggerFeeRemindersBody = z.infer<typeof triggerFeeRemindersSchema>;
 
 export const listDeliveriesQuerySchema = z.object({
   status: z.enum(["PENDING", "SENT", "FAILED", "DELIVERED"]).optional(),
-  type: z.enum(["FEE_REMINDER", "PAYMENT_CONFIRMATION", "ACADEMIC", "ADMIN_GENERAL", "PASSWORD_RESET", "CREDENTIALS_ISSUED"]).optional(),
+  type: z.enum(["FEE_REMINDER", "PAYMENT_CONFIRMATION", "ACADEMIC", "ADMIN_GENERAL", "PASSWORD_RESET", "CREDENTIALS_ISSUED", "EMAIL_CHANGED"]).optional(),
   channel: z.enum(["SMS", "EMAIL", "WHATSAPP", "IN_APP"]).optional(),
   from: z.coerce.date().optional(),
   to: z.coerce.date().optional(),

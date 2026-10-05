@@ -3964,7 +3964,8 @@
           "ACADEMIC",
           "ADMIN_GENERAL",
           "PASSWORD_RESET",
-          "CREDENTIALS_ISSUED"
+          "CREDENTIALS_ISSUED",
+          "EMAIL_CHANGED"
         ]
       },
       "NotificationDelivery": {
@@ -5289,8 +5290,7 @@
                 "type": "object",
                 "properties": {
                   "email": {
-                    "type": "string",
-                    "format": "email"
+                    "type": "string"
                   },
                   "role": {
                     "type": "string",
@@ -5816,7 +5816,7 @@
     },
     "/api/users/{id}/email": {
       "patch": {
-        "summary": "ADMIN only — changes an account's login email, treated as exactly as sensitive as a reissue (it effectively is one, to the new address): 409 if the new address collides with any existing email or loginId; for a parent or bare account, loginId is updated to match (they mirror each other — see User.loginId's own schema comment); staff keep their staffNumber as loginId, only their delivery email changes; a student-linked account is rejected outright (400) — students have no email of their own to change. Revokes every live refresh token, resets mustChangePassword, and delivers a fresh generated password to the NEW address (awaited, same as POST .../reissue-credentials).",
+        "summary": "ADMIN only — changes an account's login email, treated as exactly as sensitive as a reissue (it effectively is one, to the new address): 409 if the new address collides with any existing email or loginId; for a parent or bare account, loginId is updated to match (they mirror each other — see User.loginId's own schema comment); staff keep their staffNumber as loginId, only their delivery email changes; a student-linked account is rejected outright (400) — students have no email of their own to change. Revokes every live refresh token, resets mustChangePassword, and delivers a fresh generated password to the NEW address (awaited, same as POST .../reissue-credentials). Also notifies the OLD address (EMAIL_CHANGED, also awaited) — a masked new address plus the school's contact details, never a secret.",
         "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
@@ -5844,8 +5844,7 @@
                 "type": "object",
                 "properties": {
                   "email": {
-                    "type": "string",
-                    "format": "email"
+                    "type": "string"
                   }
                 },
                 "required": [
@@ -16327,7 +16326,8 @@
                 "ACADEMIC",
                 "ADMIN_GENERAL",
                 "PASSWORD_RESET",
-                "CREDENTIALS_ISSUED"
+                "CREDENTIALS_ISSUED",
+                "EMAIL_CHANGED"
               ]
             },
             "required": false,

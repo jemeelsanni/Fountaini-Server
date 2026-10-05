@@ -1254,7 +1254,8 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
       "loginId, only their delivery email changes; a student-linked account is rejected outright " +
       "(400) — students have no email of their own to change. Revokes every live refresh token, " +
       "resets mustChangePassword, and delivers a fresh generated password to the NEW address " +
-      "(awaited, same as POST .../reissue-credentials).",
+      "(awaited, same as POST .../reissue-credentials). Also notifies the OLD address (EMAIL_CHANGED, " +
+      "also awaited) — a masked new address plus the school's contact details, never a secret.",
     requestParams: userIdParamsSchema,
     requestBody: updateUserEmailSchema,
     responses: { 200: { description: "OK", schema: UpdateUserEmailResultSchema } },

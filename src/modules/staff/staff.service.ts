@@ -3,6 +3,7 @@ import { logger } from "../../config/logger.js";
 import { prisma } from "../../db/client.js";
 import { AppError } from "../../errors/AppError.js";
 import { fireAndForget } from "../../lib/fireAndForget.js";
+import { normalizeEmail } from "../auth/loginIdentifier.js";
 import { generateTemporaryPassword, hashPassword } from "../auth/password.js";
 import {
   generateStaffNumber,
@@ -50,6 +51,7 @@ function deliverStaffCredentials(staff: { id: string; staffNumber: string }, use
 /// loginId derived from a number that doesn't exist until this row is
 /// written.
 export async function createStaff(input: CreateStaffBody) {
+  const email = normalizeEmail(input.email);
   const temporaryPassword = generateTemporaryPassword();
   const passwordHash = await hashPassword(temporaryPassword);
 
@@ -70,7 +72,7 @@ export async function createStaff(input: CreateStaffBody) {
       const user = await tx.user.create({
         data: {
           loginId: staffNumber,
-          email: input.email,
+          email,
           passwordHash,
           mustChangePassword: true,
           passwordIssuedAt: new Date(),
@@ -102,7 +104,7 @@ export async function createStaff(input: CreateStaffBody) {
       // trap) — this uses the module-level `prisma` client instead, after
       // the rollback has already completed.
       const existingEmailUser = await prisma.user.findUnique({
-        where: { email: input.email },
+        where: { email },
         select: { id: true },
       });
       throw AppError.conflict(
@@ -114,7 +116,7 @@ export async function createStaff(input: CreateStaffBody) {
     throw err;
   }
 
-  deliverStaffCredentials(staff, staff.userId, input.email, temporaryPassword);
+  deliverStaffCredentials(staff, staff.userId, email, temporaryPassword);
   return staff;
 }
 

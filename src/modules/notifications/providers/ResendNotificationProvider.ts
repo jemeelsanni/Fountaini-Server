@@ -42,7 +42,16 @@ export class ResendNotificationProvider implements NotificationProvider {
       // (notifications.service.ts) is what decides how much of this, if
       // any, actually gets persisted; this is still just an in-memory
       // return value at this point, same posture as `body` itself.
-      return { status: "FAILED", error: error?.message ?? "Resend returned no data and no error" };
+      // error.name/statusCode are Resend's own structured error shape
+      // (ErrorResponse, node_modules/resend's type definitions) — passed
+      // through as the PRIMARY categorization signal; error.message is the
+      // fallback for whatever that structured code doesn't cover.
+      return {
+        status: "FAILED",
+        error: error?.message ?? "Resend returned no data and no error",
+        errorCode: error?.name,
+        errorStatusCode: error?.statusCode,
+      };
     }
 
     return { status: "SENT", providerMessageId: data.id };

@@ -1247,6 +1247,12 @@ enum NotificationType {
   /// email, addressed to the parent and naming the child. See
   /// deliverCredentials in students.service.ts/staff.service.ts.
   CREDENTIALS_ISSUED
+  /// Sent to the OLD address when PATCH /api/users/:id/email changes it —
+  /// never sensitive (no secret in it, just a masked new address and the
+  /// school's contact details), so unlike the other two account-security
+  /// types above it's never `sensitive: true`. See updateUserEmail,
+  /// users.service.ts.
+  EMAIL_CHANGED
 }
 
 /// The logical, in-app notification. Channel-agnostic by design — this table

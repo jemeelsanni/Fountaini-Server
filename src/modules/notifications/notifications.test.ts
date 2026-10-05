@@ -366,27 +366,68 @@ describe("sensitive notification bodies are never persisted in plaintext", () =>
 });
 
 describe("categorizeProviderError", () => {
-  it("classifies rate-limit, quota, and invalid-recipient messages distinctly, with a PROVIDER_ERROR catch-all", () => {
-    expect(categorizeProviderError("Rate limit exceeded, please slow down", "body").category).toBe("RATE_LIMITED");
-    expect(categorizeProviderError("Too many requests in a short period", "body").category).toBe("RATE_LIMITED");
-    expect(categorizeProviderError("Daily quota exceeded for this account", "body").category).toBe(
-      "QUOTA_EXCEEDED",
+  // Each of these errorCode values is a real member of Resend's own
+  // RESEND_ERROR_CODE_KEY type (node_modules/resend/dist/index.d.mts) —
+  // not invented strings — representing what ResendNotificationProvider
+  // actually passes through from error.name.
+  it("classifies each category from a representative structured error object (code first, not text)", () => {
+    expect(
+      categorizeProviderError({ errorCode: "daily_quota_exceeded", error: "some text" }, "body").category,
+    ).toBe("QUOTA_EXCEEDED");
+    expect(
+      categorizeProviderError({ errorCode: "monthly_quota_exceeded", error: "some text" }, "body").category,
+    ).toBe("QUOTA_EXCEEDED");
+    expect(categorizeProviderError({ errorCode: "rate_limit_exceeded", error: "some text" }, "body").category).toBe(
+      "RATE_LIMITED",
     );
-    expect(categorizeProviderError("Invalid recipient email address", "body").category).toBe("INVALID_RECIPIENT");
-    expect(categorizeProviderError("The `to` field contains an invalid address", "body").category).toBe(
+    expect(categorizeProviderError({ errorCode: "invalid_parameter", error: "some text" }, "body").category).toBe(
       "INVALID_RECIPIENT",
     );
-    expect(categorizeProviderError("Some unrecognized vendor failure", "body").category).toBe("PROVIDER_ERROR");
+    expect(categorizeProviderError({ errorCode: "validation_error", error: "some text" }, "body").category).toBe(
+      "INVALID_RECIPIENT",
+    );
+    // A recognized Resend code that isn't one of the three above — every
+    // other one is vendor/account-level, never about the recipient.
+    expect(categorizeProviderError({ errorCode: "invalid_api_key", error: "some text" }, "body").category).toBe(
+      "PROVIDER_ERROR",
+    );
   });
 
-  it("returns UNKNOWN with no error text when there is no message at all", () => {
-    const result = categorizeProviderError(undefined, "the real body");
+  it("prefers the structured errorCode over message text, even when the text would suggest a different category", () => {
+    // Message TEXT says "rate limit", but the structured code says quota —
+    // code wins, proving this isn't still just text-matching underneath.
+    const result = categorizeProviderError(
+      { errorCode: "daily_quota_exceeded", error: "Rate limit exceeded, please slow down" },
+      "body",
+    );
+    expect(result.category).toBe("QUOTA_EXCEEDED");
+  });
+
+  it("falls back to HTTP status (429 -> RATE_LIMITED) when there's no recognized errorCode", () => {
+    const result = categorizeProviderError({ errorStatusCode: 429, error: "Too many requests" }, "body");
+    expect(result.category).toBe("RATE_LIMITED");
+  });
+
+  it("falls back to message-text matching only when neither errorCode nor a recognized status is present", () => {
+    expect(categorizeProviderError({ error: "Rate limit exceeded, please slow down" }, "body").category).toBe(
+      "RATE_LIMITED",
+    );
+    expect(categorizeProviderError({ error: "Invalid recipient email address" }, "body").category).toBe(
+      "INVALID_RECIPIENT",
+    );
+    expect(categorizeProviderError({ error: "Some unrecognized vendor failure" }, "body").category).toBe(
+      "PROVIDER_ERROR",
+    );
+  });
+
+  it("returns UNKNOWN with no error text when there is neither a message nor a code at all", () => {
+    const result = categorizeProviderError({}, "the real body");
     expect(result).toEqual({ category: "UNKNOWN", error: null });
   });
 
   it("truncates a long-but-safe message to ~200 characters while still persisting its category", () => {
     const longMessage = `Invalid recipient: ${"x".repeat(300)}`;
-    const result = categorizeProviderError(longMessage, "unrelated body");
+    const result = categorizeProviderError({ errorCode: "invalid_parameter", error: longMessage }, "unrelated body");
     expect(result.category).toBe("INVALID_RECIPIENT");
     expect(result.error).not.toBeNull();
     expect(result.error!.length).toBeLessThanOrEqual(201); // 200 chars + the ellipsis
@@ -395,14 +436,14 @@ describe("categorizeProviderError", () => {
   it("drops the message (category only) when it contains the real body that was sent", () => {
     const realBody = "Temporary password: SOME-REAL-SECRET-VALUE-0123456789";
     const suspiciousMessage = `Delivery failed for message with content: ${realBody}`;
-    const result = categorizeProviderError(suspiciousMessage, realBody);
+    const result = categorizeProviderError({ errorCode: "invalid_parameter", error: suspiciousMessage }, realBody);
     expect(result.error).toBeNull();
-    // Category is still computed — pattern-matching a string can't itself leak anything.
-    expect(result.category).not.toBeNull();
+    // Category is still computed — a structured code can't itself leak anything.
+    expect(result.category).toBe("INVALID_RECIPIENT");
   });
 
   it("drops an implausibly long message (category only), even without containing the real body", () => {
-    const result = categorizeProviderError("x".repeat(5000), "a short, unrelated body");
+    const result = categorizeProviderError({ error: "x".repeat(5000) }, "a short, unrelated body");
     expect(result.error).toBeNull();
     expect(result.category).toBe("PROVIDER_ERROR");
   });

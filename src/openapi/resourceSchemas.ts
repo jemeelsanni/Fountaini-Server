@@ -63,7 +63,15 @@ const AttendanceStatusSchema = z.enum(["PRESENT", "ABSENT", "LATE"]).openapi("At
 const AttendanceMethodSchema = z.enum(["QR_SCAN", "MANUAL"]).openapi("AttendanceMethod");
 const EnquiryStatusSchema = z.enum(["NEW", "CONTACTED", "CONVERTED", "CLOSED"]).openapi("EnquiryStatus");
 const NotificationTypeSchema = z
-  .enum(["FEE_REMINDER", "PAYMENT_CONFIRMATION", "ACADEMIC", "ADMIN_GENERAL", "PASSWORD_RESET", "CREDENTIALS_ISSUED"])
+  .enum([
+    "FEE_REMINDER",
+    "PAYMENT_CONFIRMATION",
+    "ACADEMIC",
+    "ADMIN_GENERAL",
+    "PASSWORD_RESET",
+    "CREDENTIALS_ISSUED",
+    "EMAIL_CHANGED",
+  ])
   .openapi("NotificationType");
 const NotificationChannelSchema = z.enum(["SMS", "EMAIL", "WHATSAPP", "IN_APP"]).openapi("NotificationChannel");
 const NotificationDeliveryStatusSchema = z

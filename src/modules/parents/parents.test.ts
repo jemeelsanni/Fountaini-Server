@@ -58,6 +58,24 @@ describe("POST /api/parents", () => {
     expect(notification?.body).toBe("[redacted — sensitive content, not stored]");
   });
 
+  it("normalizes a capitalized, padded email to lowercase+trimmed for both email and loginId", async () => {
+    const { token } = await createAdmin("admin@test.local");
+
+    const res = await request(server)
+      .post("/api/parents")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ email: "  Normalize.Me@Test.Local  ", firstName: "Grace", lastName: "Hopper" });
+    expect(res.status).toBe(201);
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: res.body.userId as string } });
+    expect(user.email).toBe("normalize.me@test.local");
+    expect(user.loginId).toBe("normalize.me@test.local");
+
+    // The now-normalized account must be reachable by login using any
+    // case/whitespace variant of the same address.
+    await waitForNotification(user.id, "Parent", res.body.id as string);
+  });
+
   it("rejects a duplicate email with 409, never creating a second User or Parent", async () => {
     const { token } = await createAdmin("admin@test.local");
     const body = { email: "dupe-parent@test.local", firstName: "Grace", lastName: "Hopper" };

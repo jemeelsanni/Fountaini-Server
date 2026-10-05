@@ -18,6 +18,17 @@ export interface SendMessageResult {
   /// categorizeProviderError there) — a provider should never pre-emptively
   /// sanitize or shorten this itself.
   error?: string;
+  /// A short, vendor-defined machine code for the failure, when the vendor's
+  /// API actually returns one (e.g. Resend's `error.name`, a fixed
+  /// enumerated string like "rate_limit_exceeded" — see
+  /// node_modules/resend's own RESEND_ERROR_CODE_KEY type). This is the
+  /// PRIMARY signal categorizeProviderError uses; message-text matching is
+  /// only a fallback for providers (or errors) that don't supply one.
+  errorCode?: string;
+  /// The HTTP status code the vendor's API responded with, if any — a
+  /// secondary structured signal (e.g. 429 implies rate-limiting even
+  /// without a recognized errorCode).
+  errorStatusCode?: number | null;
 }
 
 export interface NotificationProvider {

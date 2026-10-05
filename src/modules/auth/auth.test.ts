@@ -200,6 +200,50 @@ describe("POST /api/auth/login — temporary password expiry", () => {
       .send({ identifier: "predates-column@test.local", password: "correct-horse-battery-staple" });
     expect(res.status).toBe(200);
   });
+
+  // The full path CREDENTIAL_EXPIRED's own message names: an admin reissue
+  // is the other one, covered by users.test.ts. resetPassword() previously
+  // left mustChangePassword untouched, so this exact path used to end with
+  // a working login immediately re-gated into MUST_CHANGE_PASSWORD on the
+  // very next request — a reset IS the account holder choosing their own
+  // password, which is what that flag exists to force in the first place.
+  it("recovers an expired temporary credential end to end: forgot-password -> reset -> login -> a normal route works, not MUST_CHANGE_PASSWORD", async () => {
+    const issuedAt = new Date(Date.now() - (PASSWORD_TEMP_EXPIRY_DAYS * 24 * 60 * 60 * 1000 + 1000));
+    const user = await createPendingUser("recover@test.local", "original-temp-password", issuedAt);
+
+    const expiredLogin = await request(server)
+      .post("/api/auth/login")
+      .send({ identifier: "recover@test.local", password: "original-temp-password" });
+    expect(expiredLogin.status).toBe(401);
+    expect(expiredLogin.body.error.code).toBe("CREDENTIAL_EXPIRED");
+
+    const forgotRes = await request(server)
+      .post("/api/auth/forgot-password")
+      .send({ identifier: "recover@test.local" });
+    expect(forgotRes.status).toBe(204);
+
+    const rawToken = await issueKnownResetToken(user.id);
+    const resetRes = await request(server)
+      .post("/api/auth/reset-password")
+      .send({ token: rawToken, newPassword: "a-brand-new-chosen-password" });
+    expect(resetRes.status).toBe(204);
+
+    const loginRes = await request(server)
+      .post("/api/auth/login")
+      .send({ identifier: "recover@test.local", password: "a-brand-new-chosen-password" });
+    expect(loginRes.status).toBe(200);
+
+    // GET /api/users is ADMIN-only and not exempt from the
+    // MUST_CHANGE_PASSWORD gate — 200 here, not 403/MUST_CHANGE_PASSWORD,
+    // proves the reset actually cleared the flag.
+    const normalRouteRes = await request(server)
+      .get("/api/users")
+      .set("Authorization", `Bearer ${loginRes.body.accessToken as string}`);
+    expect(normalRouteRes.status).toBe(200);
+
+    const refreshed = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+    expect(refreshed.mustChangePassword).toBe(false);
+  });
 });
 
 describe("POST /api/auth/login — identifier resolution", () => {
@@ -701,5 +745,45 @@ describe("POST /api/auth/reset-password", () => {
   it("rejects a malformed request body", async () => {
     const res = await request(server).post("/api/auth/reset-password").send({ token: "x", newPassword: "short" });
     expect(res.status).toBe(400);
+  });
+});
+
+describe("POST /api/auth/login — identifier normalization", () => {
+  it("logs in with a capitalized email-shaped identifier", async () => {
+    const { parent } = await createParent("parent@test.local");
+    void parent;
+    const res = await request(server)
+      .post("/api/auth/login")
+      .send({ identifier: "PARENT@TEST.LOCAL", password: "password-123456" });
+    expect(res.status).toBe(200);
+  });
+
+  it("logs in with a trailing-space identifier", async () => {
+    await createParent("parent@test.local");
+    const res = await request(server)
+      .post("/api/auth/login")
+      .send({ identifier: "  parent@test.local  ", password: "password-123456" });
+    expect(res.status).toBe(200);
+  });
+
+  it("logs in with a lowercase ID-shaped identifier (admission number)", async () => {
+    await createStudentWithLogin("student@test.local", "FIA/2026/001");
+    const res = await request(server)
+      .post("/api/auth/login")
+      .send({ identifier: "fia/2026/001", password: "password-123456" });
+    expect(res.status).toBe(200);
+  });
+
+  it("forgot-password resolves the same normalized way (shares findUserByIdentifier with login)", async () => {
+    const { parent } = await createParent("parent@test.local");
+    const res = await request(server)
+      .post("/api/auth/forgot-password")
+      .send({ identifier: "PARENT@TEST.LOCAL" });
+    expect(res.status).toBe(204);
+
+    const event = await prisma.notificationEvent.findFirst({
+      where: { recipientUserId: parent.userId, type: "PASSWORD_RESET" },
+    });
+    expect(event, "a capitalized identifier must still resolve to the real account").not.toBeNull();
   });
 });

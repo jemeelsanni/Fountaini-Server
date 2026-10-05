@@ -60,13 +60,57 @@ const ERROR_MESSAGE_MAX_LENGTH = 200;
 // truncated and stored anyway.
 const ERROR_MESSAGE_PLAUSIBLE_LENGTH = 1000;
 
-/// Best-effort classification from the vendor's own message text — not a
-/// verified 1:1 match against Resend's internal error-code taxonomy (its
-/// exact codes aren't hardcoded against here), just a reasonable heuristic
-/// over the patterns its documented error messages commonly use. Revisit
-/// if a specific miscategorization turns up in practice. Order matters:
-/// more specific checks first, PROVIDER_ERROR is the catch-all for "we got
-/// a real error, just not one of the above."
+/// Resend's own structured error codes (ErrorResponse.name — see
+/// node_modules/resend/dist/index.d.mts's RESEND_ERROR_CODE_KEY, the
+/// installed SDK's own type, read directly rather than guessed at from
+/// docs) mapped to this app's five categories. Everything NOT listed here
+/// but still a recognized Resend code (missing_api_key, invalid_api_key,
+/// invalid_region, application_error, internal_server_error, ...) is a
+/// vendor/account-level problem, never about this specific recipient —
+/// PROVIDER_ERROR.
+///
+/// Resend has no "invalid_to_address"-shaped code in this version's
+/// taxonomy — the three mapped to INVALID_RECIPIENT below are a judgment
+/// call, not a vendor-documented 1:1 mapping: in a send() call shaped like
+/// this app's (channel/recipient/subject/body, with subject+body always
+/// from a controlled template and `from` a fixed, pre-verified config
+/// value — see env.ts's EMAIL_FROM_ADDRESS), the recipient address is the
+/// only part of the payload that varies with per-user data and could
+/// plausibly be malformed, so a generic "something about your parameters
+/// is wrong" code most often means that in practice here.
+const RESEND_ERROR_CODE_CATEGORY: Partial<Record<string, NotificationErrorCategory>> = {
+  daily_quota_exceeded: "QUOTA_EXCEEDED",
+  monthly_quota_exceeded: "QUOTA_EXCEEDED",
+  rate_limit_exceeded: "RATE_LIMITED",
+  invalid_parameter: "INVALID_RECIPIENT",
+  validation_error: "INVALID_RECIPIENT",
+  missing_required_field: "INVALID_RECIPIENT",
+};
+
+/// Structured signal first: a recognized vendor error code, or (lacking
+/// one) an HTTP status that itself implies a category (429 => rate
+/// limited) — this is categorizeProviderError's PRIMARY path. Returns null
+/// when neither tells us anything, so the caller can fall back to
+/// message-text matching.
+function categorizeByStructuredFields(
+  errorCode: string | undefined,
+  statusCode: number | null | undefined,
+): NotificationErrorCategory | null {
+  if (errorCode) {
+    return RESEND_ERROR_CODE_CATEGORY[errorCode] ?? "PROVIDER_ERROR";
+  }
+  if (statusCode === 429) {
+    return "RATE_LIMITED";
+  }
+  return null;
+}
+
+/// Fallback only — for a provider (or a future, non-Resend one) that
+/// returns no recognized structured code at all. Best-effort over the
+/// patterns a vendor's documented error messages commonly use, not a
+/// verified 1:1 match against anything. Order matters: more specific
+/// checks first, PROVIDER_ERROR is the catch-all for "we got a real
+/// error, just not one of the above."
 function categorizeByMessage(message: string): NotificationErrorCategory {
   const lower = message.toLowerCase();
   if (lower.includes("rate limit") || lower.includes("too many requests")) {
@@ -95,35 +139,45 @@ function categorizeByMessage(message: string): NotificationErrorCategory {
 /// is actually safe to persist at all — the deliveries view (and each
 /// pending-activation row) needs to tell "wait, the cap will reset" apart
 /// from "fix the address," which the raw message alone doesn't reliably
-/// support (every provider phrases these differently). Category is always
-/// computed (pattern-matching a string into one of five labels can't itself
-/// leak anything) and always returned; the raw `error` text is persisted
-/// only when it looks like an ordinary API error description, not
-/// something that could be echoing the notification's own (possibly
-/// `sensitive`) body back — this is a defensive check, not a proven leak
-/// (nothing in Resend's documented error shape echoes request content),
-/// but an unusually long message, or one that literally contains the real
-/// body just sent, is treated as untrustworthy to store verbatim. When
-/// unsure, the category is still persisted — only the message is dropped.
+/// support (every provider phrases these differently). Category is
+/// resolved structured-first (categorizeByStructuredFields), falling back
+/// to message-text matching only when no recognized code or status came
+/// back at all — text heuristics alone are brittle, per the report. The
+/// raw `error` text itself is persisted only when it looks like an
+/// ordinary API error description, not something that could be echoing
+/// the notification's own (possibly `sensitive`) body back — this is a
+/// defensive check, not a proven leak (nothing in Resend's documented
+/// error shape echoes request content), but an unusually long message, or
+/// one that literally contains the real body just sent, is treated as
+/// untrustworthy to store verbatim. When unsure, the category is still
+/// persisted — only the message is dropped.
 export function categorizeProviderError(
-  rawMessage: string | undefined,
+  result: { error?: string; errorCode?: string; errorStatusCode?: number | null },
   realBodySent: string,
 ): { category: NotificationErrorCategory; error: string | null } {
-  if (!rawMessage) {
+  if (!result.error && !result.errorCode) {
     return { category: "UNKNOWN", error: null };
   }
 
-  const category = categorizeByMessage(rawMessage);
+  const category =
+    categorizeByStructuredFields(result.errorCode, result.errorStatusCode) ??
+    (result.error ? categorizeByMessage(result.error) : "UNKNOWN");
+
+  if (!result.error) {
+    return { category, error: null };
+  }
 
   const looksLikeItCouldLeakTheBody =
-    rawMessage.length > ERROR_MESSAGE_PLAUSIBLE_LENGTH ||
-    (realBodySent.length > 20 && rawMessage.includes(realBodySent));
+    result.error.length > ERROR_MESSAGE_PLAUSIBLE_LENGTH ||
+    (realBodySent.length > 20 && result.error.includes(realBodySent));
   if (looksLikeItCouldLeakTheBody) {
     return { category, error: null };
   }
 
   const error =
-    rawMessage.length > ERROR_MESSAGE_MAX_LENGTH ? `${rawMessage.slice(0, ERROR_MESSAGE_MAX_LENGTH)}…` : rawMessage;
+    result.error.length > ERROR_MESSAGE_MAX_LENGTH
+      ? `${result.error.slice(0, ERROR_MESSAGE_MAX_LENGTH)}…`
+      : result.error;
   return { category, error };
 }
 
@@ -201,9 +255,7 @@ export async function createNotification(input: CreateNotificationInput) {
 
       const result = await provider.send({ channel, recipient, subject: input.subject, body: input.body });
       const { category, error } =
-        result.status === "FAILED"
-          ? categorizeProviderError(result.error, input.body)
-          : { category: null, error: null };
+        result.status === "FAILED" ? categorizeProviderError(result, input.body) : { category: null, error: null };
       return prisma.notificationDelivery.update({
         where: { id: delivery.id },
         data: {

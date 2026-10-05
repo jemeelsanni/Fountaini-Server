@@ -509,4 +509,63 @@ describe("PATCH /api/users/:id/email", () => {
     expect(JSON.stringify(afterData)).not.toContain(oldHash);
     expect(JSON.stringify(beforeData)).not.toContain(oldHash);
   });
+
+  it("notifies the OLD address (parent), masking the new one and naming no credential", async () => {
+    const adminToken = await createAdminAndLogin();
+    const { user: parentUser } = await createParent("parent@test.local");
+
+    const res = await request(server)
+      .patch(`/api/users/${parentUser.id}/email`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ email: "newaddress@test.local" });
+    expect(res.status).toBe(200);
+    const issuedTemporaryPassword = res.body.temporaryPassword as string | undefined;
+
+    const notice = await prisma.notificationEvent.findFirstOrThrow({
+      where: { recipientUserId: parentUser.id, type: "EMAIL_CHANGED" },
+    });
+    expect(notice.sensitive).toBe(false);
+    // Masked, not the real new address in full.
+    expect(notice.body).toContain("n***@test.local");
+    expect(notice.body).not.toContain("newaddress@test.local");
+    // No credential anywhere in this notice's body.
+    if (issuedTemporaryPassword) {
+      expect(notice.body).not.toContain(issuedTemporaryPassword);
+    }
+    expect(notice.body).not.toMatch(/temporary password/i);
+  });
+
+  it("applies the same old-address notice to a staff delivery-email change", async () => {
+    const adminToken = await createAdminAndLogin();
+    const { user: teacherUser } = await createTeacher("teacher@test.local");
+
+    const res = await request(server)
+      .patch(`/api/users/${teacherUser.id}/email`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ email: "newteacheraddress@test.local" });
+    expect(res.status).toBe(200);
+
+    const notice = await prisma.notificationEvent.findFirstOrThrow({
+      where: { recipientUserId: teacherUser.id, type: "EMAIL_CHANGED" },
+    });
+    expect(notice.sensitive).toBe(false);
+    expect(notice.body).toContain("n***@test.local");
+  });
+
+  it("no persisted NotificationEvent body for this email change contains a credential, across every type it creates", async () => {
+    const adminToken = await createAdminAndLogin();
+    const { user: parentUser } = await createParent("parent@test.local");
+
+    const res = await request(server)
+      .patch(`/api/users/${parentUser.id}/email`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ email: "credential-check@test.local" });
+    expect(res.status).toBe(200);
+
+    const events = await prisma.notificationEvent.findMany({ where: { recipientUserId: parentUser.id } });
+    expect(events.length).toBeGreaterThan(0);
+    for (const event of events) {
+      expect(event.body).not.toMatch(/temporary password:\s*\S+/i);
+    }
+  });
 });

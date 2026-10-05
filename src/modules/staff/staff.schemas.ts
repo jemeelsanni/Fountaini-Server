@@ -24,7 +24,10 @@ export const createStaffSchema = z.object({
   role: z.enum(["ADMIN", "TEACHER", "BURSAR"]),
   // Required: staff must always have one, since credentials are delivered
   // there — unlike a student, there's no "deliver to someone else" fallback.
-  email: z.string().email(),
+  // .trim() before .email(): a leading/trailing space otherwise fails the
+  // format check outright, before normalizeEmail() (auth/loginIdentifier.ts)
+  // gets a chance to clean it up — lowercasing stays there alone.
+  email: z.string().trim().email(),
   firstName: z.string().min(1),
   lastName: z.string().min(1),
   otherNames: z.string().min(1).optional(),
