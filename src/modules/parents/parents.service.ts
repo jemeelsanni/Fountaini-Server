@@ -32,6 +32,7 @@ function deliverParentCredentials(parent: { id: string; userId: string }, email:
       channels: ["EMAIL"],
       relatedEntityType: "Parent",
       relatedEntityId: parent.id,
+      sensitive: true,
     }),
     (err) => logger.error({ err, email }, "Failed to send parent credential notification"),
   );

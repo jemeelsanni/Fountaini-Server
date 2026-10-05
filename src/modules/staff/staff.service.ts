@@ -37,6 +37,7 @@ function deliverStaffCredentials(staff: { id: string; staffNumber: string }, use
       channels: ["EMAIL"],
       relatedEntityType: "Staff",
       relatedEntityId: staff.id,
+      sensitive: true,
     }),
     (err) => logger.error({ err, email }, "Failed to send staff credential notification"),
   );

@@ -19,6 +19,7 @@ import { createAssessmentComponentSchema, createGradeBandSchema, createGradingSc
 import { createProgressSchema, idParamsSchema as madrassahIdParamsSchema } from "../modules/madrassah/madrassah.schemas.js";
 import {
   idParamsSchema as notificationsIdParamsSchema,
+  listDeliveriesQuerySchema,
   triggerFeeRemindersSchema,
 } from "../modules/notifications/notifications.schemas.js";
 import { createParentSchema, idParamsSchema as parentsIdParamsSchema, linkChildSchema, parentChildParamsSchema, updateParentSchema } from "../modules/parents/parents.schemas.js";
@@ -79,9 +80,11 @@ import {
   MadrassahProgressWithRelationsSchema,
   MarkAllNotificationsReadResultSchema,
   MeResponseSchema,
+  NotificationDeliveryListResponseSchema,
   NotificationEventSchema,
   NotificationEventWithDeliveriesSchema,
   ParentSchema,
+  PendingActivationUserSchema,
   FeesSummaryResponseSchema,
   PaymentDetailResponseSchema,
   PaymentHistoryRowSchema,
@@ -93,6 +96,7 @@ import {
   RatingScaleLevelSchema,
   RatingWithTraitSchema,
   ReceiptSchema,
+  ReissueCredentialsResultSchema,
   ResultListItemSchema,
   ResultSchema,
   ResultWithRatingsSchema,
@@ -102,6 +106,7 @@ import {
   ScoreSchema,
   ScoreSheetSchema,
   SessionResultWithSubjectAveragesSchema,
+  SetupStatusSchema,
   StaffSchema,
   StaffWithUserSchema,
   StudentParentSchema,
@@ -198,6 +203,19 @@ const SCOPE_NOTES = {
 /// asserts every inventory route has an entry here, so a new route without
 /// one fails the build the same way an unguarded one does.
 export const ROUTE_SPECS: Record<string, RouteSpec> = {
+  // --- admin (go-live readiness) --------------------------------------------
+  "GET /api/admin/setup-status": {
+    summary:
+      "ADMIN only — a read-only checklist of what's actually configured versus what a freshly " +
+      "reset database only looks configured for (see docs/go-live.md). Issues no writes. `ready` " +
+      "is true only when no check is FAIL — WARN never blocks. Checks run in dependency order " +
+      "(school, then session, then term, then anything needing a current session, ...) so the " +
+      "first FAIL is usually also the first thing to fix, but every check still runs and reports " +
+      "regardless — there's no short-circuiting. The same checklist backs `npm run preflight`, " +
+      "runnable against any DATABASE_URL (including production) outside this API entirely.",
+    responses: { 200: { description: "OK", schema: SetupStatusSchema } },
+  },
+
   // --- academic-structure --------------------------------------------------
   "POST /api/academic-sessions": {
     summary: "Create an academic session",
@@ -734,6 +752,17 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     requestBody: triggerFeeRemindersSchema,
     responses: { 200: { description: "OK", schema: z.array(NotificationEventSchema) } },
   },
+  "GET /api/notifications/deliveries": {
+    summary:
+      "ADMIN only — cross-user delivery visibility, newest first: who a notification went to, which " +
+      "channel, its status and (truncated) provider error, and per-status summary counts for the " +
+      "filtered window (type/channel/from/to — summary ignores the status filter itself, so filtering " +
+      "to FAILED doesn't collapse the summary to just that one number). Deliberately never returns a " +
+      "notification body, sensitive or not — see GET /api/notifications for the self-scoped, " +
+      "body-included equivalent.",
+    requestQuery: listDeliveriesQuerySchema,
+    responses: { 200: { description: "OK", schema: NotificationDeliveryListResponseSchema } },
+  },
 
   // --- parents --------------------------------------------------------------
   "GET /api/parents/me/children": {
@@ -1170,6 +1199,14 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     requestParams: userIdParamsSchema,
     responses: { 200: { description: "OK", schema: UserSummarySchema } },
   },
+  "GET /api/users/pending-activation": {
+    summary:
+      "ADMIN only — the onboarding chase list: every active account still on mustChangePassword: " +
+      "true (never actually signed in), paired with its most recent CREDENTIALS_ISSUED email's " +
+      "delivery status. For a student-linked account the relevant email is the one sent to their " +
+      "primary-contact parent, not the student's own (non-existent) address.",
+    responses: { 200: { description: "OK", schema: z.array(PendingActivationUserSchema) } },
+  },
   "POST /api/users/:id/activate": {
     summary: "Reactivate a deactivated user account",
     requestParams: userIdParamsSchema,
@@ -1179,5 +1216,17 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     summary: "Deactivate a user account and revoke its live sessions",
     requestParams: userIdParamsSchema,
     responses: { 200: { description: "OK", schema: UserSummarySchema } },
+  },
+  "POST /api/users/:id/reissue-credentials": {
+    summary:
+      "ADMIN only — the general-purpose version of " +
+      "POST /api/students/:id/reissue-credentials (which now delegates to this same " +
+      "implementation): generates a fresh password (never admin-chosen), resets " +
+      "mustChangePassword to true, and revokes every live refresh token. Delivered to the " +
+      "account's own email for staff/parent/bare accounts (always present); for a " +
+      "student-linked account, to the primary-contact parent instead — temporaryPassword is only " +
+      "ever present in the response for that last case, when no such parent with an email exists.",
+    requestParams: userIdParamsSchema,
+    responses: { 200: { description: "OK", schema: ReissueCredentialsResultSchema } },
   },
 };

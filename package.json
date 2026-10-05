@@ -20,7 +20,10 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:seed:demo": "tsx prisma/seed-demo.ts",
     "db:wipe:demo": "tsx prisma/wipe-demo.ts",
-    "generate:openapi": "tsx scripts/generateOpenApiJson.ts"
+    "generate:openapi": "tsx scripts/generateOpenApiJson.ts",
+    "preflight": "tsx scripts/preflight.ts",
+    "db:assert-empty": "tsx scripts/assertDbEmpty.ts",
+    "db:reset": "npm run db:assert-empty -- --allow-demo-only && prisma migrate reset --force"
   },
   "dependencies": {
     "@asteasolutions/zod-to-openapi": "^9.1.0",

@@ -150,7 +150,12 @@ export async function getGradingScaleForSession(academicSessionId: string) {
 /// grade bands are a rarely-and-carefully edited setup step, not a
 /// high-concurrency path, so that gap is accepted rather than engineered
 /// around.
-function bandsOverlap(aMin: number, aMax: number, bMin: number, bMax: number): boolean {
+/// Exported for admin.service.ts's setup-status check, which needs the
+/// same pairwise overlap test applied read-only across a whole scale's
+/// bands — see that file for why a defensive, read-only recheck is worth
+/// having even though assertNoOverlappingBand below already prevents an
+/// overlap from being written in the first place.
+export function bandsOverlap(aMin: number, aMax: number, bMin: number, bMax: number): boolean {
   return aMin <= bMax && aMax >= bMin;
 }
 
@@ -198,7 +203,9 @@ function fromHundredths(n: number): number {
 /// convention already used elsewhere in this codebase (see e.g.
 /// scores.test.ts's own 0-49.99/50-69.99/70-100 bands) — so this only
 /// flags a gap wider than that single-hundredth step.
-function findCoverageGaps(
+/// Exported for admin.service.ts's setup-status check — see that file for
+/// how it's reused there rather than reimplemented.
+export function findCoverageGaps(
   bands: Array<{ minScore: number; maxScore: number }>,
 ): Array<{ from: number; to: number }> {
   const sorted = [...bands]

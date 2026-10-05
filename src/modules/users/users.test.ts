@@ -5,7 +5,9 @@ import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
 import { hashPassword } from "../auth/password.js";
 import { drainFireAndForget } from "../../lib/fireAndForget.js";
+import { createAdmin, createParent, createStudentWithLogin, createTeacher } from "../../test/factories.js";
 import { resetDb } from "../../test/resetDb.js";
+import { waitForAuditLog } from "../../test/waitForAuditLog.js";
 import { waitForNotification } from "../../test/waitForNotification.js";
 
 const app = createApp();
@@ -207,5 +209,150 @@ describe("GET /api/users/:id", () => {
       .set("Authorization", `Bearer ${adminToken}`);
 
     expect(res.status).toBe(404);
+  });
+});
+
+describe("GET /api/users/pending-activation", () => {
+  it("rejects TEACHER, BURSAR, PARENT and STUDENT with 403", async () => {
+    const { token: teacherToken } = await createTeacher("teacher@test.local");
+    const { token: parentToken } = await createParent("parent@test.local");
+    const { token: studentToken } = await createStudentWithLogin("student@test.local", "FIA/2026/001");
+
+    for (const token of [teacherToken, parentToken, studentToken]) {
+      const res = await request(server).get("/api/users/pending-activation").set("Authorization", `Bearer ${token}`);
+      expect(res.status).toBe(403);
+    }
+  });
+
+  it("lists accounts still on mustChangePassword: true, and excludes one that has changed it", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    // factories.ts's createUser doesn't set mustChangePassword (defaults to
+    // false, unlike every real credential-issuing path, which always
+    // starts an account at true) — set it directly here to simulate "never
+    // signed in yet" for pendingUser, and leave activatedUser's at the
+    // factory default (changed) as the contrast case.
+    const { user: pendingUser } = await createTeacher("pending@test.local");
+    await prisma.user.update({ where: { id: pendingUser.id }, data: { mustChangePassword: true } });
+    const { user: activatedUser } = await createParent("activated@test.local");
+
+    const res = await request(server).get("/api/users/pending-activation").set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    const ids = (res.body as { id: string }[]).map((r) => r.id);
+    expect(ids).toContain(pendingUser.id);
+    expect(ids).not.toContain(activatedUser.id);
+  });
+});
+
+describe("POST /api/users/:id/reissue-credentials", () => {
+  it("returns 404 for a nonexistent user", async () => {
+    const adminToken = await createAdminAndLogin();
+
+    const res = await request(server)
+      .post("/api/users/does-not-exist/reissue-credentials")
+      .set("Authorization", `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects TEACHER, BURSAR, PARENT and STUDENT with 403", async () => {
+    const { user: target } = await createTeacher("target@test.local");
+    const { token: teacherToken } = await createTeacher("teacher@test.local");
+    const { token: parentToken } = await createParent("parent@test.local");
+    const { token: studentToken } = await createStudentWithLogin("student@test.local", "FIA/2026/001");
+
+    for (const token of [teacherToken, parentToken, studentToken]) {
+      const res = await request(server)
+        .post(`/api/users/${target.id}/reissue-credentials`)
+        .set("Authorization", `Bearer ${token}`);
+      expect(res.status).toBe(403);
+    }
+  });
+
+  it("staff: a fresh password works, the old one doesn't, mustChangePassword is true, sessions are revoked, and the password appears nowhere in the response or audit log", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const { user: teacherUser, token: oldToken } = await createTeacher("teacher@test.local");
+    const oldPasswordHash = (await prisma.user.findUniqueOrThrow({ where: { id: teacherUser.id } })).passwordHash;
+
+    // A real session on the original credentials, to prove reissue revokes it.
+    const loginRes = await request(server)
+      .post("/api/auth/login")
+      .send({ identifier: teacherUser.loginId, password: "password-123456" });
+    expect(loginRes.status).toBe(200);
+    const oldRefreshToken = loginRes.body.refreshToken as string;
+    void oldToken;
+
+    const res = await request(server)
+      .post(`/api/users/${teacherUser.id}/reissue-credentials`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.temporaryPassword).toBeUndefined();
+    expect(JSON.stringify(res.body)).not.toContain(oldPasswordHash);
+
+    const userAfter = await prisma.user.findUniqueOrThrow({ where: { id: teacherUser.id } });
+    expect(userAfter.passwordHash).not.toBe(oldPasswordHash);
+    expect(userAfter.mustChangePassword).toBe(true);
+
+    const refreshAttempt = await request(server).post("/api/auth/refresh").send({ refreshToken: oldRefreshToken });
+    expect(refreshAttempt.status).toBe(401);
+
+    const oldPasswordLogin = await request(server)
+      .post("/api/auth/login")
+      .send({ identifier: teacherUser.loginId, password: "password-123456" });
+    expect(oldPasswordLogin.status).toBe(401);
+
+    const entry = await waitForAuditLog("User", teacherUser.id, "USER_CREDENTIALS_REISSUED");
+    expect(entry, "the reissue mutation must still be audited").not.toBeNull();
+    const afterData = entry?.afterData as Record<string, unknown> | null;
+    const beforeData = entry?.beforeData as Record<string, unknown> | null;
+    expect(afterData?.temporaryPassword).toBeUndefined();
+    expect(beforeData?.passwordHash).toBeUndefined();
+    expect(JSON.stringify(afterData)).not.toContain(oldPasswordHash);
+    expect(JSON.stringify(beforeData)).not.toContain(oldPasswordHash);
+  });
+
+  it("parent: a fresh password works, the old one doesn't, mustChangePassword is true, and sessions are revoked", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const { user: parentUser } = await createParent("parent@test.local");
+    const oldPasswordHash = (await prisma.user.findUniqueOrThrow({ where: { id: parentUser.id } })).passwordHash;
+
+    const loginRes = await request(server)
+      .post("/api/auth/login")
+      .send({ identifier: parentUser.loginId, password: "password-123456" });
+    expect(loginRes.status).toBe(200);
+    const oldRefreshToken = loginRes.body.refreshToken as string;
+
+    const res = await request(server)
+      .post(`/api/users/${parentUser.id}/reissue-credentials`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.temporaryPassword).toBeUndefined();
+
+    const userAfter = await prisma.user.findUniqueOrThrow({ where: { id: parentUser.id } });
+    expect(userAfter.passwordHash).not.toBe(oldPasswordHash);
+    expect(userAfter.mustChangePassword).toBe(true);
+
+    const refreshAttempt = await request(server).post("/api/auth/refresh").send({ refreshToken: oldRefreshToken });
+    expect(refreshAttempt.status).toBe(401);
+
+    const newPasswordLogin = await request(server)
+      .post("/api/auth/login")
+      .send({ identifier: parentUser.loginId, password: "password-123456" });
+    // The OLD password must no longer work — the real new one was only ever
+    // delivered by (placeholder-bodied) notification, not returned here.
+    expect(newPasswordLogin.status).toBe(401);
+  });
+
+  it("student: delegates through POST /api/students/:id/reissue-credentials to the same shared implementation", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const { student, token: oldStudentToken } = await createStudentWithLogin("student@test.local", "FIA/2026/001");
+    void oldStudentToken;
+
+    const res = await request(server)
+      .post(`/api/users/${student.userId}/reissue-credentials`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+
+    const userAfter = await prisma.user.findUniqueOrThrow({ where: { id: student.userId! } });
+    expect(userAfter.mustChangePassword).toBe(true);
   });
 });

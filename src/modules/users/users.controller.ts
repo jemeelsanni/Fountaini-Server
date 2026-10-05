@@ -29,3 +29,12 @@ export async function deactivateUser(req: Request, res: Response): Promise<void>
   const user = await usersService.setUserActive(id, false);
   res.status(200).json(user);
 }
+
+export async function pendingActivation(_req: Request, res: Response): Promise<void> {
+  res.status(200).json(await usersService.listPendingActivation());
+}
+
+export async function reissueCredentials(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as unknown as UserIdParams;
+  res.status(200).json(await usersService.reissueCredentialsForUser(id));
+}

@@ -1,4 +1,9 @@
-import type { NotificationChannel, NotificationType } from "../../../generated/prisma/index.js";
+import {
+  Prisma,
+  type NotificationChannel,
+  type NotificationDeliveryStatus,
+  type NotificationType,
+} from "../../../generated/prisma/index.js";
 import { env } from "../../config/env.js";
 import { prisma } from "../../db/client.js";
 import { ConsoleNotificationProvider } from "./providers/ConsoleNotificationProvider.js";
@@ -34,7 +39,18 @@ interface CreateNotificationInput {
   channels: NotificationChannel[];
   relatedEntityType?: string;
   relatedEntityId?: string;
+  /// True for a body that carries a real secret — a temporary password or a
+  /// password-reset token. The real `body` above is still what's handed to
+  /// the provider below (the actual email must carry the real value) but
+  /// never what's persisted: PERSISTED_SENSITIVE_BODY is written to
+  /// NotificationEvent.body instead, so every read path (GET
+  /// /api/notifications included) is safe by construction, with nothing to
+  /// remember to redact per-route. See the column's own comment in
+  /// schema.prisma.
+  sensitive?: boolean;
 }
+
+const PERSISTED_SENSITIVE_BODY = "[redacted — sensitive content, not stored]";
 
 async function resolveRecipientAddress(userId: string, channel: NotificationChannel): Promise<string | null> {
   const user = await prisma.user.findUnique({ where: { id: userId } });
@@ -65,7 +81,8 @@ export async function createNotification(input: CreateNotificationInput) {
         type: input.type,
         recipientUserId: input.recipientUserId,
         subject: input.subject,
-        body: input.body,
+        body: input.sensitive ? PERSISTED_SENSITIVE_BODY : input.body,
+        sensitive: input.sensitive ?? false,
         relatedEntityType: input.relatedEntityType,
         relatedEntityId: input.relatedEntityId,
       },
@@ -192,4 +209,124 @@ export async function triggerFeeReminders(academicSessionId?: string) {
   }
 
   return sent;
+}
+
+export interface ListDeliveriesFilter {
+  status?: NotificationDeliveryStatus;
+  type?: NotificationType;
+  channel?: NotificationChannel;
+  from?: Date;
+  to?: Date;
+  page: number;
+  pageSize: number;
+}
+
+// A provider error can legitimately be a full stack-trace-shaped string
+// (ResendNotificationProvider currently never produces one that long, but
+// nothing stops a future provider from doing so) — this is an admin list
+// of many rows, not a single incident's detail view, so each row carries
+// enough to triage, not the whole thing.
+const ERROR_TRUNCATE_LENGTH = 200;
+
+// Same batched-lookup shape as fees.service.ts's resolveUserNames — one
+// User.findMany, not N+1 — extended with `student` since a notification
+// recipient can be a student directly (not just staff/parent), unlike a
+// payment's recordedByUserId.
+async function resolveRecipientNames(userIds: string[]): Promise<Map<string, string>> {
+  const unique = [...new Set(userIds)];
+  const users = await prisma.user.findMany({
+    where: { id: { in: unique } },
+    select: {
+      id: true,
+      staff: { select: { firstName: true, lastName: true } },
+      parent: { select: { firstName: true, lastName: true } },
+      student: { select: { firstName: true, lastName: true } },
+    },
+  });
+  const names = new Map<string, string>();
+  for (const user of users) {
+    const person = user.staff ?? user.parent ?? user.student;
+    names.set(user.id, person ? `${person.firstName} ${person.lastName}` : "Unknown");
+  }
+  return names;
+}
+
+/// The admin-facing counterpart to GET /api/notifications: that route is
+/// self-scoped (a caller's own notifications only) and includes each
+/// event's full body — this one is cross-user and deliberately never
+/// selects `body` at all, sensitive or not. The chase list for "did this
+/// credential email actually arrive" — see also listPendingActivation
+/// (users.service.ts), which answers "who still hasn't signed in" using
+/// this same delivery data.
+///
+/// `recipientAddress` is resolved from the User's CURRENT email/phone, not
+/// a snapshot of the address the send actually went to — NotificationDelivery
+/// doesn't persist one (see resolveRecipientAddress, above) and adding that
+/// column is out of scope here; the two agree except in the rare case a
+/// contact address changed after the send.
+///
+/// Summary counts intentionally ignore the `status` filter (but respect
+/// type/channel/from/to) — filtering the list down to FAILED rows and
+/// having the summary then only ever say "FAILED: N" would defeat the
+/// point of a summary.
+export async function listDeliveries(filter: ListDeliveriesFilter) {
+  const dateRange =
+    filter.from ?? filter.to ? { createdAt: { gte: filter.from, lte: filter.to } } : undefined;
+
+  const summaryWhere: Prisma.NotificationDeliveryWhereInput = {
+    channel: filter.channel,
+    notificationEvent: { type: filter.type, ...dateRange },
+  };
+  const listWhere: Prisma.NotificationDeliveryWhereInput = { ...summaryWhere, status: filter.status };
+
+  const [total, rows, statusCounts] = await Promise.all([
+    prisma.notificationDelivery.count({ where: listWhere }),
+    prisma.notificationDelivery.findMany({
+      where: listWhere,
+      select: {
+        id: true,
+        channel: true,
+        status: true,
+        error: true,
+        attemptedAt: true,
+        deliveredAt: true,
+        createdAt: true,
+        notificationEvent: {
+          select: {
+            type: true,
+            recipientUserId: true,
+            recipient: { select: { email: true, phone: true } },
+          },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+      skip: (filter.page - 1) * filter.pageSize,
+      take: filter.pageSize,
+    }),
+    prisma.notificationDelivery.groupBy({ by: ["status"], where: summaryWhere, _count: true }),
+  ]);
+
+  const names = await resolveRecipientNames(rows.map((r) => r.notificationEvent.recipientUserId));
+
+  const deliveries = rows.map((r) => ({
+    id: r.id,
+    notificationType: r.notificationEvent.type,
+    channel: r.channel,
+    recipientAddress:
+      r.channel === "EMAIL" ? r.notificationEvent.recipient.email : r.notificationEvent.recipient.phone,
+    recipientUserId: r.notificationEvent.recipientUserId,
+    recipientName: names.get(r.notificationEvent.recipientUserId) ?? "Unknown",
+    status: r.status,
+    error: r.error ? r.error.slice(0, ERROR_TRUNCATE_LENGTH) : null,
+    attemptedAt: r.attemptedAt,
+    deliveredAt: r.deliveredAt,
+    createdAt: r.createdAt,
+  }));
+
+  const summary: Record<string, number> = { PENDING: 0, SENT: 0, FAILED: 0, DELIVERED: 0 };
+  for (const row of statusCounts) {
+    summary[row.status] = row._count;
+  }
+
+  return { deliveries, total, page: filter.page, pageSize: filter.pageSize, summary };
 }

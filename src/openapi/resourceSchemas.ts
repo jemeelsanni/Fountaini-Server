@@ -86,9 +86,11 @@ export const SchoolSchema = z
   })
   .openapi("School");
 
-/// The only User shape any route ever returns — a fixed subset
-/// (passwordHash/phone/updatedAt are never sent). See users.service.ts's
-/// userListSelect + flattenRoles().
+/// The standard User shape (passwordHash/phone/updatedAt never sent). See
+/// users.service.ts's userListSelect + flattenRoles(). GET
+/// /api/users/pending-activation returns a different, narrower shape
+/// instead — PendingActivationUserSchema, below — since it's an onboarding
+/// chase list, not a per-account detail view.
 export const UserSummarySchema = z
   .object({
     id: id(),
@@ -107,6 +109,41 @@ export const UserSummarySchema = z
     lastLoginAt: isoDateTime().nullable(),
   })
   .openapi("UserSummary");
+
+/// GET /api/users/pending-activation's row shape — accounts still on
+/// mustChangePassword: true, paired with the latest CREDENTIALS_ISSUED
+/// email's delivery status. See listPendingActivation (users.service.ts).
+export const PendingActivationUserSchema = z
+  .object({
+    id: id(),
+    loginId: z.string(),
+    email: z.string().nullable(),
+    roles: z.array(RoleSchema),
+    createdAt: isoDateTime(),
+    latestCredentialDeliveryStatus: NotificationDeliveryStatusSchema.nullable().openapi({
+      description: "null = no CREDENTIALS_ISSUED email was ever recorded for this account at all.",
+    }),
+  })
+  .openapi("PendingActivationUser");
+
+/// POST /api/users/:id/reissue-credentials and
+/// POST /api/students/:id/reissue-credentials's shared result shape —
+/// temporaryPassword is present ONLY for a student-linked account with
+/// nowhere left to deliver to (see reissueCredentialsForUser,
+/// users.service.ts); for staff/parent/bare accounts, which always have
+/// their own email, it's never present — delivery happens by notification
+/// instead.
+export const ReissueCredentialsResultSchema = z
+  .object({
+    id: id(),
+    temporaryPassword: z.string().optional().openapi({
+      description:
+        "Present only when a student-linked account has no primary-contact parent with an email on " +
+        "file to deliver to — the one-time generated password, for a paper hand-over. Absent whenever " +
+        "a notification was sent instead.",
+    }),
+  })
+  .openapi("ReissueCredentialsResult");
 
 export const StaffSchema = z
   .object({
@@ -1089,7 +1126,14 @@ export const NotificationEventSchema = z
     type: NotificationTypeSchema,
     recipientUserId: id(),
     subject: z.string(),
-    body: z.string(),
+    body: z.string().openapi({
+      description:
+        "For a sensitive event (CREDENTIALS_ISSUED, PASSWORD_RESET) this is always a fixed " +
+        "placeholder, never the real message — see the `sensitive` field.",
+    }),
+    sensitive: z.boolean().openapi({
+      description: "True for CREDENTIALS_ISSUED and PASSWORD_RESET — see `body`'s own description.",
+    }),
     relatedEntityType: z.string().nullable(),
     relatedEntityId: z.string().nullable(),
     createdAt: isoDateTime(),
@@ -1119,6 +1163,39 @@ export const NotificationEventWithDeliveriesSchema = NotificationEventSchema.ext
 export const MarkAllNotificationsReadResultSchema = z
   .object({ markedCount: z.number().int().nonnegative() })
   .openapi("MarkAllNotificationsReadResult");
+
+/// GET /api/notifications/deliveries's row shape — the admin-facing,
+/// cross-user counterpart to NotificationEventWithDeliveries above.
+/// Deliberately never includes a body field, sensitive or not — see
+/// listDeliveries's own comment (notifications.service.ts).
+export const NotificationDeliveryListRowSchema = z
+  .object({
+    id: id(),
+    notificationType: NotificationTypeSchema,
+    channel: NotificationChannelSchema,
+    recipientAddress: z.string().nullable().openapi({
+      description: "The recipient's CURRENT email/phone on file, not a snapshot of where the send went.",
+    }),
+    recipientUserId: id(),
+    recipientName: z.string(),
+    status: NotificationDeliveryStatusSchema,
+    error: z.string().nullable().openapi({ description: "Truncated to 200 characters." }),
+    attemptedAt: isoDateTime().nullable(),
+    deliveredAt: isoDateTime().nullable(),
+    createdAt: isoDateTime(),
+  })
+  .openapi("NotificationDeliveryListRow");
+
+export const NotificationDeliveryListResponseSchema = z
+  .object({
+    deliveries: z.array(NotificationDeliveryListRowSchema),
+    total: z.number().int().nonnegative(),
+    page: z.number().int().positive(),
+    pageSize: z.number().int().positive(),
+    summary: z.object({ PENDING: z.number().int(), SENT: z.number().int(), FAILED: z.number().int(), DELIVERED: z.number().int() })
+      .openapi({ description: "Counts by status within the type/channel/from/to window — ignores the status filter itself." }),
+  })
+  .openapi("NotificationDeliveryListResponse");
 
 // ---------------------------------------------------------------------------
 // Audit log
@@ -1163,6 +1240,32 @@ export const PrincipalSchema = z
   .openapi("Principal");
 
 export const MeResponseSchema = z.object({ principal: PrincipalSchema }).openapi("MeResponse");
+
+// ---------------------------------------------------------------------------
+// Go-live readiness
+// ---------------------------------------------------------------------------
+
+export const SetupCheckStatusSchema = z.enum(["PASS", "FAIL", "WARN"]).openapi("SetupCheckStatus");
+
+/// One row of GET /api/admin/setup-status (and npm run preflight's table).
+/// See admin.service.ts's getSetupStatus for the full list of checks and
+/// what each FAIL/WARN actually means for the running system.
+export const SetupCheckSchema = z
+  .object({
+    key: z.string(),
+    label: z.string(),
+    status: SetupCheckStatusSchema,
+    message: z.string().openapi({ description: "Plain words: what breaks (or doesn't) given this status." }),
+    fixHint: z.string().openapi({ description: "The concrete route/command to run to fix a FAIL or WARN; empty for PASS." }),
+  })
+  .openapi("SetupCheck");
+
+export const SetupStatusSchema = z
+  .object({
+    ready: z.boolean().openapi({ description: "True only when no check below is FAIL — WARN never blocks." }),
+    checks: z.array(SetupCheckSchema),
+  })
+  .openapi("SetupStatus");
 
 // Registering every schema with the shared registry happens implicitly via
 // `.openapi("Name")` above (that's what names+registers a schema in this

@@ -12,6 +12,7 @@ import {
 } from "../../test/factories.js";
 import { resetDb } from "../../test/resetDb.js";
 import { hashPassword } from "./password.js";
+import { generateOpaqueToken, hashOpaqueToken } from "./tokens.js";
 
 const app = createApp();
 let server: Server;
@@ -396,22 +397,25 @@ describe("POST /api/auth/change-password", () => {
 });
 
 /// requestPasswordReset() never returns the token (that would defeat the
-/// point of emailing it) — it's only ever visible in the NotificationEvent
-/// body the notification provider interface received, exactly like a real
-/// user would only see it in their inbox. Reading it back this way in
-/// tests, rather than reaching into auth.service.ts directly, is what
-/// proves the whole delivery path (service -> createNotification ->
-/// NotificationEvent row) actually works end to end.
-async function readResetTokenFromNotification(userId: string): Promise<string> {
-  const event = await prisma.notificationEvent.findFirst({
-    where: { type: "PASSWORD_RESET", recipientUserId: userId },
-    orderBy: { createdAt: "desc" },
+/// point of emailing it), and — now that PASSWORD_RESET notifications are
+/// `sensitive: true` (see notifications.service.ts's createNotification) —
+/// the persisted NotificationEvent.body is a fixed placeholder, not the
+/// real raw token either; it genuinely only ever existed in the one real
+/// email a real provider would have sent. Each call site below still makes
+/// the real POST /api/auth/forgot-password call first, proving that flow
+/// creates exactly one PasswordResetToken row end to end — this just
+/// overwrites that row's hash to one this test controls, so the *next*
+/// call (POST /api/auth/reset-password) has a real, known token to use.
+async function issueKnownResetToken(userId: string): Promise<string> {
+  const rawToken = generateOpaqueToken();
+  const { count } = await prisma.passwordResetToken.updateMany({
+    where: { userId },
+    data: { tokenHash: hashOpaqueToken(rawToken) },
   });
-  const match = /password:\s*(\S+)/.exec(event?.body ?? "");
-  if (!match?.[1]) {
-    throw new Error("No password reset token found in any NotificationEvent for this user");
+  if (count !== 1) {
+    throw new Error(`Expected exactly one PasswordResetToken row for user ${userId}, found ${count}`);
   }
-  return match[1];
+  return rawToken;
 }
 
 describe("POST /api/auth/forgot-password", () => {
@@ -532,7 +536,7 @@ describe("POST /api/auth/reset-password", () => {
     const oldRefreshToken = loginRes.body.refreshToken as string;
 
     await request(server).post("/api/auth/forgot-password").send({ identifier: email });
-    const token = await readResetTokenFromNotification(user.id);
+    const token = await issueKnownResetToken(user.id);
 
     const resetRes = await request(server)
       .post("/api/auth/reset-password")
@@ -554,7 +558,7 @@ describe("POST /api/auth/reset-password", () => {
   it("is single-use — a second attempt with the same token is rejected even with a valid new password", async () => {
     const { user, email } = await createTestUser();
     await request(server).post("/api/auth/forgot-password").send({ identifier: email });
-    const token = await readResetTokenFromNotification(user.id);
+    const token = await issueKnownResetToken(user.id);
 
     const first = await request(server)
       .post("/api/auth/reset-password")
@@ -570,7 +574,7 @@ describe("POST /api/auth/reset-password", () => {
   it("resolves two concurrent uses of the same token as exactly one winner", async () => {
     const { user, email } = await createTestUser();
     await request(server).post("/api/auth/forgot-password").send({ identifier: email });
-    const token = await readResetTokenFromNotification(user.id);
+    const token = await issueKnownResetToken(user.id);
 
     const [a, b] = await Promise.all([
       request(server).post("/api/auth/reset-password").send({ token, newPassword: "candidate-password-a" }),
@@ -591,7 +595,7 @@ describe("POST /api/auth/reset-password", () => {
   it("rejects an expired token", async () => {
     const { user, email } = await createTestUser();
     await request(server).post("/api/auth/forgot-password").send({ identifier: email });
-    const token = await readResetTokenFromNotification(user.id);
+    const token = await issueKnownResetToken(user.id);
 
     await prisma.passwordResetToken.updateMany({
       where: { userId: user.id },

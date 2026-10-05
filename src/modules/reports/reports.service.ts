@@ -2,7 +2,7 @@ import { Prisma } from "../../../generated/prisma/index.js";
 import { prisma } from "../../db/client.js";
 import { toNumber } from "../../lib/sqlNumeric.js";
 import { getFeesSummary } from "../fees/fees.service.js";
-import { resolvePrimaryContactParent } from "../students/students.service.js";
+import { resolvePrimaryContactParent } from "../users/users.service.js";
 import type { PaymentHistoryQuery, ScopedReportQuery } from "./reports.schemas.js";
 
 interface RawDefaulterRow {

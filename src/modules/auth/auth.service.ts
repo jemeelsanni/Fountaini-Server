@@ -2,7 +2,7 @@ import { env } from "../../config/env.js";
 import { prisma } from "../../db/client.js";
 import { AppError } from "../../errors/AppError.js";
 import { createNotification } from "../notifications/notifications.service.js";
-import { resolvePrimaryContactParent } from "../students/students.service.js";
+import { resolvePrimaryContactParent } from "../users/users.service.js";
 import { type AccessTokenPayload, signAccessToken } from "./jwt.js";
 import { hashPassword, verifyPassword } from "./password.js";
 import { generateOpaqueToken, hashOpaqueToken } from "./tokens.js";
@@ -264,6 +264,11 @@ export async function requestPasswordReset(identifier: string): Promise<void> {
     channels: ["EMAIL"],
     relatedEntityType: "PasswordResetToken",
     relatedEntityId: resetToken.id,
+    // The raw token is single-use and already hashed at rest in
+    // PasswordResetToken itself — persisting it a second time, in plaintext,
+    // in this notification's body would defeat that. See createNotification's
+    // own comment.
+    sensitive: true,
   });
 }
 

@@ -8,6 +8,7 @@ import { logger } from "./config/logger.js";
 import { prisma } from "./db/client.js";
 import { AppError } from "./errors/AppError.js";
 import { academicStructureRouter } from "./modules/academic-structure/academic-structure.routes.js";
+import { adminRouter } from "./modules/admin/admin.routes.js";
 import { admissionsRouter } from "./modules/admissions/admissions.routes.js";
 import { attendanceRouter } from "./modules/attendance/attendance.routes.js";
 import { auditRouter } from "./modules/audit/audit.routes.js";
@@ -39,6 +40,7 @@ export interface RouteMount {
 /// with no separate list to fall out of sync.
 export const routeMounts: RouteMount[] = [
   { prefix: "/api/auth", router: authRouter },
+  { prefix: "/api/admin", router: adminRouter },
   { prefix: "/api/users", router: usersRouter },
   { prefix: "/api/students", router: studentsRouter },
   { prefix: "/api/parents", router: parentsRouter },

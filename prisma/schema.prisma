@@ -1243,7 +1243,19 @@ model NotificationEvent {
   recipientUserId   String
   recipient         User             @relation(fields: [recipientUserId], references: [id])
   subject           String
+  /// For a `sensitive` event (CREDENTIALS_ISSUED, PASSWORD_RESET), this is
+  /// NEVER the real message — see createNotification (notifications.service.ts):
+  /// the real body is built in memory, handed to the provider for the
+  /// actual send, and only a fixed placeholder is written here. Every read
+  /// path (GET /api/notifications included) is therefore safe by
+  /// construction, with nothing to remember to redact per-route.
   body              String
+  /// True for CREDENTIALS_ISSUED and PASSWORD_RESET. See `body`'s own
+  /// comment — this flag records WHY body is a placeholder, for any reader
+  /// wondering why a notification's own text doesn't say what it did.
+  /// Migration 20261005120000_add_notification_sensitive_flag retroactively
+  /// scrubbed and flagged every pre-existing row of those two types.
+  sensitive         Boolean          @default(false)
   relatedEntityType String?
   relatedEntityId   String?
   createdAt         DateTime         @default(now())

@@ -266,6 +266,90 @@
         ],
         "description": "Authenticated, but not permitted to perform this action — the caller's role(s), or their relationship to the specific resource, don't satisfy this route's guard."
       },
+      "SetupStatus": {
+        "type": "object",
+        "properties": {
+          "ready": {
+            "type": "boolean",
+            "description": "True only when no check below is FAIL — WARN never blocks."
+          },
+          "checks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SetupCheck"
+            }
+          }
+        },
+        "required": [
+          "ready",
+          "checks"
+        ]
+      },
+      "SetupCheck": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SetupCheckStatus"
+          },
+          "message": {
+            "type": "string",
+            "description": "Plain words: what breaks (or doesn't) given this status."
+          },
+          "fixHint": {
+            "type": "string",
+            "description": "The concrete route/command to run to fix a FAIL or WARN; empty for PASS."
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "status",
+          "message",
+          "fixHint"
+        ]
+      },
+      "SetupCheckStatus": {
+        "type": "string",
+        "enum": [
+          "PASS",
+          "FAIL",
+          "WARN"
+        ]
+      },
+      "MustChangePasswordError": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "MUST_CHANGE_PASSWORD"
+                ]
+              },
+              "message": {
+                "type": "string"
+              },
+              "details": {}
+            },
+            "required": [
+              "code",
+              "message"
+            ]
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "description": "The account authenticated successfully, but must change its (admin-generated) password before doing anything else. Call POST /api/auth/change-password — GET /api/auth/me also still works."
+      },
       "UserSummary": {
         "type": "object",
         "properties": {
@@ -319,34 +403,6 @@
           "lastLoginAt"
         ]
       },
-      "MustChangePasswordError": {
-        "type": "object",
-        "properties": {
-          "error": {
-            "type": "object",
-            "properties": {
-              "code": {
-                "type": "string",
-                "enum": [
-                  "MUST_CHANGE_PASSWORD"
-                ]
-              },
-              "message": {
-                "type": "string"
-              },
-              "details": {}
-            },
-            "required": [
-              "code",
-              "message"
-            ]
-          }
-        },
-        "required": [
-          "error"
-        ],
-        "description": "The account authenticated successfully, but must change its (admin-generated) password before doing anything else. Call POST /api/auth/change-password — GET /api/auth/me also still works."
-      },
       "ConflictError": {
         "type": "object",
         "properties": {
@@ -375,6 +431,59 @@
         ],
         "description": "The request conflicts with the resource's current state — most commonly a duplicate (unique field already in use) or an action that's already been taken (e.g. a payment already confirmed, an enquiry already converted, a result already finalized)."
       },
+      "PendingActivationUser": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "loginId": {
+            "type": "string"
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Role"
+            }
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "latestCredentialDeliveryStatus": {
+            "$ref": "#/components/schemas/NotificationDeliveryStatus"
+          }
+        },
+        "required": [
+          "id",
+          "loginId",
+          "email",
+          "roles",
+          "createdAt",
+          "latestCredentialDeliveryStatus"
+        ]
+      },
+      "NotificationDeliveryStatus": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "enum": [
+          "PENDING",
+          "SENT",
+          "FAILED",
+          "DELIVERED",
+          null
+        ],
+        "description": "null = no CREDENTIALS_ISSUED email was ever recorded for this account at all."
+      },
       "NotFoundError": {
         "type": "object",
         "properties": {
@@ -402,6 +511,22 @@
           "error"
         ],
         "description": "No resource exists at the given id (or, for a nested path, at that combination of ids)."
+      },
+      "ReissueCredentialsResult": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "temporaryPassword": {
+            "type": "string",
+            "description": "Present only when a student-linked account has no primary-contact parent with an email on file to deliver to — the one-time generated password, for a paper hand-over. Absent whenever a notification was sent instead."
+          }
+        },
+        "required": [
+          "id"
+        ]
       },
       "Student": {
         "type": "object",
@@ -3835,15 +3960,6 @@
           "IN_APP"
         ]
       },
-      "NotificationDeliveryStatus": {
-        "type": "string",
-        "enum": [
-          "PENDING",
-          "SENT",
-          "FAILED",
-          "DELIVERED"
-        ]
-      },
       "NotificationEvent": {
         "type": "object",
         "properties": {
@@ -3862,7 +3978,12 @@
             "type": "string"
           },
           "body": {
-            "type": "string"
+            "type": "string",
+            "description": "For a sensitive event (CREDENTIALS_ISSUED, PASSWORD_RESET) this is always a fixed placeholder, never the real message — see the `sensitive` field."
+          },
+          "sensitive": {
+            "type": "boolean",
+            "description": "True for CREDENTIALS_ISSUED and PASSWORD_RESET — see `body`'s own description."
           },
           "relatedEntityType": {
             "type": [
@@ -3895,10 +4016,135 @@
           "recipientUserId",
           "subject",
           "body",
+          "sensitive",
           "relatedEntityType",
           "relatedEntityId",
           "createdAt",
           "readAt"
+        ]
+      },
+      "NotificationDeliveryListResponse": {
+        "type": "object",
+        "properties": {
+          "deliveries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NotificationDeliveryListRow"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "page": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+          },
+          "pageSize": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+          },
+          "summary": {
+            "type": "object",
+            "properties": {
+              "PENDING": {
+                "type": "integer"
+              },
+              "SENT": {
+                "type": "integer"
+              },
+              "FAILED": {
+                "type": "integer"
+              },
+              "DELIVERED": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "PENDING",
+              "SENT",
+              "FAILED",
+              "DELIVERED"
+            ],
+            "description": "Counts by status within the type/channel/from/to window — ignores the status filter itself."
+          }
+        },
+        "required": [
+          "deliveries",
+          "total",
+          "page",
+          "pageSize",
+          "summary"
+        ]
+      },
+      "NotificationDeliveryListRow": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "notificationType": {
+            "$ref": "#/components/schemas/NotificationType"
+          },
+          "channel": {
+            "$ref": "#/components/schemas/NotificationChannel"
+          },
+          "recipientAddress": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The recipient's CURRENT email/phone on file, not a snapshot of where the send went."
+          },
+          "recipientUserId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "recipientName": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/NotificationDeliveryStatus"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Truncated to 200 characters."
+          },
+          "attemptedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "deliveredAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "notificationType",
+          "channel",
+          "recipientAddress",
+          "recipientUserId",
+          "recipientName",
+          "status",
+          "error",
+          "attemptedAt",
+          "deliveredAt",
+          "createdAt"
         ]
       },
       "MarkAllNotificationsReadResult": {
@@ -4877,6 +5123,59 @@
         }
       }
     },
+    "/api/admin/setup-status": {
+      "get": {
+        "summary": "ADMIN only — a read-only checklist of what's actually configured versus what a freshly reset database only looks configured for (see docs/go-live.md). Issues no writes. `ready` is true only when no check is FAIL — WARN never blocks. Checks run in dependency order (school, then session, then term, then anything needing a current session, ...) so the first FAIL is usually also the first thing to fix, but every check still runs and reports regardless — there's no short-circuiting. The same checklist backs `npm run preflight`, runnable against any DATABASE_URL (including production) outside this API entirely.",
+        "description": "Roles: ADMIN.",
+        "x-roles": [
+          "ADMIN"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/users": {
       "post": {
         "summary": "BREAKING CHANGE — narrowed to ADMIN only, for a bare bootstrap account with no Staff record of its own. TEACHER/BURSAR are created via POST /api/staff, PARENT via POST /api/parents, STUDENT via POST /api/students — all three atomic (User + profile record together). No `password` field: the password is always generated, never admin-chosen — mustChangePassword starts true, and credentials are emailed to `email`, which also becomes this account's loginId.",
@@ -4994,6 +5293,62 @@
                   "type": "array",
                   "items": {
                     "$ref": "#/components/schemas/UserSummary"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/users/pending-activation": {
+      "get": {
+        "summary": "ADMIN only — the onboarding chase list: every active account still on mustChangePassword: true (never actually signed in), paired with its most recent CREDENTIALS_ISSUED email's delivery status. For a student-linked account the relevant email is the one sent to their primary-contact parent, not the student's own (non-existent) address.",
+        "description": "Roles: ADMIN.",
+        "x-roles": [
+          "ADMIN"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PendingActivationUser"
                   }
                 }
               }
@@ -5227,6 +5582,90 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/UserSummary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/users/{id}/reissue-credentials": {
+      "post": {
+        "summary": "ADMIN only — the general-purpose version of POST /api/students/:id/reissue-credentials (which now delegates to this same implementation): generates a fresh password (never admin-chosen), resets mustChangePassword to true, and revokes every live refresh token. Delivered to the account's own email for staff/parent/bare accounts (always present); for a student-linked account, to the primary-contact parent instead — temporaryPassword is only ever present in the response for that last case, when no such parent with an email exists.",
+        "description": "Roles: ADMIN.",
+        "x-roles": [
+          "ADMIN"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReissueCredentialsResult"
                 }
               }
             }
@@ -15405,6 +15844,160 @@
                   "items": {
                     "$ref": "#/components/schemas/NotificationEventWithDeliveries"
                   }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/notifications/deliveries": {
+      "get": {
+        "summary": "ADMIN only — cross-user delivery visibility, newest first: who a notification went to, which channel, its status and (truncated) provider error, and per-status summary counts for the filtered window (type/channel/from/to — summary ignores the status filter itself, so filtering to FAILED doesn't collapse the summary to just that one number). Deliberately never returns a notification body, sensitive or not — see GET /api/notifications for the self-scoped, body-included equivalent.",
+        "description": "Roles: ADMIN.",
+        "x-roles": [
+          "ADMIN"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "PENDING",
+                "SENT",
+                "FAILED",
+                "DELIVERED"
+              ]
+            },
+            "required": false,
+            "name": "status",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "FEE_REMINDER",
+                "PAYMENT_CONFIRMATION",
+                "ACADEMIC",
+                "ADMIN_GENERAL",
+                "PASSWORD_RESET",
+                "CREDENTIALS_ISSUED"
+              ]
+            },
+            "required": false,
+            "name": "type",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "SMS",
+                "EMAIL",
+                "WHATSAPP",
+                "IN_APP"
+              ]
+            },
+            "required": false,
+            "name": "channel",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "date-time"
+            },
+            "required": false,
+            "name": "from",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "date-time"
+            },
+            "required": false,
+            "name": "to",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "default": 1
+            },
+            "required": false,
+            "name": "page",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 100,
+              "default": 20
+            },
+            "required": false,
+            "name": "pageSize",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationDeliveryListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
                 }
               }
             }

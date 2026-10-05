@@ -34,8 +34,16 @@ export const SENSITIVE_ROUTE_ROLES: Readonly<Record<string, readonly Role[]>> = 
   "POST /api/users/:id/deactivate": ["ADMIN"],
   // Generates a fresh password and revokes existing sessions for an
   // already-issued student login — ADMIN-only for the same account-
-  // lifecycle reason as the three above.
+  // lifecycle reason as the three above. Delegates to the shared
+  // implementation behind the general-purpose row directly below, but
+  // keeps its own route entry here too: each is reached by requireRole
+  // independently (students.routes.ts's own ADMIN-only gate), not one
+  // falling through to the other.
   "POST /api/students/:id/reissue-credentials": ["ADMIN"],
+  // The general-purpose version of the row above — any account (staff,
+  // parent, or student), not just a student's. Same blast radius: it
+  // rewrites someone's credentials and revokes their live sessions.
+  "POST /api/users/:id/reissue-credentials": ["ADMIN"],
   // Bulk lifecycle: up to 500 students at once, and GRADUATED/WITHDRAWN
   // also close each one's active enrollment(s) — same blast-radius class
   // as the account-lifecycle rows above, just batched.

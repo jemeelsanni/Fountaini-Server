@@ -6,9 +6,12 @@ import { prisma } from "../../db/client.js";
 import {
   createAdmin,
   createBareStudent,
+  createBursar,
   createClass,
   createCurrentAcademicSession,
   createParent,
+  createStudentWithLogin,
+  createTeacher,
   enrollStudent,
 } from "../../test/factories.js";
 import { resetDb } from "../../test/resetDb.js";
@@ -224,5 +227,138 @@ describe("POST /api/notifications/read-all", () => {
       where: { recipientUserId: parent2.userId, readAt: null },
     });
     expect(unreadForParent2).toBe(1);
+  });
+});
+
+describe("GET /api/notifications/deliveries", () => {
+  it("rejects TEACHER, BURSAR, PARENT and STUDENT with 403", async () => {
+    const { token: teacherToken } = await createTeacher("teacher@test.local");
+    const { token: bursarToken } = await createBursar("bursar@test.local");
+    const { token: parentToken } = await createParent("parent@test.local");
+    const { token: studentToken } = await createStudentWithLogin("student@test.local", "FIA/2026/001");
+
+    for (const token of [teacherToken, bursarToken, parentToken, studentToken]) {
+      const res = await request(server)
+        .get("/api/notifications/deliveries")
+        .set("Authorization", `Bearer ${token}`);
+      expect(res.status).toBe(403);
+    }
+  });
+
+  it("lists a failed credential delivery with its status and error, with no body key on any row", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const { parent } = await createParent("parent@test.local");
+
+    const event = await prisma.notificationEvent.create({
+      data: {
+        type: "CREDENTIALS_ISSUED",
+        recipientUserId: parent.userId,
+        subject: "Your school portal login",
+        body: "[redacted — sensitive content, not stored]",
+        sensitive: true,
+      },
+    });
+    await prisma.notificationDelivery.create({
+      data: {
+        notificationEventId: event.id,
+        channel: "EMAIL",
+        status: "FAILED",
+        error: "Daily send limit reached",
+        attemptedAt: new Date(),
+      },
+    });
+
+    const res = await request(server)
+      .get("/api/notifications/deliveries")
+      .set("Authorization", `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.deliveries).toHaveLength(1);
+    const row = res.body.deliveries[0];
+    expect(row.status).toBe("FAILED");
+    expect(row.error).toBe("Daily send limit reached");
+    expect(row.notificationType).toBe("CREDENTIALS_ISSUED");
+    expect(row.recipientUserId).toBe(parent.userId);
+    expect(row.recipientName).toBe("Test Parent");
+    expect(row).not.toHaveProperty("body");
+    expect(res.body.summary.FAILED).toBe(1);
+  });
+
+  it("filters by status, type and channel", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const { parent } = await createParent("parent@test.local");
+
+    const sent = await prisma.notificationEvent.create({
+      data: { type: "ADMIN_GENERAL", recipientUserId: parent.userId, subject: "A", body: "A" },
+    });
+    await prisma.notificationDelivery.create({
+      data: { notificationEventId: sent.id, channel: "EMAIL", status: "SENT", attemptedAt: new Date() },
+    });
+
+    const failed = await prisma.notificationEvent.create({
+      data: { type: "CREDENTIALS_ISSUED", recipientUserId: parent.userId, subject: "B", body: "B", sensitive: true },
+    });
+    await prisma.notificationDelivery.create({
+      data: { notificationEventId: failed.id, channel: "EMAIL", status: "FAILED", error: "x", attemptedAt: new Date() },
+    });
+
+    const byStatus = await request(server)
+      .get("/api/notifications/deliveries?status=FAILED")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(byStatus.body.deliveries).toHaveLength(1);
+    expect(byStatus.body.deliveries[0].status).toBe("FAILED");
+    // Summary ignores the status filter — both rows still counted.
+    expect(byStatus.body.summary.SENT + byStatus.body.summary.FAILED).toBe(2);
+
+    const byType = await request(server)
+      .get("/api/notifications/deliveries?type=CREDENTIALS_ISSUED")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(byType.body.deliveries).toHaveLength(1);
+    expect(byType.body.deliveries[0].notificationType).toBe("CREDENTIALS_ISSUED");
+
+    const byChannel = await request(server)
+      .get("/api/notifications/deliveries?channel=IN_APP")
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(byChannel.body.deliveries).toHaveLength(0);
+  });
+});
+
+describe("sensitive notification bodies are never persisted in plaintext", () => {
+  it("CREDENTIALS_ISSUED: the persisted body is the fixed placeholder, not the real temporary password", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    await createCurrentAcademicSession("2026/2027");
+
+    const res = await request(server)
+      .post("/api/staff")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ role: "TEACHER", email: "newteacher@test.local", firstName: "New", lastName: "Teacher" });
+    expect(res.status).toBe(201);
+
+    const event = await waitForNotification(res.body.userId as string, "Staff", res.body.id as string);
+    expect(event).not.toBeNull();
+    expect(event?.sensitive).toBe(true);
+    expect(event?.body).toBe("[redacted — sensitive content, not stored]");
+  });
+
+  it("PASSWORD_RESET: the persisted body is the fixed placeholder, not the real raw token", async () => {
+    const { parent } = await createParent("resetme@test.local");
+
+    const res = await request(server)
+      .post("/api/auth/forgot-password")
+      .send({ identifier: "resetme@test.local" });
+    expect(res.status).toBe(204);
+
+    const event = await prisma.notificationEvent.findFirst({
+      where: { recipientUserId: parent.userId, type: "PASSWORD_RESET" },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(event).not.toBeNull();
+    expect(event?.sensitive).toBe(true);
+    expect(event?.body).toBe("[redacted — sensitive content, not stored]");
+
+    // The real token is still hashed, stored separately, and still usable —
+    // scrubbing the notification body must not break the reset flow itself.
+    const resetToken = await prisma.passwordResetToken.findFirstOrThrow({ where: { userId: parent.userId } });
+    expect(resetToken.tokenHash).not.toBe(event?.body);
   });
 });
