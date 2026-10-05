@@ -1,5 +1,5 @@
 import argon2 from "argon2";
-import { prisma } from "../db/client.js";
+import type { PrismaClient } from "../../generated/prisma/index.js";
 
 /// Creates (or, on every later run, no-ops on) the bootstrap admin account —
 /// the one piece of prisma/seed.ts genuinely worth unit-testing directly
@@ -9,6 +9,17 @@ import { prisma } from "../db/client.js";
 /// boundary — prisma/seed.ts imports this the same way seed-demo.ts/
 /// wipe-demo.ts already import real src/ services for the same reason.
 ///
+/// Takes a PrismaClient instead of importing the shared one from
+/// db/client.ts on purpose: that module imports config/env.ts, which
+/// validates the FULL app env schema (JWT_ACCESS_SECRET, CORS_ORIGINS,
+/// ...) — none of which prisma/seed.ts has ever needed or had set (CI's
+/// "Run the seed against a fresh database" step only ever sets
+/// DATABASE_URL; a real first regression from exactly this coupling broke
+/// that step outright). prisma/seed.ts passes its own bare
+/// `new PrismaClient()`; the idempotency test passes the shared test
+/// client — both work identically against this function either way, since
+/// all it ever touches is the one `user` table.
+///
 /// `update: {}` on the upsert is deliberate and load-bearing: re-running
 /// this (the real sequence — `npm run db:seed` is meant to be safe to run
 /// again at any time, not just once) must never silently undo an admin's
@@ -16,7 +27,7 @@ import { prisma } from "../db/client.js";
 /// passwordHash nor isActive is in the update payload, so Prisma's upsert
 /// cannot touch either one on an existing row — confirmed directly by
 /// the idempotency test rather than trusted from reading this alone.
-export async function seedAdmin(): Promise<void> {
+export async function seedAdmin(prisma: PrismaClient): Promise<void> {
   const email = process.env.SEED_ADMIN_EMAIL ?? "admin@school.test";
   const password = process.env.SEED_ADMIN_PASSWORD ?? "ChangeMe123!";
 

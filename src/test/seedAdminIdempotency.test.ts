@@ -20,13 +20,13 @@ const BOOTSTRAP_ADMIN_EMAIL = "admin@school.test";
 /// (an added field here looks like a small, safe change in isolation).
 describe("seedAdmin() re-run safety", () => {
   it("leaves a changed bootstrap-admin password untouched on re-run", async () => {
-    await seedAdmin();
+    await seedAdmin(prisma);
     const original = await prisma.user.findUniqueOrThrow({ where: { email: BOOTSTRAP_ADMIN_EMAIL } });
 
     const changedHash = "argon2id$some-hash-representing-a-real-password-change";
     await prisma.user.update({ where: { id: original.id }, data: { passwordHash: changedHash } });
 
-    await seedAdmin();
+    await seedAdmin(prisma);
 
     const after = await prisma.user.findUniqueOrThrow({ where: { email: BOOTSTRAP_ADMIN_EMAIL } });
     expect(after.passwordHash).toBe(changedHash);
@@ -34,13 +34,13 @@ describe("seedAdmin() re-run safety", () => {
   });
 
   it("leaves a deactivated bootstrap admin deactivated on re-run", async () => {
-    await seedAdmin();
+    await seedAdmin(prisma);
     const original = await prisma.user.findUniqueOrThrow({ where: { email: BOOTSTRAP_ADMIN_EMAIL } });
     expect(original.isActive).toBe(true);
 
     await prisma.user.update({ where: { id: original.id }, data: { isActive: false } });
 
-    await seedAdmin();
+    await seedAdmin(prisma);
 
     const after = await prisma.user.findUniqueOrThrow({ where: { email: BOOTSTRAP_ADMIN_EMAIL } });
     expect(after.isActive).toBe(false);
@@ -50,7 +50,7 @@ describe("seedAdmin() re-run safety", () => {
     const before = await prisma.user.findUnique({ where: { email: BOOTSTRAP_ADMIN_EMAIL } });
     expect(before).toBeNull();
 
-    await seedAdmin();
+    await seedAdmin(prisma);
 
     const after = await prisma.user.findUniqueOrThrow({ where: { email: BOOTSTRAP_ADMIN_EMAIL } });
     expect(after.isActive).toBe(true);

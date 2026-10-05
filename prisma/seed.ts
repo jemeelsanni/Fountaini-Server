@@ -37,7 +37,7 @@ async function seedRatingScale() {
 }
 
 async function main() {
-  await seedAdmin();
+  await seedAdmin(prisma);
   await seedSurahs();
   await seedRatingScale();
   // Trait seeding moved to `npm run db:seed:traits` (prisma/seedTraits.ts)
