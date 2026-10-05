@@ -156,7 +156,12 @@ describe("OpenAPI error response documentation", () => {
   });
 
   it("documents 401 on login/refresh even though they're public routes with no requireAuth", () => {
-    expect(responseRef(doc, "/api/auth/login", "post", 401)).toBe("#/components/schemas/UnauthorizedError");
+    // login also gets CredentialExpiredError unioned in (correct
+    // credentials, but an expired server-generated password) — refresh
+    // doesn't, so it stays a single direct $ref.
+    expect(new Set(responseAnyOfRefs(doc, "/api/auth/login", "post", 401))).toEqual(
+      new Set(["#/components/schemas/UnauthorizedError", "#/components/schemas/CredentialExpiredError"]),
+    );
     expect(responseRef(doc, "/api/auth/refresh", "post", 401)).toBe("#/components/schemas/UnauthorizedError");
   });
 

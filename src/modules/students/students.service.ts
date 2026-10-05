@@ -11,6 +11,7 @@ import {
   registerAdmissionNumberOverride,
 } from "../identifiers/identifiers.service.js";
 import { createNotification, suppressCredentialNotifications } from "../notifications/notifications.service.js";
+import { reissueCredentialsForUser } from "../users/users.service.js";
 import type {
   BulkUpdateStudentStatusBody,
   CreateEnrollmentBody,
@@ -21,25 +22,6 @@ import type {
 
 function isUniqueConstraintError(err: unknown): boolean {
   return err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002";
-}
-
-/// The student's linked parent to notify/contact when the student has no
-/// email of their own — the flagged isPrimaryContact link if one exists
-/// (see StudentParent's own comment: at most one, enforced by a partial
-/// unique index), otherwise the earliest-linked parent. Returns null if the
-/// student has no linked parents at all. Shared by credential issuance
-/// (parents.service.ts's linkChild), reissueCredentials below, and
-/// password-reset destination resolution (auth.service.ts).
-export async function resolvePrimaryContactParent(studentId: string) {
-  const links = await prisma.studentParent.findMany({
-    where: { studentId },
-    include: { parent: { include: { user: true } } },
-    orderBy: { createdAt: "asc" },
-  });
-  if (links.length === 0) {
-    return null;
-  }
-  return links.find((l) => l.isPrimaryContact) ?? links[0]!;
 }
 
 /// Generates a student's FIRST login, atomically, and notifies the given
@@ -83,6 +65,7 @@ export async function issueFirstLoginForStudent(
           email: null,
           passwordHash,
           mustChangePassword: true,
+          passwordIssuedAt: new Date(),
           roles: { create: [{ role: "STUDENT" }] },
         },
       });
@@ -120,6 +103,7 @@ export async function issueFirstLoginForStudent(
       channels: ["EMAIL"],
       relatedEntityType: "Student",
       relatedEntityId: studentId,
+      sensitive: true,
     });
   } catch (err) {
     logger.error({ err, studentId }, "Failed to issue first login for student");
@@ -146,6 +130,14 @@ export async function issueFirstLoginForStudent(
 /// legal — see the report), this endpoint lets an admin recover a student
 /// in that state by generating a fresh password and returning it once in
 /// the response, exactly like a paper hand-over.
+///
+/// This student-specific framing (the 404/409 messages, and splicing the
+/// returned temporaryPassword onto the full student record rather than a
+/// bare user id) is the one thing that stays here — the actual credential
+/// generation, delivery, and student-vs-own-email destination resolution
+/// is the SAME shared implementation GET /api/users/:id/reissue-credentials
+/// calls (see reissueCredentialsForUser, users.service.ts), not a second
+/// copy of it.
 export async function reissueCredentialsForStudent(studentId: string) {
   const student = await prisma.student.findUnique({ where: { id: studentId } });
   if (!student) {
@@ -157,44 +149,8 @@ export async function reissueCredentialsForStudent(studentId: string) {
     );
   }
 
-  const temporaryPassword = generateTemporaryPassword();
-  const passwordHash = await hashPassword(temporaryPassword);
-
-  await prisma.$transaction([
-    prisma.user.update({
-      where: { id: student.userId },
-      data: { passwordHash, mustChangePassword: true },
-    }),
-    prisma.refreshToken.updateMany({
-      where: { userId: student.userId, revokedAt: null },
-      data: { revokedAt: new Date() },
-    }),
-  ]);
-
-  const contact = await resolvePrimaryContactParent(studentId);
-  const parentEmail = contact?.parent.user.email;
-  if (!contact || !parentEmail) {
-    return { ...student, temporaryPassword };
-  }
-
-  if (suppressCredentialNotifications) {
-    return student;
-  }
-
-  await createNotification({
-    type: "CREDENTIALS_ISSUED",
-    recipientUserId: contact.parent.userId,
-    subject: `Login credentials for ${student.firstName} ${student.lastName}`,
-    body:
-      `A new temporary password has been issued for ${student.firstName} ${student.lastName}'s ` +
-      `school portal login (${student.admissionNumber}): ${temporaryPassword}. ` +
-      `They'll be asked to change it the first time they sign in.`,
-    channels: ["EMAIL"],
-    relatedEntityType: "Student",
-    relatedEntityId: studentId,
-  });
-
-  return student;
+  const result = await reissueCredentialsForUser(student.userId);
+  return result.temporaryPassword ? { ...student, temporaryPassword: result.temporaryPassword } : student;
 }
 
 export async function createStudent(input: CreateStudentBody) {

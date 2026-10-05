@@ -47,3 +47,32 @@ export function hashPassword(plain: string): Promise<string> {
 export function verifyPassword(hash: string, plain: string): Promise<boolean> {
   return argon2.verify(hash, plain);
 }
+
+/// How long a server-generated password stays valid if it's never used —
+/// after this, login() rejects it outright (CREDENTIAL_EXPIRED) rather
+/// than letting a credential nobody read in time stay an indefinitely
+/// valid way into the account. Lives here (not auth.service.ts or
+/// users.service.ts) so both can read it without a circular import — see
+/// isTemporaryPasswordExpired's own comment for who actually uses it.
+export const PASSWORD_TEMP_EXPIRY_DAYS = 7;
+
+/// Shared by login() (auth.service.ts, which rejects the attempt outright)
+/// and listPendingActivation() (users.service.ts, which surfaces this as
+/// its own distinct state in the onboarding chase list rather than lumping
+/// it in with "delivered, just not signed in yet"). Only ever true while
+/// mustChangePassword is also true — a password the owner chose themselves
+/// never expires, and passwordIssuedAt is only ever set alongside
+/// mustChangePassword: true in the first place (see that column's own
+/// comment, schema.prisma). Null passwordIssuedAt (every account that
+/// existed before this column did) never expires — enforced only going
+/// forward, never retroactively locking someone out.
+export function isTemporaryPasswordExpired(user: {
+  mustChangePassword: boolean;
+  passwordIssuedAt: Date | null;
+}): boolean {
+  if (!user.mustChangePassword || !user.passwordIssuedAt) {
+    return false;
+  }
+  const expiresAt = user.passwordIssuedAt.getTime() + PASSWORD_TEMP_EXPIRY_DAYS * 24 * 60 * 60 * 1000;
+  return Date.now() > expiresAt;
+}

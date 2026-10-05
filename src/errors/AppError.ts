@@ -83,4 +83,15 @@ export class AppError extends Error {
   static mustChangePassword(message = "This account must change its password before continuing"): AppError {
     return new AppError(403, "MUST_CHANGE_PASSWORD", message);
   }
+
+  /// Distinct from both unauthorized() (wrong credentials) and
+  /// mustChangePassword() (right credentials, but gated on every route
+  /// until changed): this blocks the login attempt itself, because the
+  /// password presented is CORRECT but has outlived
+  /// PASSWORD_TEMP_EXPIRY_DAYS (password.ts) unused. A distinct code so a
+  /// client can show "ask for a new one" messaging instead of "wrong
+  /// password" — the caller did nothing wrong here.
+  static credentialExpired(message: string): AppError {
+    return new AppError(401, "CREDENTIAL_EXPIRED", message);
+  }
 }

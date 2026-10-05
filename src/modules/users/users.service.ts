@@ -3,8 +3,12 @@ import { logger } from "../../config/logger.js";
 import { prisma } from "../../db/client.js";
 import { AppError } from "../../errors/AppError.js";
 import { fireAndForget } from "../../lib/fireAndForget.js";
-import { generateTemporaryPassword, hashPassword } from "../auth/password.js";
-import { createNotification } from "../notifications/notifications.service.js";
+import { normalizeEmail } from "../auth/loginIdentifier.js";
+import { generateTemporaryPassword, hashPassword, isTemporaryPasswordExpired } from "../auth/password.js";
+import {
+  createNotification,
+  suppressCredentialNotifications,
+} from "../notifications/notifications.service.js";
 
 function isUniqueConstraintError(err: unknown): boolean {
   return err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002";
@@ -28,7 +32,8 @@ function flattenRoles<T extends { roles: { role: Role }[] }>(
 }
 
 export async function createUser(input: { email: string; role: Role }) {
-  const existing = await prisma.user.findUnique({ where: { email: input.email } });
+  const email = normalizeEmail(input.email);
+  const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) {
     throw AppError.conflict("A user with this email already exists");
   }
@@ -47,10 +52,11 @@ export async function createUser(input: { email: string; role: Role }) {
   try {
     user = await prisma.user.create({
       data: {
-        loginId: input.email,
-        email: input.email,
+        loginId: email,
+        email,
         passwordHash,
         mustChangePassword: true,
+        passwordIssuedAt: new Date(),
         roles: { create: [{ role: input.role }] },
       },
       select: userListSelect,
@@ -72,11 +78,12 @@ export async function createUser(input: { email: string; role: Role }) {
       recipientUserId: user.id,
       subject: "Your school portal login",
       body:
-        `Your login ID is ${input.email}. Temporary password: ${temporaryPassword}. ` +
+        `Your login ID is ${email}. Temporary password: ${temporaryPassword}. ` +
         `You'll be asked to change it the first time you sign in.`,
       channels: ["EMAIL"],
       relatedEntityType: "User",
       relatedEntityId: user.id,
+      sensitive: true,
     }),
     (err) => logger.error({ err }, "Failed to send user credential notification"),
   );
@@ -121,4 +128,297 @@ export async function setUserActive(id: string, isActive: boolean) {
   }
 
   return flattenRoles(updated);
+}
+
+/// The account to notify/contact when a student has no email of their own —
+/// the flagged isPrimaryContact link if one exists (see StudentParent's own
+/// comment: at most one, enforced by a partial unique index), otherwise the
+/// earliest-linked parent. Returns null if the student has no linked
+/// parents at all. Shared by credential issuance (parents.service.ts's
+/// linkChild, via issueFirstLoginForStudent), reissueCredentialsForUser
+/// below, and password-reset destination resolution (auth.service.ts).
+/// Lives here rather than students.service.ts specifically so
+/// reissueCredentialsForUser can call it without students.service.ts and
+/// this module importing each other in a cycle — students.service.ts's own
+/// reissueCredentialsForStudent now delegates to reissueCredentialsForUser
+/// instead of needing this directly.
+export async function resolvePrimaryContactParent(studentId: string) {
+  const links = await prisma.studentParent.findMany({
+    where: { studentId },
+    include: { parent: { include: { user: true } } },
+    orderBy: { createdAt: "asc" },
+  });
+  if (links.length === 0) {
+    return null;
+  }
+  return links.find((l) => l.isPrimaryContact) ?? links[0]!;
+}
+
+/// The one implementation behind both POST /api/users/:id/reissue-credentials
+/// and POST /api/students/:id/reissue-credentials (students.service.ts's
+/// reissueCredentialsForStudent delegates here after its own 404/409
+/// student-specific checks). Always generates a fresh password (never
+/// admin-chosen), always resets mustChangePassword to true, and always
+/// revokes existing refresh tokens — a freshly issued credential must not
+/// coexist with sessions built on whatever existed before it, the same
+/// posture changePassword()/resetPassword() already take.
+///
+/// Destination resolution has exactly one branch that can lack a
+/// destination: a student-linked account has no email of its own and is
+/// redirected to resolvePrimaryContactParent, which can legitimately return
+/// nothing (every linked parent unlinked, or none ever had an email) — that
+/// case returns `temporaryPassword` in the result for a paper hand-over,
+/// exactly like students.service.ts's pre-existing behavior. Staff, parent,
+/// and bare accounts always have their own email (required at creation by
+/// createStaffSchema/createParentSchema/createUserSchema) — delivery there
+/// cannot fail to have a destination, so `temporaryPassword` is never
+/// present in the result for those three.
+export async function reissueCredentialsForUser(userId: string) {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    include: { staff: true, parent: true, student: true },
+  });
+  if (!user) {
+    throw AppError.notFound("User not found");
+  }
+
+  const temporaryPassword = generateTemporaryPassword();
+  const passwordHash = await hashPassword(temporaryPassword);
+
+  await prisma.$transaction([
+    prisma.user.update({
+      where: { id: userId },
+      data: { passwordHash, mustChangePassword: true, passwordIssuedAt: new Date() },
+    }),
+    prisma.refreshToken.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: new Date() } }),
+  ]);
+
+  if (user.student) {
+    const student = user.student;
+    const contact = await resolvePrimaryContactParent(student.id);
+    const parentEmail = contact?.parent.user.email;
+    if (!contact || !parentEmail) {
+      return { id: user.id, temporaryPassword };
+    }
+    if (!suppressCredentialNotifications) {
+      await createNotification({
+        type: "CREDENTIALS_ISSUED",
+        recipientUserId: contact.parent.userId,
+        subject: `Login credentials for ${student.firstName} ${student.lastName}`,
+        body:
+          `A new temporary password has been issued for ${student.firstName} ${student.lastName}'s ` +
+          `school portal login (${student.admissionNumber}): ${temporaryPassword}. ` +
+          `They'll be asked to change it the first time they sign in.`,
+        channels: ["EMAIL"],
+        relatedEntityType: "Student",
+        relatedEntityId: student.id,
+        sensitive: true,
+      });
+    }
+    return { id: user.id };
+  }
+
+  // Staff, parent, or bare account — always has its own email (enforced at
+  // creation; see this function's own comment), so there is no destination
+  // fallback to consider here.
+  if (!suppressCredentialNotifications) {
+    await createNotification({
+      type: "CREDENTIALS_ISSUED",
+      recipientUserId: user.id,
+      subject: "Your school portal login",
+      body:
+        `A new temporary password has been issued for your school portal login (${user.loginId}): ` +
+        `${temporaryPassword}. You'll be asked to change it the first time you sign in.`,
+      channels: ["EMAIL"],
+      relatedEntityType: user.staff ? "Staff" : user.parent ? "Parent" : "User",
+      relatedEntityId: user.staff?.id ?? user.parent?.id ?? user.id,
+      sensitive: true,
+    });
+  }
+  return { id: user.id };
+}
+
+/// The onboarding chase list: every active account still on its
+/// server-generated password, i.e. one that has never actually been signed
+/// into, paired with the most recent CREDENTIALS_ISSUED email's delivery
+/// status. For a student-linked account (no email of its own), the
+/// relevant event is the one sent to their primary-contact parent
+/// (relatedEntityType "Student", not recipientUserId — see
+/// reissueCredentialsForUser) — matched on relatedEntityId so a parent
+/// chasing several children's accounts doesn't collapse them into one
+/// status. `null` status means no CREDENTIALS_ISSUED email was ever
+/// recorded at all (e.g. SUPPRESS_CREDENTIAL_NOTIFICATIONS was set when
+/// this account was created), distinct from an EMAIL delivery that exists
+/// and is PENDING/FAILED/SENT/DELIVERED.
+export async function listPendingActivation() {
+  const users = await prisma.user.findMany({
+    where: { mustChangePassword: true, isActive: true },
+    select: {
+      id: true,
+      loginId: true,
+      email: true,
+      createdAt: true,
+      mustChangePassword: true,
+      passwordIssuedAt: true,
+      roles: { select: { role: true } },
+      student: { select: { id: true } },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+  if (users.length === 0) {
+    return [];
+  }
+
+  const directUserIds = users.filter((u) => !u.student).map((u) => u.id);
+  const studentIds = users.filter((u) => u.student).map((u) => u.student!.id);
+
+  const events = await prisma.notificationEvent.findMany({
+    where: {
+      type: "CREDENTIALS_ISSUED",
+      OR: [
+        ...(directUserIds.length > 0 ? [{ recipientUserId: { in: directUserIds } }] : []),
+        ...(studentIds.length > 0
+          ? [{ relatedEntityType: "Student", relatedEntityId: { in: studentIds } }]
+          : []),
+      ],
+    },
+    select: {
+      recipientUserId: true,
+      relatedEntityType: true,
+      relatedEntityId: true,
+      deliveries: {
+        where: { channel: "EMAIL" },
+        select: { status: true, error: true, errorCategory: true },
+        take: 1,
+      },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  // Newest-first, so the first match recorded for a given key is its latest.
+  const latestByDirectUser = new Map<string, (typeof events)[number]>();
+  const latestByStudent = new Map<string, (typeof events)[number]>();
+  for (const event of events) {
+    if (event.relatedEntityType === "Student" && event.relatedEntityId) {
+      if (!latestByStudent.has(event.relatedEntityId)) {
+        latestByStudent.set(event.relatedEntityId, event);
+      }
+    } else if (!latestByDirectUser.has(event.recipientUserId)) {
+      latestByDirectUser.set(event.recipientUserId, event);
+    }
+  }
+
+  return users.map((user) => {
+    const event = user.student ? latestByStudent.get(user.student.id) : latestByDirectUser.get(user.id);
+    const delivery = event?.deliveries[0];
+    return {
+      id: user.id,
+      loginId: user.loginId,
+      email: user.email,
+      roles: user.roles.map((ur) => ur.role),
+      createdAt: user.createdAt,
+      latestCredentialDeliveryStatus: delivery?.status ?? null,
+      latestCredentialDeliveryError: delivery?.error ?? null,
+      latestCredentialDeliveryErrorCategory: delivery?.errorCategory ?? null,
+      credentialExpired: isTemporaryPasswordExpired(user),
+    };
+  });
+}
+
+/// Changes an account's login email — the one PATCH that genuinely needs
+/// to touch loginId too, for a parent or bare account (see
+/// resolvePrimaryContactParent's own "loginId already IS their email"
+/// framing): updating one without the other would leave them silently
+/// diverged. Staff keep their staffNumber as loginId regardless — only
+/// their delivery email changes. Students have no email of their own at
+/// all (see User.email's own schema comment) — rejected outright, there's
+/// nothing here to change.
+///
+/// Treated as exactly as sensitive as a reissue, because it effectively is
+/// one: whoever had the OLD address can no longer reach this account by
+/// email, so this reuses reissueCredentialsForUser directly rather than a
+/// second copy of its mechanics — it re-reads this account's (now-updated)
+/// email/loginId, so the fresh credentials it generates are naturally
+/// delivered to the NEW address, not the old one.
+// "m***@gmail.com" — first character of the local part, then a fixed mask,
+// never the rest of it. Used only in the OLD-address notice below; nothing
+// about the account's real new address needs hiding from the account
+// holder's OWN old inbox beyond this.
+function maskEmail(email: string): string {
+  const atIndex = email.indexOf("@");
+  if (atIndex <= 0) {
+    return email;
+  }
+  return `${email[0]}***${email.slice(atIndex)}`;
+}
+
+function buildEmailChangedNoticeBody(
+  newEmail: string,
+  school: { name: string; contactEmail: string | null; contactPhone: string | null } | null,
+): string {
+  const maskedNew = maskEmail(newEmail);
+  const contact =
+    school && (school.contactEmail || school.contactPhone)
+      ? ` Contact ${school.name}${school.contactEmail ? ` at ${school.contactEmail}` : ""}${
+          school.contactPhone ? ` or ${school.contactPhone}` : ""
+        } immediately if you did not request this.`
+      : " Contact the school office immediately if you did not request this.";
+  return `The login email on this school portal account was changed to ${maskedNew}.${contact}`;
+}
+
+/// Changes an account's login email (and, for a parent or bare account,
+/// loginId to match — see resolveUserEmail/loginId's own framing elsewhere
+/// in this file). Staff keep their staffNumber as loginId; students are
+/// rejected outright (no email of their own to change).
+///
+/// Notifies the OLD address first, before the row is actually updated —
+/// deliberately in that order: createNotification resolves the EMAIL
+/// channel's recipient from the User row's CURRENT email at send time, so
+/// calling it after the update would silently send this "your email
+/// changed" notice to the NEW address instead of the old one. Awaited, not
+/// fire-and-forget, for the same reason: a fire-and-forget call here could
+/// still be mid-flight (its own internal address lookup not yet run) when
+/// the update below lands, racing the same way. Never `sensitive` — no
+/// secret in it, just a masked address and the school's contact details.
+export async function updateUserEmail(userId: string, rawNewEmail: string) {
+  const newEmail = normalizeEmail(rawNewEmail);
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    include: { staff: true, student: true },
+  });
+  if (!user) {
+    throw AppError.notFound("User not found");
+  }
+  if (user.student) {
+    throw AppError.badRequest("Students have no email on file — there is nothing here to change");
+  }
+
+  const collision = await prisma.user.findFirst({
+    where: { id: { not: userId }, OR: [{ email: newEmail }, { loginId: newEmail }] },
+  });
+  if (collision) {
+    throw AppError.conflict("A user with this email already exists");
+  }
+
+  if (user.email) {
+    const school = await prisma.school.findFirst();
+    await createNotification({
+      type: "EMAIL_CHANGED",
+      recipientUserId: userId,
+      subject: "Your school portal login email was changed",
+      body: buildEmailChangedNoticeBody(newEmail, school),
+      channels: ["EMAIL"],
+      relatedEntityType: "User",
+      relatedEntityId: userId,
+    });
+  }
+
+  const updateData: Prisma.UserUpdateInput = { email: newEmail };
+  if (!user.staff) {
+    updateData.loginId = newEmail;
+  }
+  await prisma.user.update({ where: { id: userId }, data: updateData });
+
+  const reissued = await reissueCredentialsForUser(userId);
+  return { ...reissued, email: newEmail };
 }

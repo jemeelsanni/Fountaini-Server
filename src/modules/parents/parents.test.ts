@@ -51,7 +51,29 @@ describe("POST /api/parents", () => {
 
     const notification = await waitForNotification(user.id, "Parent", res.body.id as string);
     expect(notification, "creating a parent must email them their credentials").toBeTruthy();
-    expect(notification?.body).toMatch(/Temporary password: \S+/);
+    // sensitive: true (see notifications.service.ts's createNotification) —
+    // the persisted body is a fixed placeholder, never the real generated
+    // password, regardless of what the real credential email said.
+    expect(notification?.sensitive).toBe(true);
+    expect(notification?.body).toBe("[redacted — sensitive content, not stored]");
+  });
+
+  it("normalizes a capitalized, padded email to lowercase+trimmed for both email and loginId", async () => {
+    const { token } = await createAdmin("admin@test.local");
+
+    const res = await request(server)
+      .post("/api/parents")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ email: "  Normalize.Me@Test.Local  ", firstName: "Grace", lastName: "Hopper" });
+    expect(res.status).toBe(201);
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: res.body.userId as string } });
+    expect(user.email).toBe("normalize.me@test.local");
+    expect(user.loginId).toBe("normalize.me@test.local");
+
+    // The now-normalized account must be reachable by login using any
+    // case/whitespace variant of the same address.
+    await waitForNotification(user.id, "Parent", res.body.id as string);
   });
 
   it("rejects a duplicate email with 409, never creating a second User or Parent", async () => {
@@ -264,7 +286,11 @@ describe("child linking", () => {
     const notification = await waitForNotification(parent.userId, "Student", child.id);
     expect(notification, "issuing a login must notify the primary-contact parent").toBeTruthy();
     expect(notification?.subject).toContain("Ada");
-    expect(notification?.body).toMatch(/Temporary password: \S+/);
+    // sensitive: true (see notifications.service.ts's createNotification) —
+    // the persisted body is a fixed placeholder, never the real generated
+    // password, regardless of what the real credential email said.
+    expect(notification?.sensitive).toBe(true);
+    expect(notification?.body).toBe("[redacted — sensitive content, not stored]");
 
     const issued = await prisma.student.findUniqueOrThrow({ where: { id: child.id } });
     expect(issued.userId).not.toBeNull();

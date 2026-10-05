@@ -99,6 +99,14 @@ model User {
   /// except GET /api/auth/me and POST /api/auth/change-password 403s while
   /// this is true.
   mustChangePassword Boolean   @default(false)
+  /// Set every time a server-generated password is issued or reissued —
+  /// paired with mustChangePassword, never read when that's false (a
+  /// password the owner chose themselves doesn't expire). Null for every
+  /// account that existed before this column did: expiry is enforced only
+  /// going forward, never retroactively locking someone out of an account
+  /// that was already fine. See login()'s own comment for the check this
+  /// feeds and PASSWORD_TEMP_EXPIRY_DAYS for the window.
+  passwordIssuedAt   DateTime?
   isActive           Boolean   @default(true)
   lastLoginAt        DateTime?
   createdAt          DateTime  @default(now())
@@ -612,6 +620,14 @@ model Trait {
   category          TraitCategory
   name              String
   order             Int
+  /// Soft-deactivation, not delete: a Rating references its trait by FK
+  /// (RESTRICT, same posture as AssessmentComponent/Score), so a trait
+  /// already used can't be removed outright without orphaning historical
+  /// ratings. Deactivating stops it accepting new ratings
+  /// (bulkUpsertRatings, ratings.service.ts) without touching what's
+  /// already recorded. Defaults true so every pre-existing row (and every
+  /// newly created one) starts usable with no extra step.
+  isActive          Boolean         @default(true)
   createdAt         DateTime        @default(now())
 
   ratings Rating[]
@@ -1231,6 +1247,12 @@ enum NotificationType {
   /// email, addressed to the parent and naming the child. See
   /// deliverCredentials in students.service.ts/staff.service.ts.
   CREDENTIALS_ISSUED
+  /// Sent to the OLD address when PATCH /api/users/:id/email changes it —
+  /// never sensitive (no secret in it, just a masked new address and the
+  /// school's contact details), so unlike the other two account-security
+  /// types above it's never `sensitive: true`. See updateUserEmail,
+  /// users.service.ts.
+  EMAIL_CHANGED
 }
 
 /// The logical, in-app notification. Channel-agnostic by design — this table
@@ -1243,7 +1265,19 @@ model NotificationEvent {
   recipientUserId   String
   recipient         User             @relation(fields: [recipientUserId], references: [id])
   subject           String
+  /// For a `sensitive` event (CREDENTIALS_ISSUED, PASSWORD_RESET), this is
+  /// NEVER the real message — see createNotification (notifications.service.ts):
+  /// the real body is built in memory, handed to the provider for the
+  /// actual send, and only a fixed placeholder is written here. Every read
+  /// path (GET /api/notifications included) is therefore safe by
+  /// construction, with nothing to remember to redact per-route.
   body              String
+  /// True for CREDENTIALS_ISSUED and PASSWORD_RESET. See `body`'s own
+  /// comment — this flag records WHY body is a placeholder, for any reader
+  /// wondering why a notification's own text doesn't say what it did.
+  /// Migration 20261005120000_add_notification_sensitive_flag retroactively
+  /// scrubbed and flagged every pre-existing row of those two types.
+  sensitive         Boolean          @default(false)
   relatedEntityType String?
   relatedEntityId   String?
   createdAt         DateTime         @default(now())
@@ -1270,6 +1304,22 @@ enum NotificationDeliveryStatus {
   DELIVERED
 }
 
+/// A normalized classification of why a send failed — the admin-facing
+/// deliveries view (and each pending-activation row) needs to tell "wait
+/// for the cap to reset" apart from "fix the address" apart from "we don't
+/// know, go look at the logs," which the raw vendor error alone doesn't
+/// reliably support (every provider phrases these differently, and some
+/// vendor error text could itself be unsafe to persist — see
+/// categorizeProviderError, notifications.service.ts). Null for a delivery
+/// that never failed (PENDING/SENT/DELIVERED) or predates this column.
+enum NotificationErrorCategory {
+  QUOTA_EXCEEDED
+  RATE_LIMITED
+  INVALID_RECIPIENT
+  PROVIDER_ERROR
+  UNKNOWN
+}
+
 model NotificationDelivery {
   id                  String                     @id @default(cuid())
   notificationEventId String
@@ -1278,7 +1328,11 @@ model NotificationDelivery {
   status              NotificationDeliveryStatus @default(PENDING)
   providerName        String?
   providerMessageId   String?
+  /// The vendor message, truncated to ~200 characters before it's ever
+  /// written — see categorizeProviderError's own comment on why the length
+  /// cap is enforced at write time, not just read time.
   error               String?
+  errorCategory       NotificationErrorCategory?
   attemptedAt         DateTime?
   deliveredAt         DateTime?
   createdAt           DateTime                   @default(now())

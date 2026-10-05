@@ -19,6 +19,7 @@ import { createAssessmentComponentSchema, createGradeBandSchema, createGradingSc
 import { createProgressSchema, idParamsSchema as madrassahIdParamsSchema } from "../modules/madrassah/madrassah.schemas.js";
 import {
   idParamsSchema as notificationsIdParamsSchema,
+  listDeliveriesQuerySchema,
   triggerFeeRemindersSchema,
 } from "../modules/notifications/notifications.schemas.js";
 import { createParentSchema, idParamsSchema as parentsIdParamsSchema, linkChildSchema, parentChildParamsSchema, updateParentSchema } from "../modules/parents/parents.schemas.js";
@@ -27,6 +28,7 @@ import {
   classTermParamsSchema as ratingsClassTermParamsSchema,
   createTraitSchema,
   idParamsSchema as ratingsIdParamsSchema,
+  updateTraitSchema,
 } from "../modules/ratings/ratings.schemas.js";
 import {
   classTermParamsSchema,
@@ -45,7 +47,7 @@ import { bulkUpsertScoresSchema, idParamsSchema as scoresIdParamsSchema, scoresF
 import { createStaffSchema, idParamsSchema as staffIdParamsSchema, updateStaffSchema } from "../modules/staff/staff.schemas.js";
 import { bulkUpdateStudentStatusSchema, createEnrollmentSchema, createStudentSchema, idParamsSchema as studentsIdParamsSchema, searchStudentsQuerySchema, transferStudentSchema, updateStudentSchema } from "../modules/students/students.schemas.js";
 import { createTimeSlotSchema, createTimetableEntrySchema, idParamsSchema as timetableIdParamsSchema } from "../modules/timetable/timetable.schemas.js";
-import { createUserSchema, userIdParamsSchema } from "../modules/users/users.schemas.js";
+import { createUserSchema, updateUserEmailSchema, userIdParamsSchema } from "../modules/users/users.schemas.js";
 import {
   AcademicSessionSchema,
   AdmissionEnquirySchema,
@@ -79,9 +81,11 @@ import {
   MadrassahProgressWithRelationsSchema,
   MarkAllNotificationsReadResultSchema,
   MeResponseSchema,
+  NotificationDeliveryListResponseSchema,
   NotificationEventSchema,
   NotificationEventWithDeliveriesSchema,
   ParentSchema,
+  PendingActivationUserSchema,
   FeesSummaryResponseSchema,
   PaymentDetailResponseSchema,
   PaymentHistoryRowSchema,
@@ -93,6 +97,7 @@ import {
   RatingScaleLevelSchema,
   RatingWithTraitSchema,
   ReceiptSchema,
+  ReissueCredentialsResultSchema,
   ResultListItemSchema,
   ResultSchema,
   ResultWithRatingsSchema,
@@ -102,6 +107,7 @@ import {
   ScoreSchema,
   ScoreSheetSchema,
   SessionResultWithSubjectAveragesSchema,
+  SetupStatusSchema,
   StaffSchema,
   StaffWithUserSchema,
   StudentParentSchema,
@@ -121,6 +127,7 @@ import {
   TimetableEntryForClassViewSchema,
   TimetableEntryForStaffViewSchema,
   TimetableEntrySchema,
+  UpdateUserEmailResultSchema,
   UserSummarySchema,
 } from "./resourceSchemas.js";
 
@@ -198,6 +205,19 @@ const SCOPE_NOTES = {
 /// asserts every inventory route has an entry here, so a new route without
 /// one fails the build the same way an unguarded one does.
 export const ROUTE_SPECS: Record<string, RouteSpec> = {
+  // --- admin (go-live readiness) --------------------------------------------
+  "GET /api/admin/setup-status": {
+    summary:
+      "ADMIN only — a read-only checklist of what's actually configured versus what a freshly " +
+      "reset database only looks configured for (see docs/go-live.md). Issues no writes. `ready` " +
+      "is true only when no check is FAIL — WARN never blocks. Checks run in dependency order " +
+      "(school, then session, then term, then anything needing a current session, ...) so the " +
+      "first FAIL is usually also the first thing to fix, but every check still runs and reports " +
+      "regardless — there's no short-circuiting. The same checklist backs `npm run preflight`, " +
+      "runnable against any DATABASE_URL (including production) outside this API entirely.",
+    responses: { 200: { description: "OK", schema: SetupStatusSchema } },
+  },
+
   // --- academic-structure --------------------------------------------------
   "POST /api/academic-sessions": {
     summary: "Create an academic session",
@@ -734,6 +754,17 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     requestBody: triggerFeeRemindersSchema,
     responses: { 200: { description: "OK", schema: z.array(NotificationEventSchema) } },
   },
+  "GET /api/notifications/deliveries": {
+    summary:
+      "ADMIN only — cross-user delivery visibility, newest first: who a notification went to, which " +
+      "channel, its status and (truncated) provider error, and per-status summary counts for the " +
+      "filtered window (type/channel/from/to — summary ignores the status filter itself, so filtering " +
+      "to FAILED doesn't collapse the summary to just that one number). Deliberately never returns a " +
+      "notification body, sensitive or not — see GET /api/notifications for the self-scoped, " +
+      "body-included equivalent.",
+    requestQuery: listDeliveriesQuerySchema,
+    responses: { 200: { description: "OK", schema: NotificationDeliveryListResponseSchema } },
+  },
 
   // --- parents --------------------------------------------------------------
   "GET /api/parents/me/children": {
@@ -802,6 +833,20 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     summary: "List affective/psychomotor traits for an academic session, both categories together",
     requestParams: ratingsIdParamsSchema,
     responses: { 200: { description: "OK", schema: z.array(TraitSchema) } },
+  },
+  "PATCH /api/traits/:id": {
+    summary: "Update a trait's category, name, or order",
+    requestParams: ratingsIdParamsSchema,
+    requestBody: updateTraitSchema,
+    responses: { 200: { description: "OK", schema: TraitSchema } },
+  },
+  "POST /api/traits/:id/deactivate": {
+    summary:
+      "Deactivate a trait — soft, not a delete: it can no longer be rated against " +
+      "(PUT /api/classes/:id/results/:termId/ratings rejects it), but ratings already recorded " +
+      "against it are untouched. Idempotent — deactivating an already-inactive trait is still a 200.",
+    requestParams: ratingsIdParamsSchema,
+    responses: { 200: { description: "OK", schema: TraitSchema } },
   },
   "GET /api/rating-scale": {
     summary: "List the fixed 5-point rating scale shared by both trait categories (static reference data)",
@@ -1170,6 +1215,14 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     requestParams: userIdParamsSchema,
     responses: { 200: { description: "OK", schema: UserSummarySchema } },
   },
+  "GET /api/users/pending-activation": {
+    summary:
+      "ADMIN only — the onboarding chase list: every active account still on mustChangePassword: " +
+      "true (never actually signed in), paired with its most recent CREDENTIALS_ISSUED email's " +
+      "delivery status. For a student-linked account the relevant email is the one sent to their " +
+      "primary-contact parent, not the student's own (non-existent) address.",
+    responses: { 200: { description: "OK", schema: z.array(PendingActivationUserSchema) } },
+  },
   "POST /api/users/:id/activate": {
     summary: "Reactivate a deactivated user account",
     requestParams: userIdParamsSchema,
@@ -1179,5 +1232,32 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     summary: "Deactivate a user account and revoke its live sessions",
     requestParams: userIdParamsSchema,
     responses: { 200: { description: "OK", schema: UserSummarySchema } },
+  },
+  "POST /api/users/:id/reissue-credentials": {
+    summary:
+      "ADMIN only — the general-purpose version of " +
+      "POST /api/students/:id/reissue-credentials (which now delegates to this same " +
+      "implementation): generates a fresh password (never admin-chosen), resets " +
+      "mustChangePassword to true, and revokes every live refresh token. Delivered to the " +
+      "account's own email for staff/parent/bare accounts (always present); for a " +
+      "student-linked account, to the primary-contact parent instead — temporaryPassword is only " +
+      "ever present in the response for that last case, when no such parent with an email exists.",
+    requestParams: userIdParamsSchema,
+    responses: { 200: { description: "OK", schema: ReissueCredentialsResultSchema } },
+  },
+  "PATCH /api/users/:id/email": {
+    summary:
+      "ADMIN only — changes an account's login email, treated as exactly as sensitive as a reissue " +
+      "(it effectively is one, to the new address): 409 if the new address collides with any " +
+      "existing email or loginId; for a parent or bare account, loginId is updated to match (they " +
+      "mirror each other — see User.loginId's own schema comment); staff keep their staffNumber as " +
+      "loginId, only their delivery email changes; a student-linked account is rejected outright " +
+      "(400) — students have no email of their own to change. Revokes every live refresh token, " +
+      "resets mustChangePassword, and delivers a fresh generated password to the NEW address " +
+      "(awaited, same as POST .../reissue-credentials). Also notifies the OLD address (EMAIL_CHANGED, " +
+      "also awaited) — a masked new address plus the school's contact details, never a secret.",
+    requestParams: userIdParamsSchema,
+    requestBody: updateUserEmailSchema,
+    responses: { 200: { description: "OK", schema: UpdateUserEmailResultSchema } },
   },
 };

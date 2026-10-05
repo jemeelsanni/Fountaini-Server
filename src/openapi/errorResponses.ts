@@ -3,6 +3,7 @@ import { MUST_CHANGE_PASSWORD_EXEMPT_ROUTES } from "../authorization/middleware.
 import type { DiscoveredRoute } from "../authorization/routeInventory.js";
 import {
   ConflictErrorSchema,
+  CredentialExpiredErrorSchema,
   ForbiddenErrorSchema,
   IncompleteRoleLinkErrorSchema,
   MustChangePasswordErrorSchema,
@@ -58,6 +59,8 @@ export const CONFLICT_ROUTE_KEYS: ReadonlySet<string> = new Set([
   "PATCH /api/assessment-components/:id",
   "DELETE /api/assessment-components/:id",
   "PATCH /api/grade-bands/:id",
+  "PATCH /api/traits/:id",
+  "PATCH /api/users/:id/email",
 ]);
 
 /// Routes whose service layer can throw AppError.paymentRequired(...) — see
@@ -89,6 +92,12 @@ const PUBLIC_BUT_CAN_401_ROUTE_KEYS: ReadonlySet<string> = new Set([
   "POST /api/auth/login",
   "POST /api/auth/refresh",
 ]);
+
+/// Login specifically can also 401 with CREDENTIAL_EXPIRED (correct
+/// credentials, but a server-generated password past its validity window)
+/// — a second, distinct 401 shape alongside UnauthorizedError, unioned in
+/// below rather than replacing it.
+const CREDENTIAL_EXPIRY_ROUTE_KEYS: ReadonlySet<string> = new Set(["POST /api/auth/login"]);
 
 function hasPathParam(path: string): boolean {
   return path.includes(":");
@@ -122,7 +131,14 @@ export function commonErrorResponses(
   }
 
   if (!isPublic || PUBLIC_BUT_CAN_401_ROUTE_KEYS.has(routeKey)) {
-    out[401] = { description: "Missing, invalid, or expired credentials", schema: UnauthorizedErrorSchema };
+    out[401] = CREDENTIAL_EXPIRY_ROUTE_KEYS.has(routeKey)
+      ? {
+          description:
+            "Missing, invalid, or expired credentials — OR, login only, correct credentials " +
+            "presented past their server-generated password's validity window (see CredentialExpiredError).",
+          schema: z.union([UnauthorizedErrorSchema, CredentialExpiredErrorSchema]),
+        }
+      : { description: "Missing, invalid, or expired credentials", schema: UnauthorizedErrorSchema };
   }
 
   // Every non-public route except GET /api/auth/me and

@@ -1,6 +1,6 @@
 import type { Request, Response } from "express";
 import * as usersService from "./users.service.js";
-import type { CreateUserBody, UserIdParams } from "./users.schemas.js";
+import type { CreateUserBody, UpdateUserEmailBody, UserIdParams } from "./users.schemas.js";
 
 export async function createUser(req: Request, res: Response): Promise<void> {
   const user = await usersService.createUser(req.body as CreateUserBody);
@@ -28,4 +28,19 @@ export async function deactivateUser(req: Request, res: Response): Promise<void>
   const { id } = req.params as unknown as UserIdParams;
   const user = await usersService.setUserActive(id, false);
   res.status(200).json(user);
+}
+
+export async function pendingActivation(_req: Request, res: Response): Promise<void> {
+  res.status(200).json(await usersService.listPendingActivation());
+}
+
+export async function reissueCredentials(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as unknown as UserIdParams;
+  res.status(200).json(await usersService.reissueCredentialsForUser(id));
+}
+
+export async function updateEmail(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as unknown as UserIdParams;
+  const { email } = req.body as UpdateUserEmailBody;
+  res.status(200).json(await usersService.updateUserEmail(id, email));
 }

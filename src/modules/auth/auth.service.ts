@@ -2,9 +2,10 @@ import { env } from "../../config/env.js";
 import { prisma } from "../../db/client.js";
 import { AppError } from "../../errors/AppError.js";
 import { createNotification } from "../notifications/notifications.service.js";
-import { resolvePrimaryContactParent } from "../students/students.service.js";
+import { resolvePrimaryContactParent } from "../users/users.service.js";
 import { type AccessTokenPayload, signAccessToken } from "./jwt.js";
-import { hashPassword, verifyPassword } from "./password.js";
+import { normalizeLoginIdentifier } from "./loginIdentifier.js";
+import { hashPassword, isTemporaryPasswordExpired, verifyPassword } from "./password.js";
 import { generateOpaqueToken, hashOpaqueToken } from "./tokens.js";
 
 const PASSWORD_RESET_TOKEN_TTL_MINUTES = 30;
@@ -32,7 +33,7 @@ interface LoginInput {
 /// case to guard against: loginId is `@unique`, so `findUnique` can only
 /// ever resolve to zero or one account by construction.
 function findUserByIdentifier(identifier: string) {
-  return prisma.user.findUnique({ where: { loginId: identifier } });
+  return prisma.user.findUnique({ where: { loginId: normalizeLoginIdentifier(identifier) } });
 }
 
 async function buildAccessTokenPayload(userId: string): Promise<AccessTokenPayload> {
@@ -119,6 +120,17 @@ export async function login(input: LoginInput): Promise<IssuedTokens> {
     throw AppError.unauthorized("Invalid identifier or password");
   }
 
+  // Checked only after the password is confirmed correct — telling an
+  // attacker who doesn't know the password "this one's expired" would leak
+  // account-state for free; only someone who already knows the right
+  // password reaches this branch at all.
+  if (isTemporaryPasswordExpired(user)) {
+    throw AppError.credentialExpired(
+      "This temporary password has expired. Ask an admin to reissue your credentials, or request a " +
+        "password reset yourself via POST /api/auth/forgot-password.",
+    );
+  }
+
   await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
 
   return issueTokenPair(user.id, input.ip, input.userAgent);
@@ -198,7 +210,11 @@ export async function changePassword(
   await prisma.$transaction([
     prisma.user.update({
       where: { id: userId },
-      data: { passwordHash: newHash, mustChangePassword: false },
+      // passwordIssuedAt cleared: this is now a password the owner chose
+      // themselves, not a server-generated one — see that column's own
+      // comment (schema.prisma) and isTemporaryPasswordExpired (password.ts),
+      // which never expires a null value regardless of mustChangePassword.
+      data: { passwordHash: newHash, mustChangePassword: false, passwordIssuedAt: null },
     }),
     prisma.refreshToken.updateMany({
       where: { userId, revokedAt: null },
@@ -264,6 +280,11 @@ export async function requestPasswordReset(identifier: string): Promise<void> {
     channels: ["EMAIL"],
     relatedEntityType: "PasswordResetToken",
     relatedEntityId: resetToken.id,
+    // The raw token is single-use and already hashed at rest in
+    // PasswordResetToken itself — persisting it a second time, in plaintext,
+    // in this notification's body would defeat that. See createNotification's
+    // own comment.
+    sensitive: true,
   });
 }
 
@@ -300,7 +321,19 @@ export async function resetPassword(rawToken: string, newPassword: string): Prom
 
   const newHash = await hashPassword(newPassword);
   await prisma.$transaction([
-    prisma.user.update({ where: { id: existing.userId }, data: { passwordHash: newHash } }),
+    // mustChangePassword: false and passwordIssuedAt: null, same as
+    // changePassword()'s own update — this IS the account holder choosing
+    // their own password, which is exactly what mustChangePassword exists
+    // to force in the first place. Previously left mustChangePassword
+    // untouched, which meant resetting via forgot-password — the recovery
+    // path CREDENTIAL_EXPIRED itself now names — didn't actually clear the
+    // flag it was meant to satisfy: a parent could reset, log in, and be
+    // routed straight back into change-password immediately after having
+    // just chosen one.
+    prisma.user.update({
+      where: { id: existing.userId },
+      data: { passwordHash: newHash, mustChangePassword: false, passwordIssuedAt: null },
+    }),
     prisma.refreshToken.updateMany({
       where: { userId: existing.userId, revokedAt: null },
       data: { revokedAt: new Date() },

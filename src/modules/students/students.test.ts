@@ -3,6 +3,7 @@ import request from "supertest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
+import { hashPassword } from "../auth/password.js";
 import {
   createAdmin,
   createAssignment,
@@ -288,10 +289,20 @@ describe("POST /api/students/:id/reissue-credentials", () => {
       .send({ studentId: student.id, relationship: "MOTHER", isPrimaryContact: true });
     expect(linkRes.status).toBe(201);
     const notification = await waitForNotification(parent.userId, "Student", student.id);
-    const temporaryPassword = /Temporary password: (\S+)\./.exec(notification?.body ?? "")?.[1];
-    expect(temporaryPassword, "the issuance notification must contain the temp password").toBeTruthy();
+    expect(notification, "the primary-contact link must fire an issuance notification").not.toBeNull();
+    // The issuance notification is `sensitive: true` (see
+    // notifications.service.ts's createNotification) — its persisted body
+    // is a fixed placeholder, not the real generated password, so it can no
+    // longer be read back out of it here. This sub-flow just needs *a*
+    // real, working login to later prove reissue revokes it — overwrite the
+    // password hash to a known value directly instead.
+    const temporaryPassword = "Known-Test-Password-123!";
     const issued = await prisma.student.findUniqueOrThrow({ where: { id: student.id } });
-    return { adminToken, student: issued, parent, temporaryPassword: temporaryPassword! };
+    await prisma.user.update({
+      where: { id: issued.userId! },
+      data: { passwordHash: await hashPassword(temporaryPassword) },
+    });
+    return { adminToken, student: issued, parent, temporaryPassword };
   }
 
   it("rejects with 409 when the student has no login yet", async () => {

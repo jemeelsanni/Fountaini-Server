@@ -15,8 +15,12 @@ export type ParentChildParams = z.infer<typeof parentChildParamsSchema>;
 // there's no window where a PARENT-role account exists without its Parent
 // record (see auth.service.ts's buildAccessTokenPayload for the boundary
 // check on that invariant).
+// .trim() before .email(): a leading/trailing space otherwise fails the
+// format check outright, before normalizeEmail() (auth/loginIdentifier.ts)
+// — the service layer's own lowercase+trim — ever gets a chance to clean
+// it up. Lowercasing stays there alone; no need to duplicate it here too.
 export const createParentSchema = z.object({
-  email: z.string().email(),
+  email: z.string().trim().email(),
   firstName: z.string().min(1),
   lastName: z.string().min(1),
   phone: z.string().min(1).optional(),

@@ -3,6 +3,7 @@ import { logger } from "../../config/logger.js";
 import { prisma } from "../../db/client.js";
 import { AppError } from "../../errors/AppError.js";
 import { fireAndForget } from "../../lib/fireAndForget.js";
+import { normalizeEmail } from "../auth/loginIdentifier.js";
 import { generateTemporaryPassword, hashPassword } from "../auth/password.js";
 import { createNotification, suppressCredentialNotifications } from "../notifications/notifications.service.js";
 import { issueFirstLoginForStudent } from "../students/students.service.js";
@@ -32,6 +33,7 @@ function deliverParentCredentials(parent: { id: string; userId: string }, email:
       channels: ["EMAIL"],
       relatedEntityType: "Parent",
       relatedEntityId: parent.id,
+      sensitive: true,
     }),
     (err) => logger.error({ err, email }, "Failed to send parent credential notification"),
   );
@@ -46,6 +48,7 @@ function deliverParentCredentials(parent: { id: string; userId: string }, email:
 /// auth.service.ts's buildAccessTokenPayload for the boundary check this
 /// closes off going forward, not just retroactively).
 export async function createParent(input: CreateParentBody) {
+  const email = normalizeEmail(input.email);
   const temporaryPassword = generateTemporaryPassword();
   const passwordHash = await hashPassword(temporaryPassword);
 
@@ -54,10 +57,11 @@ export async function createParent(input: CreateParentBody) {
     parent = await prisma.$transaction(async (tx) => {
       const user = await tx.user.create({
         data: {
-          loginId: input.email,
-          email: input.email,
+          loginId: email,
+          email,
           passwordHash,
           mustChangePassword: true,
+          passwordIssuedAt: new Date(),
           roles: { create: [{ role: "PARENT" }] },
         },
       });
@@ -79,7 +83,7 @@ export async function createParent(input: CreateParentBody) {
     throw err;
   }
 
-  deliverParentCredentials(parent, input.email, temporaryPassword);
+  deliverParentCredentials(parent, email, temporaryPassword);
   return parent;
 }
 
