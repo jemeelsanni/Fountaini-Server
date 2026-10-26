@@ -90,9 +90,28 @@ export async function createParent(input: CreateParentBody) {
 /// How long a soft-deleted Parent stays restorable before
 /// purgeDeletedParents removes it for good.
 export const PARENT_PURGE_AFTER_DAYS = 30;
+const PARENT_PURGE_AFTER_MS = PARENT_PURGE_AFTER_DAYS * 24 * 60 * 60 * 1000;
 
 export function listParents() {
   return prisma.parent.findMany({ where: { deletedAt: null }, orderBy: [{ lastName: "asc" }, { firstName: "asc" }] });
+}
+
+/// The admin's view of the restore window: every soft-deleted Parent still
+/// awaiting purge, most recently deleted first, with the date
+/// purgeDeletedParents will remove it — the only way to find a parent to
+/// pass to restoreParent, since every other parent read excludes them.
+export async function listDeletedParents() {
+  const parents = await prisma.parent.findMany({
+    where: { deletedAt: { not: null } },
+    orderBy: { deletedAt: "desc" },
+  });
+  // flatMap with a real null check rather than a non-null assertion: the
+  // where clause guarantees deletedAt is set, but the compiler can't see
+  // that, and this keeps deletedAt typed as Date (not Date | null) in the
+  // response, matching DeletedParentSchema.
+  return parents.flatMap(({ deletedAt, ...parent }) =>
+    deletedAt ? [{ ...parent, deletedAt, purgeAt: new Date(deletedAt.getTime() + PARENT_PURGE_AFTER_MS) }] : [],
+  );
 }
 
 export async function getParentById(id: string) {
@@ -266,7 +285,7 @@ export async function restoreParent(parentId: string) {
 /// (deactivated, or still a staff member) because NotificationEvent and
 /// AuditLog reference it without a cascade.
 export async function purgeDeletedParents(now = new Date()) {
-  const cutoff = new Date(now.getTime() - PARENT_PURGE_AFTER_DAYS * 24 * 60 * 60 * 1000);
+  const cutoff = new Date(now.getTime() - PARENT_PURGE_AFTER_MS);
   const { count } = await prisma.parent.deleteMany({ where: { deletedAt: { lt: cutoff } } });
   return { purged: count, cutoff };
 }

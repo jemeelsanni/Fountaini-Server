@@ -18,6 +18,10 @@ export async function listParents(_req: Request, res: Response): Promise<void> {
   res.status(200).json(await service.listParents());
 }
 
+export async function listDeletedParents(_req: Request, res: Response): Promise<void> {
+  res.status(200).json(await service.listDeletedParents());
+}
+
 export async function getParent(req: Request, res: Response): Promise<void> {
   const { id } = req.params as unknown as IdParams;
   res.status(200).json(await service.getParentById(id));

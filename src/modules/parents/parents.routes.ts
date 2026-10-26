@@ -31,6 +31,8 @@ parentsRouter.post(
   controller.createParent,
 );
 parentsRouter.get("/", requireRole("ADMIN"), controller.listParents);
+// Must be registered before "/:id", same as "/me/children" above.
+parentsRouter.get("/deleted", requireRole("ADMIN"), controller.listDeletedParents);
 parentsRouter.get(
   "/:id",
   requireRole("ADMIN"),
