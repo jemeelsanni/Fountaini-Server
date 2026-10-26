@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { requireAuth, requireRole, requireScope } from "../../authorization/middleware.js";
 import { canReadParent } from "../../authorization/scopeResolvers.js";
+import { prisma } from "../../db/client.js";
 import { auditMutation } from "../../http/middleware/auditMutation.js";
 import { validate } from "../../http/middleware/validate.js";
 import * as controller from "./parents.controller.js";
@@ -14,6 +15,8 @@ import {
 } from "./parents.schemas.js";
 
 export const parentsRouter = Router();
+
+const fetchParentBefore = (id: string) => prisma.parent.findUnique({ where: { id } });
 
 parentsRouter.use(requireAuth);
 
@@ -44,6 +47,23 @@ parentsRouter.patch(
   validate({ params: idParamsSchema, body: updateParentSchema }),
   auditMutation("Parent", "PARENT_UPDATED"),
   controller.updateParent,
+);
+// Soft delete — unlinks every child immediately and is restorable via
+// POST /:id/restore until purgeDeletedParents removes it for good (see
+// parents.service.ts's deleteParent).
+parentsRouter.delete(
+  "/:id",
+  requireRole("ADMIN"),
+  validate({ params: idParamsSchema }),
+  auditMutation("Parent", "PARENT_DELETED", { fetchBefore: fetchParentBefore }),
+  controller.deleteParent,
+);
+parentsRouter.post(
+  "/:id/restore",
+  requireRole("ADMIN"),
+  validate({ params: idParamsSchema }),
+  auditMutation("Parent", "PARENT_RESTORED", { fetchBefore: fetchParentBefore }),
+  controller.restoreParent,
 );
 parentsRouter.get(
   "/:id/children",

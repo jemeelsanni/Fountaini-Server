@@ -208,12 +208,20 @@ model Parent {
   phone          String?
   alternatePhone String?
   address        String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  /// Soft delete (DELETE /api/parents/:id): set together with removing
+  /// every StudentParent link and the User's PARENT role, so nothing that
+  /// reads through links or roles needs to know this column exists — only
+  /// direct Parent reads do (parents.service.ts, buildAccessTokenPayload).
+  /// Restorable until purgeDeletedParents removes the row for good, after
+  /// PARENT_PURGE_AFTER_DAYS.
+  deletedAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   students StudentParent[]
 
   @@index([lastName, firstName])
+  @@index([deletedAt])
 }
 
 enum StudentStatus {

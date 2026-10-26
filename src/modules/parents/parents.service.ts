@@ -87,12 +87,16 @@ export async function createParent(input: CreateParentBody) {
   return parent;
 }
 
+/// How long a soft-deleted Parent stays restorable before
+/// purgeDeletedParents removes it for good.
+export const PARENT_PURGE_AFTER_DAYS = 30;
+
 export function listParents() {
-  return prisma.parent.findMany({ orderBy: [{ lastName: "asc" }, { firstName: "asc" }] });
+  return prisma.parent.findMany({ where: { deletedAt: null }, orderBy: [{ lastName: "asc" }, { firstName: "asc" }] });
 }
 
 export async function getParentById(id: string) {
-  const parent = await prisma.parent.findUnique({ where: { id } });
+  const parent = await prisma.parent.findUnique({ where: { id, deletedAt: null } });
   if (!parent) {
     throw AppError.notFound("Parent not found");
   }
@@ -106,7 +110,7 @@ export async function getParentById(id: string) {
 /// request body. Login email/loginId is never touched here — see
 /// parents.routes.ts's route comment on why that's a separate concern.
 export async function updateParent(id: string, input: UpdateParentBody) {
-  const parent = await prisma.parent.findUnique({ where: { id } });
+  const parent = await prisma.parent.findUnique({ where: { id, deletedAt: null } });
   if (!parent) {
     throw AppError.notFound("Parent not found");
   }
@@ -115,7 +119,10 @@ export async function updateParent(id: string, input: UpdateParentBody) {
 
 export async function linkChild(parentId: string, input: LinkChildBody) {
   const [parent, student] = await Promise.all([
-    prisma.parent.findUnique({ where: { id: parentId }, include: { user: { select: { email: true } } } }),
+    prisma.parent.findUnique({
+      where: { id: parentId, deletedAt: null },
+      include: { user: { select: { email: true } } },
+    }),
     prisma.student.findUnique({ where: { id: input.studentId } }),
   ]);
   if (!parent) throw AppError.notFound("Parent not found");
@@ -190,4 +197,76 @@ export function listChildrenForParent(parentId: string) {
     where: { parentId },
     include: { student: true },
   });
+}
+
+/// Soft delete, in one transaction: stamps deletedAt, unlinks every child,
+/// and removes the PARENT role. Unlinking and the role removal are what
+/// actually cut the parent off — every scope resolver, fee/result
+/// notification and primary-contact lookup reads through StudentParent
+/// links or the PARENT role, so none of them needs a deletedAt filter of
+/// its own. Unlinking is not undone by restoreParent: an admin relinks
+/// children explicitly, the same as for any new parent.
+///
+/// Never just the Parent row: a User still holding PARENT with no live
+/// Parent record is rejected by buildAccessTokenPayload (auth.service.ts) at
+/// every token issuance — for a staff-parent that would lock them out of
+/// their staff access too. A User left with no roles at all is deactivated
+/// (it could no longer log in anyway); refresh tokens are revoked either
+/// way, since every live token still carries this parentId and PARENT.
+export async function deleteParent(parentId: string) {
+  await prisma.$transaction(async (tx) => {
+    // updateMany rather than findUnique-then-update, same reasoning as
+    // unlinkChild: a concurrent delete of the same parent becomes a clean
+    // 404 instead of a double-stamp.
+    const { count } = await tx.parent.updateMany({
+      where: { id: parentId, deletedAt: null },
+      data: { deletedAt: new Date() },
+    });
+    if (count === 0) {
+      throw AppError.notFound("Parent not found");
+    }
+    const { userId } = await tx.parent.findUniqueOrThrow({ where: { id: parentId }, select: { userId: true } });
+
+    await tx.studentParent.deleteMany({ where: { parentId } });
+    await tx.userRole.deleteMany({ where: { userId, role: "PARENT" } });
+    if ((await tx.userRole.count({ where: { userId } })) === 0) {
+      await tx.user.update({ where: { id: userId }, data: { isActive: false } });
+    }
+    await tx.refreshToken.updateMany({
+      where: { userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+  });
+}
+
+/// Undoes deleteParent within the PARENT_PURGE_AFTER_DAYS window: clears
+/// deletedAt, gives back the PARENT role, and reactivates the User. Child
+/// links are NOT restored (see deleteParent) — the restored parent starts
+/// with no children until an admin relinks them.
+export async function restoreParent(parentId: string) {
+  return prisma.$transaction(async (tx) => {
+    const parent = await tx.parent.findUnique({ where: { id: parentId } });
+    if (!parent || !parent.deletedAt) {
+      throw AppError.notFound("No deleted parent with this id");
+    }
+    await tx.userRole.upsert({
+      where: { userId_role: { userId: parent.userId, role: "PARENT" } },
+      create: { userId: parent.userId, role: "PARENT" },
+      update: {},
+    });
+    await tx.user.update({ where: { id: parent.userId }, data: { isActive: true } });
+    return tx.parent.update({ where: { id: parentId }, data: { deletedAt: null } });
+  });
+}
+
+/// Permanently removes every Parent soft-deleted more than
+/// PARENT_PURGE_AFTER_DAYS ago. Run on a schedule by
+/// scripts/purgeDeletedParents.ts. Only the Parent row goes — its links and
+/// PARENT role were already removed at soft-delete time, and the User stays
+/// (deactivated, or still a staff member) because NotificationEvent and
+/// AuditLog reference it without a cascade.
+export async function purgeDeletedParents(now = new Date()) {
+  const cutoff = new Date(now.getTime() - PARENT_PURGE_AFTER_DAYS * 24 * 60 * 60 * 1000);
+  const { count } = await prisma.parent.deleteMany({ where: { deletedAt: { lt: cutoff } } });
+  return { purged: count, cutoff };
 }

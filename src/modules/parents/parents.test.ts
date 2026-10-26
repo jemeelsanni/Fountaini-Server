@@ -6,6 +6,7 @@ import { prisma } from "../../db/client.js";
 import { createAdmin, createBareStudent, createParent, createStaffParent, createTeacher } from "../../test/factories.js";
 import { resetDb } from "../../test/resetDb.js";
 import { waitForNotification } from "../../test/waitForNotification.js";
+import { PARENT_PURGE_AFTER_DAYS, purgeDeletedParents } from "./parents.service.js";
 
 const app = createApp();
 let server: Server;
@@ -187,6 +188,144 @@ describe("PATCH /api/parents/:id", () => {
       .send({ firstName: "X" });
 
     expect(res.status).toBe(403);
+  });
+});
+
+describe("DELETE /api/parents/:id (soft delete)", () => {
+  it("stamps deletedAt, unlinks every child, removes PARENT, and deactivates a parent-only account", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const { user, parent } = await createParent("parent@test.local");
+    const child = await createBareStudent("ADM-801");
+    await prisma.studentParent.create({
+      data: { parentId: parent.id, studentId: child.id, relationship: "MOTHER" },
+    });
+
+    const res = await request(server).delete(`/api/parents/${parent.id}`).set("Authorization", `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(204);
+    const row = await prisma.parent.findUniqueOrThrow({ where: { id: parent.id } });
+    expect(row.deletedAt).not.toBeNull();
+    expect(await prisma.studentParent.count({ where: { parentId: parent.id } })).toBe(0);
+    expect(await prisma.student.findUnique({ where: { id: child.id } })).not.toBeNull();
+    expect(await prisma.userRole.count({ where: { userId: user.id } })).toBe(0);
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: user.id } })).isActive).toBe(false);
+  });
+
+  it("hides a soft-deleted parent from list, get, update, and linking", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const { parent } = await createParent("parent@test.local");
+    const child = await createBareStudent("ADM-802");
+    await request(server).delete(`/api/parents/${parent.id}`).set("Authorization", `Bearer ${adminToken}`);
+
+    const list = await request(server).get("/api/parents").set("Authorization", `Bearer ${adminToken}`);
+    expect(list.body.map((p: { id: string }) => p.id)).not.toContain(parent.id);
+
+    const auth = { Authorization: `Bearer ${adminToken}` };
+    expect((await request(server).get(`/api/parents/${parent.id}`).set(auth)).status).toBe(404);
+    expect((await request(server).patch(`/api/parents/${parent.id}`).set(auth).send({ firstName: "X" })).status).toBe(
+      404,
+    );
+    const link = await request(server)
+      .post(`/api/parents/${parent.id}/children`)
+      .set(auth)
+      .send({ studentId: child.id, relationship: "MOTHER" });
+    expect(link.status).toBe(404);
+    expect((await request(server).delete(`/api/parents/${parent.id}`).set(auth)).status).toBe(404);
+  });
+
+  it("leaves a staff-parent able to log in with their staff role — only PARENT is removed", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const staffParent = await createStaffParent("staff-parent@test.local");
+
+    const res = await request(server)
+      .delete(`/api/parents/${staffParent.parent.id}`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(204);
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: staffParent.user.id }, include: { roles: true } });
+    expect(user.isActive).toBe(true);
+    expect(user.roles.map((r) => r.role)).toEqual(["TEACHER"]);
+
+    const login = await request(server)
+      .post("/api/auth/login")
+      .send({ identifier: user.loginId, password: "password-123456" });
+    expect(login.status).toBe(200);
+  });
+
+  it("404s for a non-existent parent", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const res = await request(server).delete("/api/parents/does-not-exist").set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects a non-admin caller", async () => {
+    const { parent } = await createParent("parent@test.local");
+    const { token: teacherToken } = await createTeacher("teacher@test.local");
+
+    const res = await request(server).delete(`/api/parents/${parent.id}`).set("Authorization", `Bearer ${teacherToken}`);
+
+    expect(res.status).toBe(403);
+    expect((await prisma.parent.findUniqueOrThrow({ where: { id: parent.id } })).deletedAt).toBeNull();
+  });
+});
+
+describe("POST /api/parents/:id/restore", () => {
+  it("clears deletedAt, gives back PARENT, and reactivates the account — children stay unlinked", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const { user, parent } = await createParent("parent@test.local");
+    const child = await createBareStudent("ADM-803");
+    await prisma.studentParent.create({
+      data: { parentId: parent.id, studentId: child.id, relationship: "FATHER" },
+    });
+    await request(server).delete(`/api/parents/${parent.id}`).set("Authorization", `Bearer ${adminToken}`);
+
+    const res = await request(server)
+      .post(`/api/parents/${parent.id}/restore`)
+      .set("Authorization", `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.deletedAt).toBeNull();
+    const restored = await prisma.user.findUniqueOrThrow({ where: { id: user.id }, include: { roles: true } });
+    expect(restored.isActive).toBe(true);
+    expect(restored.roles.map((r) => r.role)).toEqual(["PARENT"]);
+    expect(await prisma.studentParent.count({ where: { parentId: parent.id } })).toBe(0);
+  });
+
+  it("404s for a parent that isn't deleted", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const { parent } = await createParent("parent@test.local");
+
+    const res = await request(server)
+      .post(`/api/parents/${parent.id}/restore`)
+      .set("Authorization", `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("purgeDeletedParents", () => {
+  it("removes only parents soft-deleted more than PARENT_PURGE_AFTER_DAYS ago, keeping their User", async () => {
+    const day = 24 * 60 * 60 * 1000;
+    const now = new Date();
+    const old = await createParent("old@test.local");
+    const recent = await createParent("recent@test.local");
+    const live = await createParent("live@test.local");
+    await prisma.parent.update({
+      where: { id: old.parent.id },
+      data: { deletedAt: new Date(now.getTime() - (PARENT_PURGE_AFTER_DAYS + 1) * day) },
+    });
+    await prisma.parent.update({
+      where: { id: recent.parent.id },
+      data: { deletedAt: new Date(now.getTime() - (PARENT_PURGE_AFTER_DAYS - 1) * day) },
+    });
+
+    const { purged } = await purgeDeletedParents(now);
+
+    expect(purged).toBe(1);
+    expect(await prisma.parent.findUnique({ where: { id: old.parent.id } })).toBeNull();
+    expect(await prisma.user.findUnique({ where: { id: old.user.id } })).not.toBeNull();
+    expect(await prisma.parent.findUnique({ where: { id: recent.parent.id } })).not.toBeNull();
+    expect(await prisma.parent.findUnique({ where: { id: live.parent.id } })).not.toBeNull();
   });
 });
 

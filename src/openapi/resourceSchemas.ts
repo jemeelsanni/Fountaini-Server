@@ -202,6 +202,7 @@ export const ParentSchema = z
     phone: z.string().nullable(),
     alternatePhone: z.string().nullable(),
     address: z.string().nullable(),
+    deletedAt: isoDateTime().nullable(),
     createdAt: isoDateTime(),
     updatedAt: isoDateTime(),
   })

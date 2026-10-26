@@ -799,6 +799,23 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     requestBody: updateParentSchema,
     responses: { 200: { description: "OK", schema: ParentSchema } },
   },
+  "DELETE /api/parents/:id": {
+    summary:
+      "Soft-delete a parent: unlinks every child immediately, removes the PARENT role, revokes their " +
+      "sessions, and deactivates the account if PARENT was its only role (a staff-parent keeps their " +
+      "staff access). Hidden from every parent endpoint from then on, restorable via " +
+      "POST /api/parents/:id/restore, and permanently removed after 30 days.",
+    requestParams: parentsIdParamsSchema,
+    responses: { 204: noContent },
+  },
+  "POST /api/parents/:id/restore": {
+    summary:
+      "Restore a soft-deleted parent within the 30-day window: gives back the PARENT role and " +
+      "reactivates the account. Children are not relinked — link them again via " +
+      "POST /api/parents/:id/children.",
+    requestParams: parentsIdParamsSchema,
+    responses: { 200: { description: "OK", schema: ParentSchema } },
+  },
   "GET /api/parents/:id/children": {
     summary: "List a parent's linked children",
     requestParams: parentsIdParamsSchema,

@@ -24,6 +24,7 @@
     "generate:openapi": "tsx scripts/generateOpenApiJson.ts",
     "preflight": "tsx scripts/preflight.ts",
     "db:assert-empty": "tsx scripts/assertDbEmpty.ts",
+    "purge:parents": "tsx scripts/purgeDeletedParents.ts",
     "db:reset": "npm run db:assert-empty -- --allow-demo-only && prisma migrate reset --force"
   },
   "dependencies": {

@@ -294,6 +294,9 @@ This section covers what's specific to Railway. Everything in
 just needs a few of them set to particular kinds of values, and a couple of
 its own dashboard settings configured correctly.
 
+For the separate staging environment (its own branch, database, and
+secrets), see [`docs/staging.md`](docs/staging.md).
+
 ### Build: Docker, not Nixpacks
 
 `railway.json` sets `build.builder` to `DOCKERFILE`, which makes Railway

@@ -45,6 +45,17 @@ export async function unlinkChild(req: Request, res: Response): Promise<void> {
   res.status(204).send();
 }
 
+export async function deleteParent(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as unknown as IdParams;
+  await service.deleteParent(id);
+  res.status(204).send();
+}
+
+export async function restoreParent(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as unknown as IdParams;
+  res.status(200).json(await service.restoreParent(id));
+}
+
 export async function listMyChildren(req: Request, res: Response): Promise<void> {
   if (!req.principal?.parentId) {
     throw AppError.forbidden("This account is not linked to a parent profile");
