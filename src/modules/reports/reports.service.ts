@@ -65,6 +65,7 @@ export async function getDefaultersReport(filter: ScopedReportQuery) {
     JOIN "Student" s ON s.id = so."studentId"
     JOIN "Class" cls ON cls.id = so."classId"
     WHERE so."outstandingKobo" > 0
+      AND s."deletedAt" IS NULL
     ORDER BY cls."order", s."lastName", s."firstName"
   `;
 

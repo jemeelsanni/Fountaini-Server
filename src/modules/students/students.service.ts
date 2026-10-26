@@ -45,7 +45,7 @@ export async function issueFirstLoginForStudent(
   recipientParent: { userId: string; user: { email: string | null } },
 ): Promise<void> {
   try {
-    const student = await prisma.student.findUnique({ where: { id: studentId } });
+    const student = await prisma.student.findUnique({ where: { id: studentId, deletedAt: null } });
     if (!student || student.userId) {
       return;
     }
@@ -139,7 +139,7 @@ export async function issueFirstLoginForStudent(
 /// calls (see reissueCredentialsForUser, users.service.ts), not a second
 /// copy of it.
 export async function reissueCredentialsForStudent(studentId: string) {
-  const student = await prisma.student.findUnique({ where: { id: studentId } });
+  const student = await prisma.student.findUnique({ where: { id: studentId, deletedAt: null } });
   if (!student) {
     throw AppError.notFound("Student not found");
   }
@@ -188,7 +188,7 @@ export async function createStudent(input: CreateStudentBody) {
 }
 
 export function listStudents() {
-  return prisma.student.findMany({ orderBy: [{ lastName: "asc" }, { firstName: "asc" }] });
+  return prisma.student.findMany({ where: { deletedAt: null }, orderBy: [{ lastName: "asc" }, { firstName: "asc" }] });
 }
 
 export interface StudentSearchResult {
@@ -270,6 +270,7 @@ export async function searchStudents(query: SearchStudentsQuery): Promise<Studen
       OR s."lastName" ILIKE ${containsPattern}
       OR s."otherNames" ILIKE ${containsPattern}
     )
+    AND s."deletedAt" IS NULL
     ${statusClause}
     ORDER BY
       CASE
@@ -300,7 +301,7 @@ export async function searchStudents(query: SearchStudentsQuery): Promise<Studen
 }
 
 export async function getStudentById(id: string) {
-  const student = await prisma.student.findUnique({ where: { id } });
+  const student = await prisma.student.findUnique({ where: { id, deletedAt: null } });
   if (!student) {
     throw AppError.notFound("Student not found");
   }
@@ -342,7 +343,7 @@ async function closeActiveEnrollments(
 }
 
 export async function updateStudent(id: string, input: UpdateStudentBody, actorUserId: string) {
-  const student = await prisma.student.findUnique({ where: { id } });
+  const student = await prisma.student.findUnique({ where: { id, deletedAt: null } });
   if (!student) {
     throw AppError.notFound("Student not found");
   }
@@ -400,7 +401,7 @@ export async function bulkUpdateStudentStatus(
   actorUserId: string,
   actorRoles: Role[],
 ): Promise<{ updated: string[]; failed: { id: string; message: string }[] }> {
-  const existing = await prisma.student.findMany({ where: { id: { in: input.ids } } });
+  const existing = await prisma.student.findMany({ where: { id: { in: input.ids }, deletedAt: null } });
   const existingById = new Map(existing.map((s) => [s.id, s]));
   const closingStatus = ENROLLMENT_CLOSING_STATUS[input.status];
 
@@ -446,7 +447,7 @@ export async function bulkUpdateStudentStatus(
 
 export async function createEnrollment(studentId: string, input: CreateEnrollmentBody) {
   const [student, klass, session] = await Promise.all([
-    prisma.student.findUnique({ where: { id: studentId } }),
+    prisma.student.findUnique({ where: { id: studentId, deletedAt: null } }),
     prisma.class.findUnique({ where: { id: input.classId } }),
     prisma.academicSession.findUnique({ where: { id: input.academicSessionId } }),
   ]);
@@ -498,7 +499,7 @@ export async function createEnrollment(studentId: string, input: CreateEnrollmen
 /// engineer around here. That's a fairness question for the school to
 /// weigh, not a bug.
 export async function transferStudent(studentId: string, newClassId: string) {
-  const student = await prisma.student.findUnique({ where: { id: studentId } });
+  const student = await prisma.student.findUnique({ where: { id: studentId, deletedAt: null } });
   if (!student) {
     throw AppError.notFound("Student not found");
   }
@@ -542,5 +543,114 @@ export function listEnrollmentsForStudent(studentId: string) {
     where: { studentId },
     include: { class: true, academicSession: true },
     orderBy: { createdAt: "desc" },
+  });
+}
+
+/// Counts of every record type that makes a student "real" rather than a
+/// creation mistake — deleteStudent refuses (409) if any is non-zero.
+/// Enrollments, parent links and QR codes deliberately aren't here: a
+/// mistaken student may well have been enrolled or linked already, and
+/// none of those is history worth keeping. Payments need no count of their
+/// own — every Payment hangs off a FeeObligation.
+async function countStudentRecords(tx: Prisma.TransactionClient, studentId: string) {
+  const where = { studentId };
+  const [feeObligations, scores, subjectResults, results, sessionResults, ratings, madrassahProgress, attendance] =
+    await Promise.all([
+      tx.feeObligation.count({ where }),
+      tx.score.count({ where }),
+      tx.subjectResult.count({ where }),
+      tx.result.count({ where }),
+      tx.sessionResult.count({ where }),
+      tx.rating.count({ where }),
+      tx.madrassahProgress.count({ where }),
+      tx.attendanceRecord.count({ where }),
+    ]);
+  return { feeObligations, scores, subjectResults, results, sessionResults, ratings, madrassahProgress, attendance };
+}
+
+/// Soft delete for a student created by mistake — only allowed while they
+/// have no academic or financial record at all (countStudentRecords); a
+/// student with any history gets a 409 pointing at status WITHDRAWN, which
+/// is the right tool for a student who actually left. Never purged. What
+/// it changes:
+///   - closes every ACTIVE enrollment as WITHDRAWN, closedAt = deletedAt —
+///     the same effect as setting status WITHDRAWN (off rosters, score
+///     sheets, attendance scanning and billing), and the shared timestamp
+///     is how restoreStudent finds exactly these enrollments again;
+///   - unlinks every parent, so no parent sees the child or is notified
+///     about them — the routes file's fetchBefore keeps the links in the
+///     audit log for an admin relinking after a restore;
+///   - deactivates the student's login, if they have one, and revokes its
+///     sessions.
+/// The student's own status is left as-is, so a restore brings it back
+/// unchanged.
+export async function deleteStudent(studentId: string, actorUserId: string) {
+  const deletedAt = new Date();
+  await prisma.$transaction(async (tx) => {
+    const exists = await tx.student.findUnique({ where: { id: studentId, deletedAt: null }, select: { id: true } });
+    if (!exists) {
+      throw AppError.notFound("Student not found");
+    }
+    const records = Object.entries(await countStudentRecords(tx, studentId)).filter(([, count]) => count > 0);
+    if (records.length > 0) {
+      throw AppError.conflict(
+        `This student has records (${records.map(([type, count]) => `${type}: ${count}`).join(", ")}) and ` +
+          "can't be deleted — only a student created by mistake can. Set their status to WITHDRAWN instead.",
+      );
+    }
+
+    // updateMany, same reasoning as parents.service.ts's deleteParent: a
+    // concurrent delete of the same student becomes a clean 404.
+    const { count } = await tx.student.updateMany({
+      where: { id: studentId, deletedAt: null },
+      data: { deletedAt },
+    });
+    if (count === 0) {
+      throw AppError.notFound("Student not found");
+    }
+    const { userId } = await tx.student.findUniqueOrThrow({ where: { id: studentId }, select: { userId: true } });
+
+    await tx.enrollment.updateMany({
+      where: { studentId, status: "ACTIVE" },
+      data: { status: "WITHDRAWN", closedAt: deletedAt, closedByUserId: actorUserId },
+    });
+    await tx.studentParent.deleteMany({ where: { studentId } });
+    if (userId) {
+      await tx.user.update({ where: { id: userId }, data: { isActive: false } });
+      await tx.refreshToken.updateMany({
+        where: { userId, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+    }
+  });
+}
+
+/// Every soft-deleted student, most recently deleted first — the only way
+/// for an admin to find one to restore, since every other student read
+/// excludes them.
+export function listDeletedStudents() {
+  return prisma.student.findMany({ where: { deletedAt: { not: null } }, orderBy: { deletedAt: "desc" } });
+}
+
+/// Undoes deleteStudent: clears deletedAt, reopens exactly the enrollments
+/// the delete closed (matched by closedAt = deletedAt — never one an admin
+/// withdrew separately), and reactivates the login. Reopening matters,
+/// not just convenience: Enrollment is unique per (student, session), so
+/// without it the student could never be enrolled again in a session they
+/// were deleted during. Parents are NOT relinked — see deleteStudent.
+export async function restoreStudent(studentId: string) {
+  return prisma.$transaction(async (tx) => {
+    const student = await tx.student.findUnique({ where: { id: studentId } });
+    if (!student?.deletedAt) {
+      throw AppError.notFound("No deleted student with this id");
+    }
+    await tx.enrollment.updateMany({
+      where: { studentId, status: "WITHDRAWN", closedAt: student.deletedAt },
+      data: { status: "ACTIVE", closedAt: null, closedByUserId: null },
+    });
+    if (student.userId) {
+      await tx.user.update({ where: { id: student.userId }, data: { isActive: true } });
+    }
+    return tx.student.update({ where: { id: studentId }, data: { deletedAt: null } });
   });
 }

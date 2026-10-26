@@ -737,7 +737,7 @@ interface StatementFilter {
 /// as a printable document without a second request.
 export async function getStudentStatement(studentId: string, filter: StatementFilter) {
   const student = await prisma.student.findUnique({
-    where: { id: studentId },
+    where: { id: studentId, deletedAt: null },
     select: { id: true, firstName: true, lastName: true, admissionNumber: true },
   });
   if (!student) {

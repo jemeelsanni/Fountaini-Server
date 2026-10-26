@@ -794,3 +794,126 @@ describe("GET /api/students/search", () => {
     ]);
   });
 });
+
+describe("DELETE /api/students/:id (soft delete)", () => {
+  async function seedDeletableStudent() {
+    const { user: adminUser, token: adminToken } = await createAdmin("admin@test.local");
+    const session = await createCurrentAcademicSession("2026/2027");
+    const klass = await createClass("JSS1", "A");
+    const { user, student } = await createStudentWithLogin("student@test.local", "FIA/2026/101");
+    await enrollStudent(student.id, klass.id, session.id);
+    const { parent } = await createParent("parent@test.local");
+    await prisma.studentParent.create({
+      data: { parentId: parent.id, studentId: student.id, relationship: "MOTHER", isPrimaryContact: true },
+    });
+    return { adminUser, adminToken, session, klass, user, student, parent };
+  }
+
+  it("refuses with 409 once the student has any record, changing nothing", async () => {
+    const { adminUser, adminToken, session, user, student } = await seedDeletableStudent();
+    const feeStructure = await prisma.feeStructure.create({
+      data: { name: "Tuition", category: "TUITION", amountKobo: 5_000_000, academicSessionId: session.id },
+    });
+    await prisma.feeObligation.create({
+      data: {
+        studentId: student.id,
+        feeStructureId: feeStructure.id,
+        academicSessionId: session.id,
+        amountDueKobo: 5_000_000,
+        createdByUserId: adminUser.id,
+      },
+    });
+
+    const res = await request(server).delete(`/api/students/${student.id}`).set("Authorization", `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.message).toContain("feeObligations: 1");
+    expect(res.body.error.message).toContain("WITHDRAWN");
+    expect((await prisma.student.findUniqueOrThrow({ where: { id: student.id } })).deletedAt).toBeNull();
+    expect((await prisma.enrollment.findFirstOrThrow({ where: { studentId: student.id } })).status).toBe("ACTIVE");
+    expect(await prisma.studentParent.count({ where: { studentId: student.id } })).toBe(1);
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: user.id } })).isActive).toBe(true);
+  });
+
+  it("hides a record-free student, closes enrollment, unlinks parents and deactivates the login", async () => {
+    const { adminToken, user, student } = await seedDeletableStudent();
+
+    const res = await request(server).delete(`/api/students/${student.id}`).set("Authorization", `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(204);
+    const row = await prisma.student.findUniqueOrThrow({ where: { id: student.id } });
+    expect(row.deletedAt).not.toBeNull();
+    expect(row.status).toBe("ACTIVE");
+    const enrollment = await prisma.enrollment.findFirstOrThrow({ where: { studentId: student.id } });
+    expect(enrollment.status).toBe("WITHDRAWN");
+    expect(enrollment.closedAt?.getTime()).toBe(row.deletedAt?.getTime());
+    expect(await prisma.studentParent.count({ where: { studentId: student.id } })).toBe(0);
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: user.id } })).isActive).toBe(false);
+
+    const auth = { Authorization: `Bearer ${adminToken}` };
+    expect((await request(server).get(`/api/students/${student.id}`).set(auth)).status).toBe(404);
+    const list = await request(server).get("/api/students").set(auth);
+    expect(list.body.map((s: { id: string }) => s.id)).not.toContain(student.id);
+    const search = await request(server).get("/api/students/search").query({ q: "FIA/2026/101" }).set(auth);
+    expect(search.body).toHaveLength(0);
+    expect((await request(server).delete(`/api/students/${student.id}`).set(auth)).status).toBe(404);
+  });
+
+  it("lists deleted students and restores one, reopening the enrollment the delete closed", async () => {
+    const { adminToken, user, student } = await seedDeletableStudent();
+    const auth = { Authorization: `Bearer ${adminToken}` };
+    await request(server).delete(`/api/students/${student.id}`).set(auth);
+
+    const deleted = await request(server).get("/api/students/deleted").set(auth);
+    expect(deleted.status).toBe(200);
+    expect(deleted.body.map((s: { id: string }) => s.id)).toEqual([student.id]);
+
+    const res = await request(server).post(`/api/students/${student.id}/restore`).set(auth);
+
+    expect(res.status).toBe(200);
+    expect(res.body.deletedAt).toBeNull();
+    const enrollment = await prisma.enrollment.findFirstOrThrow({ where: { studentId: student.id } });
+    expect(enrollment.status).toBe("ACTIVE");
+    expect(enrollment.closedAt).toBeNull();
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: user.id } })).isActive).toBe(true);
+    expect(await prisma.studentParent.count({ where: { studentId: student.id } })).toBe(0);
+    expect((await request(server).get(`/api/students/${student.id}`).set(auth)).status).toBe(200);
+  });
+
+  it("does not reopen an enrollment that was withdrawn separately, before the delete", async () => {
+    const { adminToken, session, student } = await seedDeletableStudent();
+    const auth = { Authorization: `Bearer ${adminToken}` };
+    const earlier = new Date("2026-01-01");
+    await prisma.enrollment.updateMany({
+      where: { studentId: student.id, academicSessionId: session.id },
+      data: { status: "WITHDRAWN", closedAt: earlier },
+    });
+    await request(server).delete(`/api/students/${student.id}`).set(auth);
+
+    await request(server).post(`/api/students/${student.id}/restore`).set(auth);
+
+    const enrollment = await prisma.enrollment.findFirstOrThrow({ where: { studentId: student.id } });
+    expect(enrollment.status).toBe("WITHDRAWN");
+    expect(enrollment.closedAt?.getTime()).toBe(earlier.getTime());
+  });
+
+  it("404s restoring a student that isn't deleted", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const student = await createBareStudent("FIA/2026/102");
+    const res = await request(server)
+      .post(`/api/students/${student.id}/restore`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects a non-admin for delete, restore and the deleted list", async () => {
+    const { token: teacherToken } = await createTeacher("teacher@test.local");
+    const student = await createBareStudent("FIA/2026/103");
+    const auth = { Authorization: `Bearer ${teacherToken}` };
+
+    expect((await request(server).delete(`/api/students/${student.id}`).set(auth)).status).toBe(403);
+    expect((await request(server).post(`/api/students/${student.id}/restore`).set(auth)).status).toBe(403);
+    expect((await request(server).get("/api/students/deleted").set(auth)).status).toBe(403);
+    expect((await prisma.student.findUniqueOrThrow({ where: { id: student.id } })).deletedAt).toBeNull();
+  });
+});

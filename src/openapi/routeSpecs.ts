@@ -1108,6 +1108,28 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     responses: { 200: { description: "OK", schema: StudentSchema } },
     scopeNote: SCOPE_NOTES.canReadStudent,
   },
+  "DELETE /api/students/:id": {
+    summary:
+      "Soft-delete a student created by mistake — never permanently removed. 409 if the student has any " +
+      "fee obligation, score, result, rating, madrassah or attendance record (the message lists which); set " +
+      "status WITHDRAWN for a student who actually left. Closes their active enrollment(s), unlinks every " +
+      "parent, and deactivates their login. Hidden from every student endpoint from then on; restore via " +
+      "POST /api/students/:id/restore.",
+    requestParams: studentsIdParamsSchema,
+    responses: { 204: noContent },
+  },
+  "GET /api/students/deleted": {
+    summary: "List soft-deleted students, most recently deleted first. Restore one via POST /api/students/:id/restore.",
+    responses: { 200: { description: "OK", schema: z.array(StudentSchema) } },
+  },
+  "POST /api/students/:id/restore": {
+    summary:
+      "Restore a soft-deleted student: reopens the enrollment(s) the delete closed and reactivates their " +
+      "login. Parents are not relinked — the STUDENT_DELETED audit entry records who they were; link them " +
+      "again via POST /api/parents/:id/children.",
+    requestParams: studentsIdParamsSchema,
+    responses: { 200: { description: "OK", schema: StudentSchema } },
+  },
   "PATCH /api/students/:id": {
     summary:
       "BREAKING CHANGE — the old `userId`/`issueLogin`/`email` fields are gone entirely. A " +

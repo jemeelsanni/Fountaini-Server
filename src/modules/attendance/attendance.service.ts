@@ -252,7 +252,7 @@ function generateQrCode(): string {
 /// actually guarantees at most one active row: the loser's create() is
 /// rejected by the DB instead of silently leaving two active codes.
 export async function rotateQrCode(studentId: string) {
-  const student = await prisma.student.findUnique({ where: { id: studentId } });
+  const student = await prisma.student.findUnique({ where: { id: studentId, deletedAt: null } });
   if (!student) {
     throw AppError.notFound("Student not found");
   }

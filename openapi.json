@@ -650,6 +650,13 @@
           "status": {
             "$ref": "#/components/schemas/StudentStatus"
           },
+          "deletedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
           "createdAt": {
             "type": "string",
             "format": "date-time"
@@ -670,6 +677,7 @@
           "gender",
           "admissionDate",
           "status",
+          "deletedAt",
           "createdAt",
           "updatedAt"
         ]
@@ -6238,6 +6246,62 @@
         }
       }
     },
+    "/api/students/deleted": {
+      "get": {
+        "summary": "List soft-deleted students, most recently deleted first. Restore one via POST /api/students/:id/restore.",
+        "description": "Roles: ADMIN.",
+        "x-roles": [
+          "ADMIN"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Student"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/students/status": {
       "patch": {
         "summary": "Bulk status update: { ids, status }, up to 500 at once. Partial success, not all-or-nothing — returns 200 with { updated: string[], failed: { id, message }[] } always; one bad id never blocks a graduation run for the rest of the class. Setting status to GRADUATED or WITHDRAWN also closes every currently-active enrollment each affected student holds — not just the current session's, since nothing has ever closed a stale one from a past session either. Setting status to INACTIVE does NOT close anything: it's a label only, exactly like PATCH /api/students/:id's own status field — it does not end enrollment, does not remove the student from a class roster or score sheet, and does not stop billing. WITHDRAWN is the status that does all of that. Setting status back to ACTIVE never reopens a closed enrollment either — re-enrollment is POST /api/students/:id/enrollments, a deliberate action that picks a specific class.",
@@ -6550,6 +6614,175 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ConflictError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Soft-delete a student created by mistake — never permanently removed. 409 if the student has any fee obligation, score, result, rating, madrassah or attendance record (the message lists which); set status WITHDRAWN for a student who actually left. Closes their active enrollment(s), unlinks every parent, and deactivates their login. Hidden from every student endpoint from then on; restore via POST /api/students/:id/restore.",
+        "description": "Roles: ADMIN.",
+        "x-roles": [
+          "ADMIN"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with the resource's current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/students/{id}/restore": {
+      "post": {
+        "summary": "Restore a soft-deleted student: reopens the enrollment(s) the delete closed and reactivates their login. Parents are not relinked — the STUDENT_DELETED audit entry records who they were; link them again via POST /api/parents/:id/children.",
+        "description": "Roles: ADMIN.",
+        "x-roles": [
+          "ADMIN"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Student"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
                 }
               }
             }
