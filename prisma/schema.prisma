@@ -257,6 +257,17 @@ model Student {
   gender          Gender?
   admissionDate   DateTime      @default(now())
   status          StudentStatus @default(ACTIVE)
+  /// Soft delete (DELETE /api/students/:id) — never purged, and only for a
+  /// student created by mistake: refused while any fee, score, result,
+  /// rating, madrassah or attendance record exists (a student who left uses
+  /// status WITHDRAWN instead). Set together with closing every ACTIVE Enrollment
+  /// (closedAt = this same timestamp, which is how restoreStudent knows
+  /// exactly which ones to reopen), unlinking every parent, and
+  /// deactivating the student's login. Rosters, score sheets, attendance
+  /// and billing all read through ACTIVE enrollments, so they need no
+  /// filter of their own; only direct Student reads do (students.service.ts
+  /// and the few other modules that look a student up by id).
+  deletedAt       DateTime?
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
 
@@ -275,6 +286,7 @@ model Student {
 
   @@index([lastName, firstName])
   @@index([status])
+  @@index([deletedAt])
 }
 
 enum FamilyRelationship {

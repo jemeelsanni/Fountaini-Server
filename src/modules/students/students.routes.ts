@@ -43,6 +43,8 @@ studentsRouter.get(
   validate({ query: searchStudentsQuerySchema }),
   controller.searchStudents,
 );
+// Registered before "/:id" or Express would match "deleted" as :id.
+studentsRouter.get("/deleted", requireRole("ADMIN"), controller.listDeletedStudents);
 // Registered before "/:id" or Express would match "status" as :id.
 // GRADUATED/WITHDRAWN also close each student's active enrollment(s) — see
 // ENROLLMENT_CLOSING_STATUS (students.service.ts). INACTIVE is a label
@@ -82,6 +84,29 @@ studentsRouter.patch(
 // returns 200 with temporaryPassword in the body — auditMutation's
 // existing redaction (http/middleware/auditMutation.ts) keeps that one
 // field out of the permanent audit log either way.
+// Soft delete for a student created by mistake (409 once they have any
+// record), never purged — see students.service.ts's deleteStudent.
+// fetchBefore includes the parent links because the delete removes them:
+// the audit log's beforeData is where an admin finds who to relink after
+// POST /:id/restore.
+studentsRouter.delete(
+  "/:id",
+  requireRole("ADMIN"),
+  validate({ params: idParamsSchema }),
+  auditMutation("Student", "STUDENT_DELETED", {
+    fetchBefore: (id) => prisma.student.findUnique({ where: { id }, include: { parents: true } }),
+  }),
+  controller.deleteStudent,
+);
+studentsRouter.post(
+  "/:id/restore",
+  requireRole("ADMIN"),
+  validate({ params: idParamsSchema }),
+  auditMutation("Student", "STUDENT_RESTORED", {
+    fetchBefore: (id) => prisma.student.findUnique({ where: { id } }),
+  }),
+  controller.restoreStudent,
+);
 studentsRouter.post(
   "/:id/reissue-credentials",
   requireRole("ADMIN"),

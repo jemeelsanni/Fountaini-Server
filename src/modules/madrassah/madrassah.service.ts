@@ -4,7 +4,7 @@ import type { CreateProgressBody } from "./madrassah.schemas.js";
 
 export async function createProgress(staffId: string, input: CreateProgressBody) {
   const [student, session, term] = await Promise.all([
-    prisma.student.findUnique({ where: { id: input.studentId } }),
+    prisma.student.findUnique({ where: { id: input.studentId, deletedAt: null } }),
     prisma.academicSession.findUnique({ where: { id: input.academicSessionId } }),
     prisma.term.findUnique({ where: { id: input.termId } }),
   ]);

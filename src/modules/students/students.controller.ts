@@ -53,6 +53,24 @@ export async function bulkUpdateStatus(req: Request, res: Response): Promise<voi
     );
 }
 
+export async function deleteStudent(req: Request, res: Response): Promise<void> {
+  if (!req.principal) {
+    throw AppError.unauthorized();
+  }
+  const { id } = req.params as unknown as IdParams;
+  await service.deleteStudent(id, req.principal.userId);
+  res.status(204).send();
+}
+
+export async function listDeletedStudents(_req: Request, res: Response): Promise<void> {
+  res.status(200).json(await service.listDeletedStudents());
+}
+
+export async function restoreStudent(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as unknown as IdParams;
+  res.status(200).json(await service.restoreStudent(id));
+}
+
 export async function transferStudent(req: Request, res: Response): Promise<void> {
   const { id } = req.params as unknown as IdParams;
   const { classId } = req.body as TransferStudentBody;

@@ -142,7 +142,7 @@ export async function linkChild(parentId: string, input: LinkChildBody) {
       where: { id: parentId, deletedAt: null },
       include: { user: { select: { email: true } } },
     }),
-    prisma.student.findUnique({ where: { id: input.studentId } }),
+    prisma.student.findUnique({ where: { id: input.studentId, deletedAt: null } }),
   ]);
   if (!parent) throw AppError.notFound("Parent not found");
   if (!student) throw AppError.notFound("Student not found");

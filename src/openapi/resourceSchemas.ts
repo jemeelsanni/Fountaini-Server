@@ -225,6 +225,7 @@ export const StudentSchema = z
     gender: GenderSchema.nullable(),
     admissionDate: isoDateTime(),
     status: StudentStatusSchema,
+    deletedAt: isoDateTime().nullable(),
     createdAt: isoDateTime(),
     updatedAt: isoDateTime(),
   })
