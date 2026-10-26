@@ -15,6 +15,7 @@ import { auditRouter } from "./modules/audit/audit.routes.js";
 import { authRouter } from "./modules/auth/auth.routes.js";
 import { feesRouter } from "./modules/fees/fees.routes.js";
 import { gradingRouter } from "./modules/grading/grading.routes.js";
+import { idCardsRouter } from "./modules/id-cards/id-cards.routes.js";
 import { madrassahRouter } from "./modules/madrassah/madrassah.routes.js";
 import { notificationsRouter } from "./modules/notifications/notifications.routes.js";
 import { parentsRouter } from "./modules/parents/parents.routes.js";
@@ -47,6 +48,7 @@ export const routeMounts: RouteMount[] = [
   { prefix: "/api/staff", router: staffRouter },
   { prefix: "/api/audit-log", router: auditRouter },
   { prefix: "/api/school", router: schoolRouter },
+  { prefix: "/api/id-cards", router: idCardsRouter },
   // admissionsRouter must be mounted before any other router sharing the bare
   // "/api" prefix: it's the only one with a public route, and every other
   // router below applies requireAuth as a blanket router.use() with no path —

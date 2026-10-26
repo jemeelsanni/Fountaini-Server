@@ -16,6 +16,7 @@ import { listAuditLogQuerySchema } from "../modules/audit/audit.schemas.js";
 import { createFeeStructureSchema, feesSummaryQuerySchema, idParamsSchema as feesIdParamsSchema, listPaymentsQuerySchema, recordPaymentSchema, studentStatementQuerySchema, updateFeeObligationSchema, updateFeeStructureSchema } from "../modules/fees/fees.schemas.js";
 import { paymentHistoryQuerySchema, scopedReportQuerySchema } from "../modules/reports/reports.schemas.js";
 import { createAssessmentComponentSchema, createGradeBandSchema, createGradingScaleSchema, idParamsSchema as gradingIdParamsSchema, updateAssessmentComponentSchema, updateGradeBandSchema } from "../modules/grading/grading.schemas.js";
+import { idParamsSchema as idCardsIdParamsSchema, listStudentIdCardsQuerySchema } from "../modules/id-cards/id-cards.schemas.js";
 import { createProgressSchema, idParamsSchema as madrassahIdParamsSchema } from "../modules/madrassah/madrassah.schemas.js";
 import {
   idParamsSchema as notificationsIdParamsSchema,
@@ -109,8 +110,10 @@ import {
   ScoreSheetSchema,
   SessionResultWithSubjectAveragesSchema,
   SetupStatusSchema,
+  StaffIdCardSchema,
   StaffSchema,
   StaffWithUserSchema,
+  StudentIdCardSchema,
   StudentParentSchema,
   StudentParentWithParentSchema,
   StudentParentWithStudentSchema,
@@ -991,6 +994,35 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
   },
 
   // --- school -----------------------------------------------------------------
+  // --- id cards -------------------------------------------------------------
+  "GET /api/id-cards/students": {
+    summary:
+      "ID card data for every ACTIVE-enrolled student in a class (academicSessionId defaults to the current " +
+      "session), ordered by name — for printing a class's cards in one go. Same shape as " +
+      "GET /api/id-cards/students/:id.",
+    requestQuery: listStudentIdCardsQuerySchema,
+    responses: { 200: { description: "OK", schema: z.array(StudentIdCardSchema) } },
+  },
+  "GET /api/id-cards/students/:id": {
+    summary:
+      "Everything printed on a student's ID card: name, admission number, registration (admission) date, " +
+      "current-session class, active QR code, and the school header. Read-only — qrCode is null until one " +
+      "is issued via POST /api/students/:id/qr-code/rotate.",
+    requestParams: idCardsIdParamsSchema,
+    responses: { 200: { description: "OK", schema: StudentIdCardSchema } },
+  },
+  "GET /api/id-cards/staff": {
+    summary: "ID card data for every active staff member, ordered by name. Same shape as GET /api/id-cards/staff/:id.",
+    responses: { 200: { description: "OK", schema: z.array(StaffIdCardSchema) } },
+  },
+  "GET /api/id-cards/staff/:id": {
+    summary:
+      "Everything printed on a staff ID card: name, staff number, department, roles, employment date, " +
+      "registration date, and the school header.",
+    requestParams: idCardsIdParamsSchema,
+    responses: { 200: { description: "OK", schema: StaffIdCardSchema } },
+  },
+
   "GET /api/school": {
     summary: "Get the school's singleton record",
     responses: { 200: { description: "OK", schema: SchoolSchema } },
