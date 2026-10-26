@@ -97,6 +97,59 @@ export const SchoolSchema = z
   })
   .openapi("School");
 
+/// The school header printed on every ID card — null until the school
+/// record is configured (see id-cards.service.ts).
+const IdCardSchoolSchema = z
+  .object({
+    name: z.string(),
+    address: z.string().nullable(),
+    contactPhone: z.string().nullable(),
+    contactEmail: z.string().nullable(),
+  })
+  .nullable()
+  .openapi("IdCardSchool");
+
+export const StudentIdCardSchema = z
+  .object({
+    id: id(),
+    admissionNumber: z.string(),
+    firstName: z.string(),
+    lastName: z.string(),
+    otherNames: z.string().nullable(),
+    fullName: z.string(),
+    gender: GenderSchema.nullable(),
+    dateOfBirth: isoDateTime().nullable(),
+    registeredAt: isoDateTime().openapi({ description: "The student's admissionDate" }),
+    status: StudentStatusSchema,
+    class: z.object({ id: id(), name: z.string() }).nullable(),
+    academicSession: z.object({ id: id(), name: z.string() }).nullable(),
+    qrCode: z
+      .object({ code: z.string(), version: z.number().int(), issuedAt: isoDateTime() })
+      .nullable()
+      .openapi({ description: "The active QR code — null until one is issued via POST /api/students/:id/qr-code/rotate" }),
+    school: IdCardSchoolSchema,
+  })
+  .openapi("StudentIdCard");
+
+export const StaffIdCardSchema = z
+  .object({
+    id: id(),
+    staffNumber: z.string(),
+    firstName: z.string(),
+    lastName: z.string(),
+    otherNames: z.string().nullable(),
+    fullName: z.string(),
+    department: z.string().nullable(),
+    roles: z.array(RoleSchema),
+    email: z.string().nullable(),
+    phone: z.string().nullable(),
+    employmentDate: isoDateTime().nullable(),
+    registeredAt: isoDateTime().openapi({ description: "When the staff record was created" }),
+    isActive: z.boolean(),
+    school: IdCardSchoolSchema,
+  })
+  .openapi("StaffIdCard");
+
 /// The standard User shape (passwordHash/phone/updatedAt never sent). See
 /// users.service.ts's userListSelect + flattenRoles(). GET
 /// /api/users/pending-activation returns a different, narrower shape
