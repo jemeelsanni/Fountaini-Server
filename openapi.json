@@ -1093,6 +1093,29 @@
           }
         ]
       },
+      "DeletedParent": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Parent"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "deletedAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "purgeAt": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "purgeAt"
+            ]
+          }
+        ]
+      },
       "Staff": {
         "type": "object",
         "properties": {
@@ -7201,6 +7224,62 @@
                   "type": "array",
                   "items": {
                     "$ref": "#/components/schemas/Parent"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/parents/deleted": {
+      "get": {
+        "summary": "List soft-deleted parents still within the 30-day restore window, most recently deleted first. `purgeAt` is when each is permanently removed; restore one via POST /api/parents/:id/restore.",
+        "description": "Roles: ADMIN.",
+        "x-roles": [
+          "ADMIN"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DeletedParent"
                   }
                 }
               }

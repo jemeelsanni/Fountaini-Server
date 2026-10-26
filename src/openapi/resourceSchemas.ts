@@ -208,6 +208,11 @@ export const ParentSchema = z
   })
   .openapi("Parent");
 
+export const DeletedParentSchema = ParentSchema.extend({
+  deletedAt: isoDateTime(),
+  purgeAt: isoDateTime(),
+}).openapi("DeletedParent");
+
 export const StudentSchema = z
   .object({
     id: id(),

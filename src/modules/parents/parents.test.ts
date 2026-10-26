@@ -291,6 +291,28 @@ describe("POST /api/parents/:id/restore", () => {
     expect(await prisma.studentParent.count({ where: { parentId: parent.id } })).toBe(0);
   });
 
+  it("lists only soft-deleted parents, with their purge date, for an admin", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const { parent: deleted } = await createParent("deleted@test.local");
+    await createParent("live@test.local");
+    await request(server).delete(`/api/parents/${deleted.id}`).set("Authorization", `Bearer ${adminToken}`);
+
+    const res = await request(server).get("/api/parents/deleted").set("Authorization", `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.map((p: { id: string }) => p.id)).toEqual([deleted.id]);
+    const day = 24 * 60 * 60 * 1000;
+    expect(new Date(res.body[0].purgeAt).getTime() - new Date(res.body[0].deletedAt).getTime()).toBe(
+      PARENT_PURGE_AFTER_DAYS * day,
+    );
+  });
+
+  it("rejects a non-admin listing deleted parents", async () => {
+    const { token: teacherToken } = await createTeacher("teacher@test.local");
+    const res = await request(server).get("/api/parents/deleted").set("Authorization", `Bearer ${teacherToken}`);
+    expect(res.status).toBe(403);
+  });
+
   it("404s for a parent that isn't deleted", async () => {
     const { token: adminToken } = await createAdmin("admin@test.local");
     const { parent } = await createParent("parent@test.local");

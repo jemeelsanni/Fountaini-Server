@@ -84,6 +84,7 @@ import {
   NotificationDeliveryListResponseSchema,
   NotificationEventSchema,
   NotificationEventWithDeliveriesSchema,
+  DeletedParentSchema,
   ParentSchema,
   PendingActivationUserSchema,
   FeesSummaryResponseSchema,
@@ -783,6 +784,12 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
   "GET /api/parents": {
     summary: "List parents",
     responses: { 200: { description: "OK", schema: z.array(ParentSchema) } },
+  },
+  "GET /api/parents/deleted": {
+    summary:
+      "List soft-deleted parents still within the 30-day restore window, most recently deleted first. " +
+      "`purgeAt` is when each is permanently removed; restore one via POST /api/parents/:id/restore.",
+    responses: { 200: { description: "OK", schema: z.array(DeletedParentSchema) } },
   },
   "GET /api/parents/:id": {
     summary: "Get one parent",
