@@ -39,7 +39,10 @@ function findUserByIdentifier(identifier: string) {
 async function buildAccessTokenPayload(userId: string): Promise<AccessTokenPayload> {
   const [staff, parent, student, userRoles] = await Promise.all([
     prisma.staff.findUnique({ where: { userId }, select: { id: true } }),
-    prisma.parent.findUnique({ where: { userId }, select: { id: true } }),
+    // deletedAt: null — a soft-deleted Parent (parents.service.ts's
+    // deleteParent) must not keep putting its parentId in a staff-parent's
+    // token; deleteParent removes the PARENT role in the same transaction.
+    prisma.parent.findUnique({ where: { userId, deletedAt: null }, select: { id: true } }),
     prisma.student.findUnique({ where: { userId }, select: { id: true } }),
     prisma.userRole.findMany({ where: { userId }, select: { role: true } }),
   ]);
