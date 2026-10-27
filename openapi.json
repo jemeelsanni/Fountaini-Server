@@ -2514,6 +2514,183 @@
           "FINALIZED"
         ]
       },
+      "MyStudentResults": {
+        "type": "object",
+        "properties": {
+          "student": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "cuid"
+              },
+              "admissionNumber": {
+                "type": "string"
+              },
+              "firstName": {
+                "type": "string"
+              },
+              "lastName": {
+                "type": "string"
+              },
+              "otherNames": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "admissionNumber",
+              "firstName",
+              "lastName",
+              "otherNames"
+            ]
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResultListItem"
+            }
+          }
+        },
+        "required": [
+          "student",
+          "results"
+        ]
+      },
+      "ResultListItem": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/ResultWithTerm"
+          },
+          {
+            "$ref": "#/components/schemas/WithheldResultListItem"
+          }
+        ]
+      },
+      "ResultWithTerm": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Result"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "term": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "cuid"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "order": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "id",
+                  "name",
+                  "order"
+                ]
+              },
+              "session": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "cuid"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "name"
+                ]
+              }
+            },
+            "required": [
+              "term",
+              "session"
+            ]
+          }
+        ]
+      },
+      "WithheldResultListItem": {
+        "type": "object",
+        "properties": {
+          "termId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "term": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "cuid"
+              },
+              "name": {
+                "type": "string"
+              },
+              "order": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "order"
+            ]
+          },
+          "session": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "cuid"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "WITHHELD"
+            ]
+          },
+          "outstandingKobo": {
+            "type": "integer"
+          },
+          "feeObligationIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "description": "cuid"
+            }
+          }
+        },
+        "required": [
+          "termId",
+          "term",
+          "session",
+          "status",
+          "outstandingKobo",
+          "feeObligationIds"
+        ]
+      },
       "ResultWithRatings": {
         "allOf": [
           {
@@ -2661,137 +2838,6 @@
           "error"
         ],
         "description": "IMPORTANT — handle this status explicitly; an unhandled 402 renders as a generic error and defeats the point of this response. The result exists and is FINALIZED, but is withheld because the student has an outstanding fee balance for this term (or a session-wide, not-term-specific fee) — partial payment does not release it. Distinct from 404 (not published yet): a 404 here means check back later, a 402 means the parent has an action to take now. `details.outstandingKobo` and `details.feeObligationIds` are always present, so a client can render a \"pay outstanding balance\" call-to-action directly from this response, without a follow-up request."
-      },
-      "ResultListItem": {
-        "anyOf": [
-          {
-            "$ref": "#/components/schemas/ResultWithTerm"
-          },
-          {
-            "$ref": "#/components/schemas/WithheldResultListItem"
-          }
-        ]
-      },
-      "ResultWithTerm": {
-        "allOf": [
-          {
-            "$ref": "#/components/schemas/Result"
-          },
-          {
-            "type": "object",
-            "properties": {
-              "term": {
-                "type": "object",
-                "properties": {
-                  "id": {
-                    "type": "string",
-                    "description": "cuid"
-                  },
-                  "name": {
-                    "type": "string"
-                  },
-                  "order": {
-                    "type": "integer"
-                  }
-                },
-                "required": [
-                  "id",
-                  "name",
-                  "order"
-                ]
-              },
-              "session": {
-                "type": "object",
-                "properties": {
-                  "id": {
-                    "type": "string",
-                    "description": "cuid"
-                  },
-                  "name": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "id",
-                  "name"
-                ]
-              }
-            },
-            "required": [
-              "term",
-              "session"
-            ]
-          }
-        ]
-      },
-      "WithheldResultListItem": {
-        "type": "object",
-        "properties": {
-          "termId": {
-            "type": "string",
-            "description": "cuid"
-          },
-          "term": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string",
-                "description": "cuid"
-              },
-              "name": {
-                "type": "string"
-              },
-              "order": {
-                "type": "integer"
-              }
-            },
-            "required": [
-              "id",
-              "name",
-              "order"
-            ]
-          },
-          "session": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string",
-                "description": "cuid"
-              },
-              "name": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "id",
-              "name"
-            ]
-          },
-          "status": {
-            "type": "string",
-            "enum": [
-              "WITHHELD"
-            ]
-          },
-          "outstandingKobo": {
-            "type": "integer"
-          },
-          "feeObligationIds": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "description": "cuid"
-            }
-          }
-        },
-        "required": [
-          "termId",
-          "term",
-          "session",
-          "status",
-          "outstandingKobo",
-          "feeObligationIds"
-        ]
       },
       "ResultWithStudent": {
         "allOf": [
@@ -13055,6 +13101,84 @@
                   "type": "array",
                   "items": {
                     "$ref": "#/components/schemas/Result"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/results/me": {
+      "get": {
+        "summary": "Every published result for the caller in one request: a STUDENT's own, and a PARENT's for each linked child (both, for a user holding both roles), grouped per student and ordered by name, newest term first. FINALIZED results only — always, even for a staff-parent who'd otherwise see drafts — and a term withheld for unpaid fees appears as the same WithheldResultListItem (status: \"WITHHELD\") as GET /api/students/:id/results. Optional academicSessionId narrows to one session.",
+        "description": "Roles: PARENT, STUDENT.",
+        "x-roles": [
+          "PARENT",
+          "STUDENT"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": false,
+            "name": "academicSessionId",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MyStudentResults"
                   }
                 }
               }

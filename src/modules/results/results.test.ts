@@ -1564,3 +1564,78 @@ describe("a graduated student's historical results", () => {
     expect(list.body).toHaveLength(1);
   });
 });
+
+describe("GET /api/results/me", () => {
+  async function seedFamily() {
+    const session = await createCurrentAcademicSession("2026/2027");
+    const term = await createTermForSession(session.id, "First Term", 1);
+    const klass = await createClass("JSS1", "A");
+    const { parent, token: parentToken } = await createParent("parent@test.local");
+
+    const published = await prisma.student.create({
+      data: { admissionNumber: "ADM-101", firstName: "Aisha", lastName: "Bello" },
+    });
+    const draft = await prisma.student.create({
+      data: { admissionNumber: "ADM-102", firstName: "Musa", lastName: "Yusuf" },
+    });
+    for (const [student, status] of [
+      [published, "FINALIZED"],
+      [draft, "DRAFT"],
+    ] as const) {
+      const enrollment = await enrollStudent(student.id, klass.id, session.id);
+      await prisma.studentParent.create({ data: { parentId: parent.id, studentId: student.id, relationship: "MOTHER" } });
+      await prisma.result.create({
+        data: { studentId: student.id, enrollmentId: enrollment.id, termId: term.id, status, totalScore: 80, averageScore: 80 },
+      });
+    }
+    return { session, term, klass, parentToken, published, draft };
+  }
+
+  it("gives a parent every linked child, with only FINALIZED results", async () => {
+    const { term, parentToken, published, draft } = await seedFamily();
+
+    const res = await request(server).get("/api/results/me").set("Authorization", `Bearer ${parentToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.map((entry: { student: { id: string } }) => entry.student.id)).toEqual([published.id, draft.id]);
+    expect(res.body[0].results).toHaveLength(1);
+    expect(res.body[0].results[0]).toMatchObject({ termId: term.id, status: "FINALIZED" });
+    expect(res.body[1].results).toEqual([]);
+  });
+
+  it("gives a student only their own published results", async () => {
+    const session = await createCurrentAcademicSession("2026/2027");
+    const term = await createTermForSession(session.id, "First Term", 1);
+    const klass = await createClass("JSS1", "A");
+    const { student, token } = await createStudentWithLogin("student@test.local", "ADM-201");
+    const enrollment = await enrollStudent(student.id, klass.id, session.id);
+    await prisma.result.create({
+      data: { studentId: student.id, enrollmentId: enrollment.id, termId: term.id, status: "FINALIZED" },
+    });
+    const classmate = await createBareStudent("ADM-202");
+    const classmateEnrollment = await enrollStudent(classmate.id, klass.id, session.id);
+    await prisma.result.create({
+      data: { studentId: classmate.id, enrollmentId: classmateEnrollment.id, termId: term.id, status: "FINALIZED" },
+    });
+
+    const res = await request(server).get("/api/results/me").set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].student.id).toBe(student.id);
+    expect(res.body[0].results).toHaveLength(1);
+  });
+
+  it("returns an empty list for a parent with no children", async () => {
+    const { token } = await createParent("lonely@test.local");
+    const res = await request(server).get("/api/results/me").set("Authorization", `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
+  });
+
+  it("rejects staff — this is the parent/student view", async () => {
+    const { token } = await createTeacher("teacher@test.local");
+    const res = await request(server).get("/api/results/me").set("Authorization", `Bearer ${token}`);
+    expect(res.status).toBe(403);
+  });
+});

@@ -36,6 +36,16 @@ resultsRouter.post(
   validate({ body: computeResultsSchema }),
   controller.computeResults,
 );
+// Registered before "/results/:studentId/:termId" for clarity, though a
+// one-segment path can't match that two-segment pattern anyway. No
+// requireScope: the service only ever reads the caller's own studentId and
+// their own linked children — there's no id in the path to check.
+resultsRouter.get(
+  "/results/me",
+  requireRole("PARENT", "STUDENT"),
+  validate({ query: listResultsForStudentQuerySchema }),
+  controller.listMyResults,
+);
 resultsRouter.get(
   "/results/:studentId/:termId",
   validate({ params: studentTermParamsSchema }),

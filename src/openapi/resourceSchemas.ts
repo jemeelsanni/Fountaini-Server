@@ -707,6 +707,21 @@ export const ResultListItemSchema = z
   .union([ResultWithTermSchema, WithheldResultListItemSchema])
   .openapi("ResultListItem");
 
+/// GET /api/results/me — one entry per student the caller may see results
+/// for (themselves, and/or each linked child).
+export const MyStudentResultsSchema = z
+  .object({
+    student: z.object({
+      id: id(),
+      admissionNumber: z.string(),
+      firstName: z.string(),
+      lastName: z.string(),
+      otherNames: z.string().nullable(),
+    }),
+    results: z.array(ResultListItemSchema),
+  })
+  .openapi("MyStudentResults");
+
 export const SessionSubjectAverageSchema = z
   .object({
     id: id(),

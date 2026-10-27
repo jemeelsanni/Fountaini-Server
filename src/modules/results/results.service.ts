@@ -275,8 +275,18 @@ export async function listResultsForStudent(
   academicSessionId: string | undefined,
   principal: Principal,
 ) {
-  const accessLevel = await resolveStudentAccessLevel(principal, studentId);
+  return listResultsForStudentAtLevel(studentId, academicSessionId, await resolveStudentAccessLevel(principal, studentId));
+}
 
+/// The body of listResultsForStudent with the access level passed in
+/// rather than resolved from a principal — so listMyResults can pin it to
+/// RESTRICTED (published-only, withholding applied) even for a caller who'd
+/// otherwise resolve to FULL, e.g. a staff-parent teaching their own child.
+async function listResultsForStudentAtLevel(
+  studentId: string,
+  academicSessionId: string | undefined,
+  accessLevel: "FULL" | "RESTRICTED" | null,
+) {
   const results = await prisma.result.findMany({
     where: {
       studentId,
@@ -328,6 +338,40 @@ export async function listResultsForStudent(
     }
     return { ...result, term: termSummary, session: term.academicSession };
   });
+}
+
+/// GET /api/results/me — every published result the caller is entitled to,
+/// in one request: a STUDENT's own, and a PARENT's for every linked child
+/// (a user holding both gets both). Always RESTRICTED, whatever else the
+/// caller holds: FINALIZED results only, and a term withheld for unpaid
+/// fees comes back as the same WITHHELD marker GET /students/:id/results
+/// uses. Grouped per student, children ordered by name.
+export async function listMyResults(principal: Principal, academicSessionId: string | undefined) {
+  const studentIds = new Set<string>();
+  if (principal.roles.has("STUDENT") && principal.studentId) {
+    studentIds.add(principal.studentId);
+  }
+  if (principal.roles.has("PARENT") && principal.parentId) {
+    const links = await prisma.studentParent.findMany({
+      where: { parentId: principal.parentId },
+      select: { studentId: true },
+    });
+    for (const link of links) {
+      studentIds.add(link.studentId);
+    }
+  }
+
+  const students = await prisma.student.findMany({
+    where: { id: { in: [...studentIds] }, deletedAt: null },
+    select: { id: true, admissionNumber: true, firstName: true, lastName: true, otherNames: true },
+    orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
+  });
+  return Promise.all(
+    students.map(async (student) => ({
+      student,
+      results: await listResultsForStudentAtLevel(student.id, academicSessionId, "RESTRICTED"),
+    })),
+  );
 }
 
 export function listResultsForClass(classId: string, termId: string) {

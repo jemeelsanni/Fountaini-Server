@@ -100,6 +100,7 @@ import {
   RatingWithTraitSchema,
   ReceiptSchema,
   ReissueCredentialsResultSchema,
+  MyStudentResultsSchema,
   ResultListItemSchema,
   ResultSchema,
   ResultWithRatingsSchema,
@@ -906,6 +907,16 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
       "PARENT/STUDENT caller, a FINALIZED result with an outstanding fee balance for this term (or a " +
       "session-wide, not-term-specific fee) is withheld — see the 402 response below, not returned here " +
       "as 200. Released via POST /results/:id/release-withholding.",
+  },
+  "GET /api/results/me": {
+    summary:
+      "Every published result for the caller in one request: a STUDENT's own, and a PARENT's for each linked " +
+      "child (both, for a user holding both roles), grouped per student and ordered by name, newest term " +
+      "first. FINALIZED results only — always, even for a staff-parent who'd otherwise see drafts — and a " +
+      "term withheld for unpaid fees appears as the same WithheldResultListItem (status: \"WITHHELD\") as " +
+      "GET /api/students/:id/results. Optional academicSessionId narrows to one session.",
+    requestQuery: listResultsForStudentQuerySchema,
+    responses: { 200: { description: "OK", schema: z.array(MyStudentResultsSchema) } },
   },
   "GET /api/students/:id/results": {
     summary: "List a student's report-card results across terms, newest first",
