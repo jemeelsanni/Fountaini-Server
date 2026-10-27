@@ -36,6 +36,14 @@ export async function listResultsForStudent(req: Request, res: Response): Promis
   res.status(200).json(await service.listResultsForStudent(id, academicSessionId, req.principal));
 }
 
+export async function listMyResults(req: Request, res: Response): Promise<void> {
+  if (!req.principal) {
+    throw AppError.unauthorized();
+  }
+  const { academicSessionId } = req.validatedQuery as ListResultsForStudentQuery;
+  res.status(200).json(await service.listMyResults(req.principal, academicSessionId));
+}
+
 export async function listResultsForClass(req: Request, res: Response): Promise<void> {
   const { id, termId } = req.params as unknown as ClassTermParams;
   res.status(200).json(await service.listResultsForClass(id, termId));
