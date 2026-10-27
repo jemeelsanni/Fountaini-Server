@@ -74,6 +74,7 @@ export async function createParent(input: CreateParentBody) {
           alternatePhone: input.alternatePhone,
           address: input.address,
         },
+        include: withUserEmail,
       });
     });
   } catch (err) {
@@ -84,7 +85,7 @@ export async function createParent(input: CreateParentBody) {
   }
 
   deliverParentCredentials(parent, email, temporaryPassword);
-  return parent;
+  return withEmail(parent);
 }
 
 /// How long a soft-deleted Parent stays restorable before
@@ -92,8 +93,23 @@ export async function createParent(input: CreateParentBody) {
 export const PARENT_PURGE_AFTER_DAYS = 30;
 const PARENT_PURGE_AFTER_MS = PARENT_PURGE_AFTER_DAYS * 24 * 60 * 60 * 1000;
 
-export function listParents() {
-  return prisma.parent.findMany({ where: { deletedAt: null }, orderBy: [{ lastName: "asc" }, { firstName: "asc" }] });
+/// Every parent response carries `email`, read from the linked User — the
+/// same address the parent logs in with and receives mail at.
+const withUserEmail = { user: { select: { email: true } } } as const;
+
+function withEmail<P extends { user: { email: string | null } }>({ user, ...parent }: P): Omit<P, "user"> & {
+  email: string | null;
+} {
+  return { ...parent, email: user.email };
+}
+
+export async function listParents() {
+  const parents = await prisma.parent.findMany({
+    where: { deletedAt: null },
+    include: withUserEmail,
+    orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
+  });
+  return parents.map(withEmail);
 }
 
 /// The admin's view of the restore window: every soft-deleted Parent still
@@ -103,23 +119,24 @@ export function listParents() {
 export async function listDeletedParents() {
   const parents = await prisma.parent.findMany({
     where: { deletedAt: { not: null } },
+    include: withUserEmail,
     orderBy: { deletedAt: "desc" },
   });
   // flatMap with a real null check rather than a non-null assertion: the
   // where clause guarantees deletedAt is set, but the compiler can't see
   // that, and this keeps deletedAt typed as Date (not Date | null) in the
   // response, matching DeletedParentSchema.
-  return parents.flatMap(({ deletedAt, ...parent }) =>
+  return parents.map(withEmail).flatMap(({ deletedAt, ...parent }) =>
     deletedAt ? [{ ...parent, deletedAt, purgeAt: new Date(deletedAt.getTime() + PARENT_PURGE_AFTER_MS) }] : [],
   );
 }
 
 export async function getParentById(id: string) {
-  const parent = await prisma.parent.findUnique({ where: { id, deletedAt: null } });
+  const parent = await prisma.parent.findUnique({ where: { id, deletedAt: null }, include: withUserEmail });
   if (!parent) {
     throw AppError.notFound("Parent not found");
   }
-  return parent;
+  return withEmail(parent);
 }
 
 /// data: input passed straight through, not manually merged field-by-field —
@@ -133,7 +150,7 @@ export async function updateParent(id: string, input: UpdateParentBody) {
   if (!parent) {
     throw AppError.notFound("Parent not found");
   }
-  return prisma.parent.update({ where: { id }, data: input });
+  return withEmail(await prisma.parent.update({ where: { id }, data: input, include: withUserEmail }));
 }
 
 export async function linkChild(parentId: string, input: LinkChildBody) {
@@ -274,7 +291,9 @@ export async function restoreParent(parentId: string) {
       update: {},
     });
     await tx.user.update({ where: { id: parent.userId }, data: { isActive: true } });
-    return tx.parent.update({ where: { id: parentId }, data: { deletedAt: null } });
+    return withEmail(
+      await tx.parent.update({ where: { id: parentId }, data: { deletedAt: null }, include: withUserEmail }),
+    );
   });
 }
 

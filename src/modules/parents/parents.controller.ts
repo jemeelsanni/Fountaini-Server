@@ -18,7 +18,10 @@ export async function listParents(_req: Request, res: Response): Promise<void> {
   res.status(200).json(await service.listParents());
 }
 
-export async function listDeletedParents(_req: Request, res: Response): Promise<void> {
+export async function listDeletedParents(
+  _req: Request,
+  res: Response,
+): Promise<void> {
   res.status(200).json(await service.listDeletedParents());
 }
 
@@ -29,10 +32,15 @@ export async function getParent(req: Request, res: Response): Promise<void> {
 
 export async function updateParent(req: Request, res: Response): Promise<void> {
   const { id } = req.params as unknown as IdParams;
-  res.status(200).json(await service.updateParent(id, req.body as UpdateParentBody));
+  res
+    .status(200)
+    .json(await service.updateParent(id, req.body as UpdateParentBody));
 }
 
-export async function listChildrenForParentId(req: Request, res: Response): Promise<void> {
+export async function listChildrenForParentId(
+  req: Request,
+  res: Response,
+): Promise<void> {
   const { id } = req.params as unknown as IdParams;
   res.status(200).json(await service.listChildrenForParent(id));
 }
@@ -55,14 +63,22 @@ export async function deleteParent(req: Request, res: Response): Promise<void> {
   res.status(204).send();
 }
 
-export async function restoreParent(req: Request, res: Response): Promise<void> {
+export async function restoreParent(
+  req: Request,
+  res: Response,
+): Promise<void> {
   const { id } = req.params as unknown as IdParams;
   res.status(200).json(await service.restoreParent(id));
 }
 
-export async function listMyChildren(req: Request, res: Response): Promise<void> {
+export async function listMyChildren(
+  req: Request,
+  res: Response,
+): Promise<void> {
   if (!req.principal?.parentId) {
     throw AppError.forbidden("This account is not linked to a parent profile");
   }
-  res.status(200).json(await service.listChildrenForParent(req.principal.parentId));
+  res
+    .status(200)
+    .json(await service.listChildrenForParent(req.principal.parentId));
 }

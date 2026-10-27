@@ -191,6 +191,21 @@ describe("PATCH /api/parents/:id", () => {
   });
 });
 
+describe("parent responses carry the login email", () => {
+  it("includes email on list, get and update", async () => {
+    const { token: adminToken } = await createAdmin("admin@test.local");
+    const { parent } = await createParent("parent@test.local");
+    const auth = { Authorization: `Bearer ${adminToken}` };
+
+    const list = await request(server).get("/api/parents").set(auth);
+    expect(list.body.find((p: { id: string }) => p.id === parent.id)).toMatchObject({ email: "parent@test.local" });
+    expect((await request(server).get(`/api/parents/${parent.id}`).set(auth)).body.email).toBe("parent@test.local");
+    const updated = await request(server).patch(`/api/parents/${parent.id}`).set(auth).send({ firstName: "New" });
+    expect(updated.body).toMatchObject({ firstName: "New", email: "parent@test.local" });
+    expect(updated.body.user).toBeUndefined();
+  });
+});
+
 describe("DELETE /api/parents/:id (soft delete)", () => {
   it("stamps deletedAt, unlinks every child, removes PARENT, and deactivates a parent-only account", async () => {
     const { token: adminToken } = await createAdmin("admin@test.local");
