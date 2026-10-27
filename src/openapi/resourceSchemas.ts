@@ -255,6 +255,7 @@ export const ParentSchema = z
     phone: z.string().nullable(),
     alternatePhone: z.string().nullable(),
     address: z.string().nullable(),
+    email: z.string().nullable().openapi({ description: "The parent's login email, from their User account" }),
     deletedAt: isoDateTime().nullable(),
     createdAt: isoDateTime(),
     updatedAt: isoDateTime(),

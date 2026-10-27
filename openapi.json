@@ -1019,6 +1019,13 @@
               "null"
             ]
           },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The parent's login email, from their User account"
+          },
           "deletedAt": {
             "type": [
               "string",
@@ -1043,6 +1050,7 @@
           "phone",
           "alternatePhone",
           "address",
+          "email",
           "deletedAt",
           "createdAt",
           "updatedAt"
