@@ -3629,7 +3629,8 @@
       "PaymentMethod": {
         "type": "string",
         "enum": [
-          "BANK_TRANSFER"
+          "BANK_TRANSFER",
+          "PAYSTACK"
         ]
       },
       "PaymentStatus": {
@@ -3640,8 +3641,87 @@
           "REJECTED"
         ]
       },
-      "Receipt": {
+      "PaystackCheckout": {
         "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "reference": {
+            "type": "string"
+          },
+          "amountKobo": {
+            "type": "integer",
+            "description": "Amount in kobo (1/100 of a naira)"
+          },
+          "authorizationUrl": {
+            "type": "string"
+          },
+          "accessCode": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "reference",
+          "amountKobo",
+          "authorizationUrl",
+          "accessCode"
+        ]
+      },
+      "PaystackTransactionResult": {
+        "type": "object",
+        "properties": {
+          "reference": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PENDING",
+              "SUCCESS",
+              "FAILED"
+            ]
+          },
+          "amountKobo": {
+            "type": "integer",
+            "description": "Amount in kobo (1/100 of a naira)"
+          },
+          "payment": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Payment"
+              },
+              {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "receipt": {
+                    "$ref": "#/components/schemas/Receipt"
+                  }
+                },
+                "required": [
+                  "receipt"
+                ]
+              }
+            ]
+          }
+        },
+        "required": [
+          "reference",
+          "status",
+          "amountKobo",
+          "payment"
+        ]
+      },
+      "Receipt": {
+        "type": [
+          "object",
+          "null"
+        ],
         "properties": {
           "id": {
             "type": "string",
@@ -3909,17 +3989,7 @@
                 ]
               },
               "receipt": {
-                "allOf": [
-                  {
-                    "$ref": "#/components/schemas/Receipt"
-                  },
-                  {
-                    "type": [
-                      "object",
-                      "null"
-                    ]
-                  }
-                ]
+                "$ref": "#/components/schemas/Receipt"
               }
             },
             "required": [
@@ -9562,6 +9632,35 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/paystack/webhook": {
+      "post": {
+        "summary": "Paystack webhook receiver (public — authenticated by the x-paystack-signature HMAC, not a token). Set <PUBLIC_BASE_URL>/api/paystack/webhook as the webhook URL in the Paystack dashboard.",
+        "description": "Public — no authentication required.",
+        "responses": {
+          "200": {
+            "description": "Acknowledged",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "received": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "received"
+                  ]
                 }
               }
             }
@@ -16619,6 +16718,211 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ConflictError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/fee-obligations/{id}/paystack/initialize": {
+      "post": {
+        "summary": "Start a Paystack checkout for a fee obligation. amountKobo defaults to the whole outstanding balance and may not exceed it. Redirect the parent to authorizationUrl; the payment is credited (CONFIRMED, with a receipt — no bursar step) once Paystack reports success via the webhook or the verify route. 503 if this server has no PAYSTACK_SECRET_KEY; 502 if Paystack itself refuses.",
+        "description": "ADMIN, BURSAR, or the obligation's own linked parent — never the student themself, unlike most other fee-read scopes.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "amountKobo": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaystackCheckout"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with the resource's current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/fee-obligations/{id}/paystack/verify": {
+      "post": {
+        "summary": "Check a Paystack checkout's outcome with Paystack and credit it if it succeeded — call this from the page Paystack redirects the parent back to, passing the reference it appends. Safe to call repeatedly; a payment is only ever credited once.",
+        "description": "ADMIN, BURSAR, or the obligation's own linked parent — never the student themself, unlike most other fee-read scopes.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reference": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "reference"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaystackTransactionResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
                 }
               }
             }
