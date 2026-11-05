@@ -48,12 +48,15 @@ export const routeMounts: RouteMount[] = [
   { prefix: "/api/staff", router: staffRouter },
   { prefix: "/api/audit-log", router: auditRouter },
   { prefix: "/api/school", router: schoolRouter },
+<<<<<<< Updated upstream
   { prefix: "/api/id-cards", router: idCardsRouter },
+=======
   // Public (Paystack calls it, authenticated by HMAC signature, not a
   // token) — on its own prefix and ahead of every bare-"/api" router below
   // for the same blanket-requireAuth reason admissionsRouter's comment
   // gives.
   { prefix: "/api/paystack", router: paystackWebhookRouter },
+>>>>>>> Stashed changes
   // admissionsRouter must be mounted before any other router sharing the bare
   // "/api" prefix: it's the only one with a public route, and every other
   // router below applies requireAuth as a blanket router.use() with no path —
