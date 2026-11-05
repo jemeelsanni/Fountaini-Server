@@ -608,9 +608,25 @@ export const SubjectResultSchema = z
   })
   .openapi("SubjectResult");
 
+/// One assessment component's mark behind a SubjectResult — every
+/// component configured for the session, rawScore null where none was
+/// recorded, so a report sheet's CA/Exam columns line up.
+export const SubjectResultComponentSchema = z
+  .object({
+    assessmentComponentId: id(),
+    code: z.string(),
+    name: z.string(),
+    type: AssessmentTypeSchema,
+    maxScore: decimalString(),
+    rawScore: decimalString().nullable(),
+    order: z.number().int(),
+  })
+  .openapi("SubjectResultComponent");
+
 export const SubjectResultWithRelationsSchema = SubjectResultSchema.extend({
   classSubjectAssignment: ClassSubjectAssignmentSchema.extend({ subject: SubjectSchema, class: ClassSchema }),
   term: TermSchema,
+  components: z.array(SubjectResultComponentSchema).openapi({ description: "Sorted by order" }),
 }).openapi("SubjectResultWithRelations");
 
 export const ResultSchema = z

@@ -417,3 +417,62 @@ describe("Decimal field wire format investigation", () => {
     expect(typeof row.maxScore).toBe("string");
   });
 });
+
+describe("GET /api/students/:id/scores — per-component marks", () => {
+  it("returns every session component in order, with the mark or null, and the assignment's class", async () => {
+    const { session, term, klass, subject, ca1, exam } = await setupClassroom();
+    const { user: adminUser, token } = await createAdmin("admin@test.local");
+    const { staff } = await createTeacher("teacher@test.local");
+    const assignment = await createAssignment(klass.id, subject.id, staff.id, session.id);
+    const student = await createBareStudent("ADM-001");
+    await enrollStudent(student.id, klass.id, session.id);
+    // Built directly (submit requires every component): a missing mark must
+    // still come back as a null entry, not be dropped.
+    await prisma.score.create({
+      data: {
+        studentId: student.id,
+        classSubjectAssignmentId: assignment.id,
+        termId: term.id,
+        assessmentComponentId: ca1.id,
+        rawScore: 17.5,
+        status: "SUBMITTED",
+        enteredByUserId: adminUser.id,
+      },
+    });
+    await prisma.subjectResult.create({
+      data: {
+        studentId: student.id,
+        classSubjectAssignmentId: assignment.id,
+        termId: term.id,
+        totalScore: 17.5,
+        status: "SUBMITTED",
+      },
+    });
+
+    const res = await request(server).get(`/api/students/${student.id}/scores`).set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].classSubjectAssignment.class).toMatchObject({ id: klass.id, programme: "ACADEMIC" });
+    expect(res.body[0].components).toEqual([
+      {
+        assessmentComponentId: ca1.id,
+        code: "CA1",
+        name: "CA1",
+        type: "CA",
+        maxScore: "20",
+        rawScore: "17.5",
+        order: 1,
+      },
+      {
+        assessmentComponentId: exam.id,
+        code: "EXAM",
+        name: "EXAM",
+        type: "EXAM",
+        maxScore: "80",
+        rawScore: null,
+        order: 2,
+      },
+    ]);
+  });
+});

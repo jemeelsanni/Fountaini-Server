@@ -697,6 +697,164 @@ async function seedScoresAttendanceAndResults(
 }
 
 // ---------------------------------------------------------------------------
+// 6b. Weekday Madrasa — a separate Islamiyyah report card
+// ---------------------------------------------------------------------------
+// Zainab Lawal (7th in JSS1A) also attends the Weekday Madrasa, so she has
+// two finalized first-term cards: academic and Islamiyyah (programme
+// MADRASSAH), computed, ranked, rated and commented on independently. Two
+// JSS1A classmates join her so the Islamiyyah position and class
+// highest/average/lowest have peers to compare against — she comes 1st here.
+async function seedIslamiyyah(
+  structure: Awaited<ReturnType<typeof seedAcademicStructure>>,
+  staff: Awaited<ReturnType<typeof seedStaff>>,
+  students: Awaited<ReturnType<typeof seedStudentsAndParents>>,
+) {
+  const actorUserId = staff.admin.userId;
+  const sessionId = structure.session.id;
+  const termId = structure.term1.id;
+
+  const madrasa = await academicStructure.createClass({
+    gradeName: "Weekday Madrasa",
+    arm: "Level 1",
+    order: 100,
+    programme: "MADRASSAH",
+  });
+  manifest.classIds.push(madrasa.id);
+
+  // Same order as the Islamiyyah report sheet. Qur'an Memorisation already
+  // exists (seedAcademicStructure); the rest get ISL-… codes, as the admin
+  // frontend gives Madrasa subjects.
+  const subjects = [structure.quran];
+  for (const [name, code] of [
+    ["Arabiyyah", "ISL-ARB"],
+    ["Hadith", "ISL-HAD"],
+    ["Fiqh", "ISL-FIQ"],
+    ["Tawheed", "ISL-TAW"],
+    ["Muhaadathah", "ISL-MUH"],
+    ["Seerah", "ISL-SIR"],
+    ["Tajweed", "ISL-TAJ"],
+  ] as const) {
+    const subject = await academicStructure.createSubject({ name, code, type: "MADRASSAH" });
+    manifest.subjectIds.push(subject.id);
+    subjects.push(subject);
+  }
+
+  const formTeacher = await academicStructure.createClassFormTeacher({
+    classId: madrasa.id,
+    teacherId: staff.madrassahTeacher.id,
+    academicSessionId: sessionId,
+  });
+  manifest.classFormTeacherIds.push(formTeacher.id);
+  const assignments = [];
+  for (const subject of subjects) {
+    const assignment = await academicStructure.createClassSubjectAssignment({
+      classId: madrasa.id,
+      subjectId: subject.id,
+      teacherId: staff.madrassahTeacher.id,
+      academicSessionId: sessionId,
+    });
+    manifest.classSubjectAssignmentIds.push(assignment.id);
+    assignments.push(assignment);
+  }
+
+  // Per-subject marks out of 20/20/60, in the subject order above.
+  const plans: Array<{ key: string; marks: Array<[number, number, number]> }> = [
+    {
+      key: "zainabL",
+      marks: [[19, 18, 55], [17, 18, 50], [18, 17, 52], [16, 17, 49], [18, 19, 53], [17, 16, 48], [19, 18, 54], [18, 18, 51]],
+    },
+    {
+      key: "aisha",
+      marks: [[15, 14, 44], [16, 15, 47], [14, 15, 42], [15, 13, 45], [16, 16, 46], [14, 14, 40], [15, 16, 43], [14, 15, 41]],
+    },
+    {
+      key: "musa",
+      marks: [[12, 11, 35], [11, 12, 33], [13, 12, 38], [10, 11, 30], [12, 13, 36], [11, 10, 32], [13, 12, 37], [12, 11, 34]],
+    },
+  ];
+  for (const plan of plans) {
+    await studentsService.createEnrollment(students.jss1a[plan.key]!.id, { classId: madrasa.id, academicSessionId: sessionId });
+  }
+
+  const components = await prisma.assessmentComponent.findMany({ where: { academicSessionId: sessionId }, orderBy: { order: "asc" } });
+  for (const [subjectIndex, assignment] of assignments.entries()) {
+    const entries = plans.flatMap((plan) =>
+      components.map((component, componentIndex) => ({
+        studentId: students.jss1a[plan.key]!.id,
+        assessmentComponentId: component.id,
+        rawScore: plan.marks[subjectIndex]![componentIndex]!,
+      })),
+    );
+    await scoresService.bulkUpsertScores(assignment.id, actorUserId, { termId, entries });
+    await scoresService.submitScores(assignment.id, actorUserId, termId);
+  }
+
+  // Two Madrasa days — counted on the Islamiyyah card only, never added to
+  // the JSS1A card's school days. QR codes were rotated in section 6.
+  for (const date of [new Date("2026-09-14"), new Date("2026-09-15")]) {
+    const session = await attendanceService.openSession(actorUserId, {
+      classId: madrasa.id,
+      academicSessionId: sessionId,
+      termId,
+      date,
+    });
+    manifest.attendanceSessionIds.push(session.id);
+    for (const plan of plans) {
+      const qr = await attendanceService.getActiveQrCode(students.jss1a[plan.key]!.id);
+      await attendanceService.scan(session.id, actorUserId, { code: qr!.code, late: false });
+    }
+    await attendanceService.closeSession(session.id, actorUserId);
+  }
+
+  await resultsService.computeResultsForClass({ classId: madrasa.id, termId });
+
+  // The Madrasa form teacher's own ratings, separate from JSS1A's.
+  const traitIds = Object.values(structure.traits).map((t) => t.id);
+  await ratings.bulkUpsertRatings(madrasa.id, termId, actorUserId, {
+    entries: plans.flatMap((plan, studentIndex) =>
+      traitIds.map((traitId, traitIndex) => ({
+        studentId: students.jss1a[plan.key]!.id,
+        traitId,
+        value: 5 - ((studentIndex + traitIndex) % 3),
+      })),
+    ),
+  });
+
+  const comments: Record<string, { teacher: string; head: string }> = {
+    zainabL: {
+      teacher: "Zainab memorises with care and recites beautifully. Her Tajweed is excellent — ma sha Allah.",
+      head: "An excellent Islamiyyah result. Barakallahu feeki, Zainab.",
+    },
+    aisha: {
+      teacher: "Aisha is attentive in class; more daily revision of her Hifz will strengthen her recitation.",
+      head: "A very good result. Keep revising consistently.",
+    },
+    musa: {
+      teacher: "Musa needs more practice in Fiqh and Tawheed and regular revision at home.",
+      head: "A fair result. More effort and revision are required next term.",
+    },
+  };
+  const madrasaResults = await prisma.result.findMany({
+    where: { termId, programme: "MADRASSAH", studentId: { in: plans.map((p) => students.jss1a[p.key]!.id) } },
+  });
+  const resultByStudentId = new Map(madrasaResults.map((r) => [r.studentId, r]));
+  for (const plan of plans) {
+    const result = resultByStudentId.get(students.jss1a[plan.key]!.id)!;
+    await resultsService.writeClassTeacherComment(result.id, comments[plan.key]!.teacher);
+    await resultsService.writePrincipalComment(result.id, comments[plan.key]!.head);
+  }
+  // The class-wide ranking fires automatically once the last one finalizes.
+  for (const result of madrasaResults) {
+    await resultsService.finalizeResult(result.id, actorUserId);
+  }
+
+  console.log(
+    "Islamiyyah: Weekday Madrasa Level 1 with 8 subjects; Zainab Lawal, Aisha Abdullahi and Musa Aliyu " +
+      "scored, rated, commented and finalized on a separate MADRASSAH card (Zainab 1st).",
+  );
+}
+
+// ---------------------------------------------------------------------------
 // 7. Fees — every withholding case
 // ---------------------------------------------------------------------------
 async function seedFees(
@@ -939,6 +1097,7 @@ async function main() {
 
   const assignments = await seedAssignments(structure, staff);
   const results = await seedScoresAttendanceAndResults(structure, staff, students, assignments);
+  await seedIslamiyyah(structure, staff, students);
   await seedFees(structure, staff, students, results);
   await seedMadrassah(structure, staff, students);
   await seedAdmissions(structure, staff);
@@ -1064,7 +1223,11 @@ async function buildCredentialRows(
   }
 
   pushParent(students.twoKidsParent.id, "Two children: Fatima Bello (JSS1A, fully paid) and Hauwa Bello (JSS1B, draft) — the child switcher.");
-  pushParent(students.primaryParent.id, "Primary contact for Zainab Lawal (JSS1A) — one of two linked parents.");
+  pushParent(
+    students.primaryParent.id,
+    "Primary contact for Zainab Lawal (JSS1A) — one of two linked parents. Zainab also has a Weekday Madrasa " +
+      "(Islamiyyah) result, 1st in her group.",
+  );
   pushParent(students.secondaryParent.id, "Non-primary contact for Zainab Lawal (JSS1A) — same student as the row above, isPrimaryContact: false.");
 
   const singleParents: Array<{ studentKey: keyof typeof students.jss1a | keyof typeof students.jss1b; notes: string }> = [

@@ -2476,13 +2476,62 @@
               },
               "term": {
                 "$ref": "#/components/schemas/Term"
+              },
+              "components": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/SubjectResultComponent"
+                },
+                "description": "Sorted by order"
               }
             },
             "required": [
               "classSubjectAssignment",
-              "term"
+              "term",
+              "components"
             ]
           }
+        ]
+      },
+      "SubjectResultComponent": {
+        "type": "object",
+        "properties": {
+          "assessmentComponentId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "code": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "$ref": "#/components/schemas/AssessmentType"
+          },
+          "maxScore": {
+            "type": "string",
+            "description": "Decimal value, serialized as a string"
+          },
+          "rawScore": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Decimal value, serialized as a string"
+          },
+          "order": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "assessmentComponentId",
+          "code",
+          "name",
+          "type",
+          "maxScore",
+          "rawScore",
+          "order"
         ]
       },
       "Result": {

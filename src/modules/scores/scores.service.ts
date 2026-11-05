@@ -358,10 +358,58 @@ export async function getScoresForAssignment(assignmentId: string, termId: strin
 /// computeResultsForClass does — by the class the work was done in, not
 /// the student's current enrollment, which a mid-term transfer edits in
 /// place.
-export function getScoresForStudent(studentId: string) {
-  return prisma.subjectResult.findMany({
+///
+/// Each row also carries its per-component marks (CA1/CA2/Exam) for the
+/// report sheet: every component configured for the assignment's session,
+/// in order, with rawScore null where no mark was recorded. Only the Score
+/// rows behind this exact SubjectResult (same student, assignment, term) —
+/// a SubjectResult only exists once those were submitted, so this exposes
+/// nothing the total didn't already.
+export async function getScoresForStudent(studentId: string) {
+  const subjectResults = await prisma.subjectResult.findMany({
     where: { studentId },
     include: { classSubjectAssignment: { include: { subject: true, class: true } }, term: true },
     orderBy: { computedAt: "desc" },
   });
+  if (subjectResults.length === 0) {
+    return [];
+  }
+
+  const sessionIds = [...new Set(subjectResults.map((sr) => sr.classSubjectAssignment.academicSessionId))];
+  const [components, scores] = await Promise.all([
+    prisma.assessmentComponent.findMany({
+      where: { academicSessionId: { in: sessionIds } },
+      orderBy: { order: "asc" },
+    }),
+    prisma.score.findMany({
+      where: {
+        studentId,
+        OR: subjectResults.map((sr) => ({
+          classSubjectAssignmentId: sr.classSubjectAssignmentId,
+          termId: sr.termId,
+        })),
+      },
+    }),
+  ]);
+
+  const scoreKey = (assignmentId: string, termId: string, componentId: string) =>
+    `${assignmentId}:${termId}:${componentId}`;
+  const scoreMap = new Map(
+    scores.map((s) => [scoreKey(s.classSubjectAssignmentId, s.termId, s.assessmentComponentId), s]),
+  );
+
+  return subjectResults.map((sr) => ({
+    ...sr,
+    components: components
+      .filter((c) => c.academicSessionId === sr.classSubjectAssignment.academicSessionId)
+      .map((c) => ({
+        assessmentComponentId: c.id,
+        code: c.code,
+        name: c.name,
+        type: c.type,
+        maxScore: c.maxScore.toString(),
+        rawScore: scoreMap.get(scoreKey(sr.classSubjectAssignmentId, sr.termId, c.id))?.rawScore.toString() ?? null,
+        order: c.order,
+      })),
+  }));
 }
