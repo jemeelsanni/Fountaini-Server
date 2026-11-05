@@ -77,6 +77,17 @@ const envSchema = z.object({
   // domain to be verified either way; override for a display name, e.g.
   // "Fountaini Academy <no-reply@fountaini.academy>".
   EMAIL_FROM_ADDRESS: z.string().default("no-reply@fountaini.academy"),
+  // Paystack secret key (sk_test_... / sk_live_...) — used both to call
+  // Paystack's API and to verify the x-paystack-signature HMAC on incoming
+  // webhooks. Optional: unset just means online payment is switched off
+  // (the Paystack routes answer 503), not a startup failure — bank-transfer
+  // claims keep working without it. Never defaulted: this is a secret.
+  PAYSTACK_SECRET_KEY: z.string().optional(),
+  // Where Paystack sends the parent's browser after checkout, e.g. the
+  // frontend's own "payment complete" page, which then calls the verify
+  // route with the ?reference= Paystack appends. Unset = whatever callback
+  // URL is configured on the Paystack dashboard.
+  PAYSTACK_CALLBACK_URL: z.url().optional(),
 });
 
 const parsedEnv = envSchema

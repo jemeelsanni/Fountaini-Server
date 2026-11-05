@@ -37,6 +37,7 @@ export async function resetDb(): Promise<void> {
     prisma.attendanceRecord.deleteMany(),
     prisma.attendanceSession.deleteMany(),
     prisma.studentQrCode.deleteMany(),
+    prisma.paystackTransaction.deleteMany(),
     prisma.receipt.deleteMany(),
     prisma.payment.deleteMany(),
     prisma.feeObligation.deleteMany(),

@@ -75,6 +75,21 @@ export class AppError extends Error {
     return new AppError(500, "INTERNAL_ERROR", message);
   }
 
+  /// A feature this deployment hasn't been configured for (e.g. Paystack
+  /// with no PAYSTACK_SECRET_KEY set) — the request itself is fine, the
+  /// server just can't serve it here. Distinct from internal() so a client
+  /// can hide the feature instead of reporting a crash.
+  static serviceUnavailable(message: string): AppError {
+    return new AppError(503, "SERVICE_UNAVAILABLE", message);
+  }
+
+  /// An upstream payment provider (Paystack) failed or rejected the call.
+  /// 502, not 500: this server behaved correctly, the gateway behind it
+  /// didn't — and nothing was charged, so retrying is safe.
+  static paymentProviderError(message: string): AppError {
+    return new AppError(502, "PAYMENT_PROVIDER_ERROR", message);
+  }
+
   /// Distinct from forbidden(): the account is fully authenticated and
   /// would otherwise be permitted, but is carrying a server-generated
   /// password it must replace first. A distinct code (not a generic 403) so

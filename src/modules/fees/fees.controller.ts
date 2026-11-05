@@ -5,11 +5,13 @@ import type {
   CreateFeeStructureBody,
   FeesSummaryQuery,
   IdParams,
+  InitializePaystackPaymentBody,
   ListPaymentsQuery,
   RecordPaymentBody,
   StudentStatementQuery,
   UpdateFeeObligationBody,
   UpdateFeeStructureBody,
+  VerifyPaystackPaymentBody,
 } from "./fees.schemas.js";
 
 export async function createFeeStructure(req: Request, res: Response): Promise<void> {
@@ -60,6 +62,27 @@ export async function recordPayment(req: Request, res: Response): Promise<void> 
   const { id } = req.params as unknown as IdParams;
   const payment = await service.recordPayment(id, req.principal, req.body as RecordPaymentBody);
   res.status(201).json(payment);
+}
+
+export async function initializePaystackPayment(req: Request, res: Response): Promise<void> {
+  if (!req.principal) throw AppError.unauthorized();
+  const { id } = req.params as unknown as IdParams;
+  const checkout = await service.initializePaystackPayment(
+    id,
+    req.principal,
+    req.body as InitializePaystackPaymentBody,
+  );
+  res.status(201).json(checkout);
+}
+
+export async function verifyPaystackPayment(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as unknown as IdParams;
+  res.status(200).json(await service.verifyPaystackPayment(id, req.body as VerifyPaystackPaymentBody));
+}
+
+export async function handlePaystackWebhook(req: Request, res: Response): Promise<void> {
+  await service.handlePaystackWebhook(req.rawBody, req.get("x-paystack-signature"), req.body);
+  res.status(200).json({ received: true });
 }
 
 export async function confirmPayment(req: Request, res: Response): Promise<void> {

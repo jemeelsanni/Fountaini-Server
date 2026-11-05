@@ -10,10 +10,13 @@ import { createNotification } from "../notifications/notifications.service.js";
 import { getSchool } from "../school/school.service.js";
 import type {
   CreateFeeStructureBody,
+  InitializePaystackPaymentBody,
   RecordPaymentBody,
   UpdateFeeObligationBody,
   UpdateFeeStructureBody,
+  VerifyPaystackPaymentBody,
 } from "./fees.schemas.js";
+import * as paystack from "./paystack.client.js";
 
 // ---------------------------------------------------------------------------
 // Fee structures
@@ -424,6 +427,227 @@ export async function getReceiptForPayment(paymentId: string) {
     throw AppError.notFound("No receipt has been issued for this payment yet");
   }
   return receipt;
+}
+
+// ---------------------------------------------------------------------------
+// Paystack online payment
+// ---------------------------------------------------------------------------
+//
+// Flow: initialize (parent picks an obligation, gets a Paystack checkout URL)
+// -> parent pays on Paystack -> Paystack calls the webhook AND redirects the
+// parent back to the frontend, which calls verify. Either path credits the
+// payment through finalizePaystackTransaction(); whichever lands second is a
+// no-op. The webhook is what makes it reliable (it fires even if the parent
+// closes the tab); verify is what makes it immediate for the parent watching.
+
+function generatePaystackReference(): string {
+  return `FTN-${Date.now()}-${randomBytes(4).toString("hex").toUpperCase()}`;
+}
+
+export async function initializePaystackPayment(
+  feeObligationId: string,
+  principal: Principal,
+  input: InitializePaystackPaymentBody,
+) {
+  paystack.assertConfigured();
+
+  const obligation = await prisma.feeObligation.findUnique({
+    where: { id: feeObligationId },
+    include: { payments: { where: { status: "CONFIRMED" } } },
+  });
+  if (!obligation) {
+    throw AppError.notFound("Fee obligation not found");
+  }
+  if (obligation.status === "WAIVED") {
+    throw AppError.conflict("This fee has been waived — there is nothing to pay");
+  }
+  const { outstandingKobo } = withBalance(obligation);
+  if (outstandingKobo <= 0) {
+    throw AppError.conflict("This fee is already fully paid");
+  }
+  const amountKobo = input.amountKobo ?? outstandingKobo;
+  if (amountKobo > outstandingKobo) {
+    throw AppError.badRequest(
+      `Amount exceeds the outstanding balance of ₦${(outstandingKobo / 100).toFixed(2)} on this fee`,
+    );
+  }
+
+  // Paystack requires a customer email on every transaction (it's where
+  // Paystack sends its own receipt). Parents and staff always have one;
+  // the null case is defensive, see User.email's own comment.
+  const user = await prisma.user.findUniqueOrThrow({ where: { id: principal.userId }, select: { email: true } });
+  if (!user.email) {
+    throw AppError.badRequest(
+      "This account has no email address, which online payment requires — ask the school office to add one",
+    );
+  }
+
+  // Row first, Paystack second — see the PaystackTransaction model comment.
+  const transaction = await prisma.paystackTransaction.create({
+    data: { reference: generatePaystackReference(), feeObligationId, amountKobo, initiatedByUserId: principal.userId },
+  });
+
+  let checkout: Awaited<ReturnType<typeof paystack.initializeTransaction>>;
+  try {
+    checkout = await paystack.initializeTransaction({
+      email: user.email,
+      amountKobo,
+      reference: transaction.reference,
+      metadata: { feeObligationId, studentId: obligation.studentId },
+    });
+  } catch (err) {
+    await prisma.paystackTransaction.update({ where: { id: transaction.id }, data: { status: "FAILED" } });
+    throw err;
+  }
+
+  await prisma.paystackTransaction.update({
+    where: { id: transaction.id },
+    data: { authorizationUrl: checkout.authorization_url },
+  });
+
+  return {
+    id: transaction.id,
+    reference: transaction.reference,
+    amountKobo,
+    authorizationUrl: checkout.authorization_url,
+    accessCode: checkout.access_code,
+  };
+}
+
+/// Credits a successful Paystack charge: exactly once per reference, no
+/// matter how many times (or how concurrently) the webhook and verify paths
+/// call this. The claim is the same conditional-update pattern as
+/// confirmPayment(): the WHERE re-checks status at write time, so of two
+/// concurrent callers only one flips it and goes on to create the Payment;
+/// the other sees count 0 and returns. Payment.bankReference's partial
+/// unique index (the reference goes there too) is a second, DB-level line
+/// behind that one.
+///
+/// An amount or currency mismatch is never credited: it can only mean the
+/// charge isn't the one this row asked for. Logged loudly and left PENDING
+/// for a human to look at, rather than FAILED — money may really have moved.
+async function finalizePaystackTransaction(data: paystack.PaystackTransactionData) {
+  const paymentId = await prisma.$transaction(async (tx) => {
+    const transaction = await tx.paystackTransaction.findUnique({ where: { reference: data.reference } });
+    if (!transaction) {
+      logger.warn({ reference: data.reference }, "Paystack success for an unknown reference — ignored");
+      return null;
+    }
+    if (data.amount !== transaction.amountKobo || data.currency !== "NGN") {
+      logger.error(
+        {
+          reference: data.reference,
+          expectedKobo: transaction.amountKobo,
+          paidAmount: data.amount,
+          currency: data.currency,
+        },
+        "Paystack success with a mismatched amount/currency — NOT credited, needs manual review",
+      );
+      return null;
+    }
+
+    const claimed = await tx.paystackTransaction.updateMany({
+      where: { id: transaction.id, status: { not: "SUCCESS" } },
+      data: { status: "SUCCESS" },
+    });
+    if (claimed.count === 0) {
+      return null;
+    }
+
+    const now = new Date();
+    const payment = await tx.payment.create({
+      data: {
+        feeObligationId: transaction.feeObligationId,
+        amountKobo: transaction.amountKobo,
+        method: "PAYSTACK",
+        bankReference: transaction.reference,
+        paymentDate: data.paid_at ? new Date(data.paid_at) : now,
+        status: "CONFIRMED",
+        recordedByUserId: transaction.initiatedByUserId,
+        // No person confirmed this — Paystack did. confirmedByUserId stays
+        // null; confirmedAt still records when it was credited.
+        confirmedAt: now,
+        notes: "Paid online via Paystack",
+      },
+    });
+    // Receipt.issuedByUserId is non-nullable; the payer is the closest
+    // true answer for a receipt no staff member issued by hand.
+    await tx.receipt.create({
+      data: {
+        paymentId: payment.id,
+        receiptNumber: generateReceiptNumber(),
+        issuedByUserId: transaction.initiatedByUserId,
+      },
+    });
+    await tx.paystackTransaction.update({ where: { id: transaction.id }, data: { paymentId: payment.id } });
+    await recomputeObligationStatus(tx, transaction.feeObligationId);
+
+    return payment.id;
+  });
+
+  if (paymentId) {
+    fireAndForget(notifyPaymentConfirmed(paymentId), (err) =>
+      logger.error({ err }, "Failed to send payment confirmation notification"),
+    );
+  }
+}
+
+/// "failed"/"reversed" are final on Paystack's side; anything else that
+/// isn't "success" ("abandoned", "ongoing", ...) can still become a success,
+/// so the row stays PENDING. Never downgrades a SUCCESS.
+async function applyPaystackResult(data: paystack.PaystackTransactionData) {
+  if (data.status === "success") {
+    await finalizePaystackTransaction(data);
+  } else if (data.status === "failed" || data.status === "reversed") {
+    await prisma.paystackTransaction.updateMany({
+      where: { reference: data.reference, status: "PENDING" },
+      data: { status: "FAILED" },
+    });
+  }
+}
+
+async function getPaystackTransactionResult(reference: string) {
+  const transaction = await prisma.paystackTransaction.findUniqueOrThrow({
+    where: { reference },
+    include: { payment: { include: { receipt: true } } },
+  });
+  return {
+    reference: transaction.reference,
+    status: transaction.status,
+    amountKobo: transaction.amountKobo,
+    payment: transaction.payment,
+  };
+}
+
+/// Called by the frontend when Paystack redirects the parent back. Scoped
+/// to the obligation in the URL (same scope as initialize), so a reference
+/// for someone else's child reads as not-found rather than leaking.
+export async function verifyPaystackPayment(feeObligationId: string, input: VerifyPaystackPaymentBody) {
+  const transaction = await prisma.paystackTransaction.findUnique({ where: { reference: input.reference } });
+  if (!transaction || transaction.feeObligationId !== feeObligationId) {
+    throw AppError.notFound("Paystack transaction not found");
+  }
+  if (transaction.status !== "SUCCESS") {
+    await applyPaystackResult(await paystack.verifyTransaction(input.reference));
+  }
+  return getPaystackTransactionResult(input.reference);
+}
+
+/// Only charge.success is acted on — it's the one event that moves money
+/// toward the school. Everything else is acknowledged and ignored, so
+/// Paystack doesn't keep retrying it. The payload is trusted once the
+/// signature checks out (that's what the signature is for), and
+/// finalizePaystackTransaction() still re-checks amount/currency against
+/// the row this server wrote itself.
+export async function handlePaystackWebhook(rawBody: Buffer | undefined, signature: string | undefined, body: unknown) {
+  paystack.assertConfigured();
+  if (!rawBody || !paystack.isValidWebhookSignature(rawBody, signature)) {
+    throw AppError.unauthorized("Invalid Paystack signature");
+  }
+  const event = body as { event?: string; data?: paystack.PaystackTransactionData };
+  if (event.event === "charge.success" && event.data) {
+    await applyPaystackResult(event.data);
+  }
 }
 
 // ---------------------------------------------------------------------------

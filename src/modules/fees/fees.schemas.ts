@@ -65,6 +65,20 @@ export const recordPaymentSchema = z.object({
 });
 export type RecordPaymentBody = z.infer<typeof recordPaymentSchema>;
 
+// amountKobo omitted means "the whole outstanding balance" — the common
+// case. Present, it allows a part-payment (same instalment habit
+// recordPayment()'s near-duplicate comment describes), capped at the
+// outstanding balance by the service, not here: only the service knows it.
+export const initializePaystackPaymentSchema = z.object({
+  amountKobo: z.coerce.number().int().positive().optional(),
+});
+export type InitializePaystackPaymentBody = z.infer<typeof initializePaystackPaymentSchema>;
+
+export const verifyPaystackPaymentSchema = z.object({
+  reference: z.string().min(1),
+});
+export type VerifyPaystackPaymentBody = z.infer<typeof verifyPaystackPaymentSchema>;
+
 // status omitted entirely (not just an empty string) means PENDING — the
 // bursar's work queue is the default view, not "every payment ever."
 // Pass status=CONFIRMED (etc.) explicitly to see anything else.
