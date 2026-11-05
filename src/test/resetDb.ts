@@ -55,6 +55,8 @@ export async function resetDb(): Promise<void> {
     prisma.assessmentComponent.deleteMany(),
     prisma.timeSlot.deleteMany(),
     prisma.term.deleteMany(),
+    prisma.subjectTemplateSubject.deleteMany(),
+    prisma.subjectTemplate.deleteMany(),
     prisma.subject.deleteMany(),
     prisma.class.deleteMany(),
     // School.currentAcademicSessionId FKs to AcademicSession (no cascade),

@@ -46,6 +46,7 @@ import {
 import { createSchoolSchema, updateSchoolSchema } from "../modules/school/school.schemas.js";
 import { bulkUpsertScoresSchema, idParamsSchema as scoresIdParamsSchema, scoresForAssignmentQuerySchema, submitScoresSchema } from "../modules/scores/scores.schemas.js";
 import { createStaffSchema, idParamsSchema as staffIdParamsSchema, updateStaffSchema } from "../modules/staff/staff.schemas.js";
+import { idParamsSchema as subjectTemplatesIdParamsSchema, subjectTemplateInputSchema } from "../modules/subject-templates/subject-templates.schemas.js";
 import { bulkUpdateStudentStatusSchema, createEnrollmentSchema, createStudentSchema, idParamsSchema as studentsIdParamsSchema, searchStudentsQuerySchema, transferStudentSchema, updateStudentSchema } from "../modules/students/students.schemas.js";
 import { createTimeSlotSchema, createTimetableEntrySchema, idParamsSchema as timetableIdParamsSchema } from "../modules/timetable/timetable.schemas.js";
 import { createUserSchema, updateUserEmailSchema, userIdParamsSchema } from "../modules/users/users.schemas.js";
@@ -125,6 +126,7 @@ import {
   SubjectResultSchema,
   SubjectResultWithRelationsSchema,
   SubjectSchema,
+  SubjectTemplateSchema,
   SurahSchema,
   TermSchema,
   TraitSchema,
@@ -135,6 +137,13 @@ import {
   UpdateUserEmailResultSchema,
   UserSummarySchema,
 } from "./resourceSchemas.js";
+
+/// Named so the generated spec exposes it as a component the frontend's
+/// types can reference — module request schemas are otherwise inlined.
+/// Zod's native .meta({ id }), not .openapi(): the schema is built when
+/// app.ts loads its routes, before zodSetup's extension has run, and a Zod 4
+/// instance created before extendZodWithOpenApi never gains .openapi().
+const SubjectTemplateInputSchema = subjectTemplateInputSchema.meta({ id: "SubjectTemplateInput" });
 
 export interface ResponseSpec {
   description: string;
@@ -282,6 +291,32 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
   "GET /api/subjects": {
     summary: "List subjects",
     responses: { 200: { description: "OK", schema: z.array(SubjectSchema) } },
+  },
+  "GET /api/subject-templates": {
+    summary: "List subject templates by name, each with its subjects in template order",
+    responses: { 200: { description: "OK", schema: z.array(SubjectTemplateSchema) } },
+  },
+  "POST /api/subject-templates": {
+    summary:
+      "Create a subject template. `subjects` array order becomes the template order. 400 for a blank " +
+      "name, a name already used by another template (case-insensitive), an unknown subjectId, or a " +
+      "subjectId listed twice.",
+    requestBody: SubjectTemplateInputSchema,
+    responses: { 201: { description: "Created", schema: SubjectTemplateSchema } },
+  },
+  "PATCH /api/subject-templates/:id": {
+    summary:
+      "Replace a subject template — full body, same rules as create; `subjects` replaces the whole " +
+      "list and its array order becomes the new template order.",
+    requestParams: subjectTemplatesIdParamsSchema,
+    requestBody: SubjectTemplateInputSchema,
+    responses: { 200: { description: "OK", schema: SubjectTemplateSchema } },
+  },
+  "DELETE /api/subject-templates/:id": {
+    summary:
+      "Delete a subject template. Class-subject assignments previously created from it are untouched.",
+    requestParams: subjectTemplatesIdParamsSchema,
+    responses: { 204: noContent },
   },
   "POST /api/class-subject-assignments": {
     summary: "Assign a teacher to a class/subject for an academic session",

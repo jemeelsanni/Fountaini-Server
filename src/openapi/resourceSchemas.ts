@@ -390,6 +390,25 @@ export const SubjectSchema = z
   })
   .openapi("Subject");
 
+export const SubjectTemplateSubjectSchema = z
+  .object({
+    subjectId: id(),
+    optional: z.boolean(),
+    subject: SubjectSchema,
+  })
+  .openapi("SubjectTemplateSubject");
+
+export const SubjectTemplateSchema = z
+  .object({
+    id: id(),
+    name: z.string(),
+    description: z.string().nullable(),
+    subjects: z.array(SubjectTemplateSubjectSchema).openapi({ description: "Sorted by template order" }),
+    createdAt: isoDateTime(),
+    updatedAt: isoDateTime(),
+  })
+  .openapi("SubjectTemplate");
+
 export const ClassSubjectAssignmentSchema = z
   .object({
     id: id(),

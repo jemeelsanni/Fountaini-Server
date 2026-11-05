@@ -11,7 +11,7 @@
 //   destructive deletes for anything referenced by historical academic or financial data.
 //
 // NOTE — partial unique indexes: Prisma's schema DSL cannot express a `WHERE`
-// clause on a unique index, so the five invariants below are declared here
+// clause on a unique index, so the six invariants below are declared here
 // only as plain columns; the actual enforcement lives in raw-SQL migrations
 // instead:
 //   1. AcademicSession.isCurrent      — migration add_current_session_term_partial_indexes
@@ -27,6 +27,10 @@
 //      repeats among non-REJECTED rows" — a real bank reference identifies
 //      one transfer, so the same one logged twice is a genuine duplicate
 //      claim, not a race)
+//   6. SubjectTemplate.name           — migration add_subject_templates
+//      (not partial but functional: unique on lower("name"), so "Primary"
+//      and "primary" collide — Prisma can't express an expression index
+//      either)
 // The first three are backed by an app-layer transaction that clears the flag on
 // siblings before setting it on the new row AND a DB-level partial unique index — see
 // each field's own comment; the app-layer step alone was found to have a real gap
@@ -440,6 +444,39 @@ model Subject {
 
   classSubjectAssignments ClassSubjectAssignment[]
   sessionSubjectAverages  SessionSubjectAverage[]
+  subjectTemplateSubjects SubjectTemplateSubject[]
+}
+
+/// A named, ordered subject list per level ("Primary", "JSS"…) that the
+/// admin frontend applies to a class by POSTing one ClassSubjectAssignment
+/// per subject — there's no server-side "apply", since each assignment
+/// needs its own teacher. Deleting a template never touches assignments
+/// already created from it; nothing links them back.
+///
+/// name is unique case-insensitively — see the raw-SQL index note at the
+/// top of this file; the service maps its P2002 to a 400.
+model SubjectTemplate {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  subjects SubjectTemplateSubject[]
+}
+
+/// Cascades from Subject as well as SubjectTemplate: a subject removed from
+/// the school drops out of every template rather than blocking the delete.
+model SubjectTemplateSubject {
+  templateId String
+  template   SubjectTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  subjectId  String
+  subject    Subject         @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  optional   Boolean         @default(false)
+  order      Int
+
+  @@id([templateId, subjectId])
+  @@index([subjectId])
 }
 
 /// The central authorization anchor: "a teacher may only write scores for
