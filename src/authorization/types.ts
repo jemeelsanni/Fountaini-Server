@@ -37,12 +37,6 @@ declare global {
       /// .default(), z.coerce, or .transform() and needs the applied
       /// result, not just presence/shape validation.
       validatedQuery?: unknown;
-      /// The exact request bytes express.json() parsed req.body from —
-      /// captured by its `verify` hook in app.ts. Only the Paystack webhook
-      /// reads it: its HMAC signature is over the raw body, and
-      /// re-serializing req.body is not guaranteed to reproduce it byte for
-      /// byte.
-      rawBody?: Buffer;
     }
   }
 }

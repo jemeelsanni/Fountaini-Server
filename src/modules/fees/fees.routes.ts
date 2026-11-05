@@ -15,13 +15,11 @@ import {
   feesSummaryQuerySchema,
   idParamsSchema,
   type IdParams,
-  initializePaystackPaymentSchema,
   listPaymentsQuerySchema,
   recordPaymentSchema,
   studentStatementQuerySchema,
   updateFeeObligationSchema,
   updateFeeStructureSchema,
-  verifyPaystackPaymentSchema,
 } from "./fees.schemas.js";
 
 export const feesRouter = Router();
@@ -93,26 +91,6 @@ feesRouter.post(
   auditMutation("Payment", "PAYMENT_RECORDED"),
   controller.recordPayment,
 );
-// Online payment — same scope as recording a claim (ADMIN, BURSAR, or the
-// obligation's linked parent), so office staff can also open a checkout on
-// a parent's behalf at the front desk.
-feesRouter.post(
-  "/fee-obligations/:id/paystack/initialize",
-  validate({ params: idParamsSchema, body: initializePaystackPaymentSchema }),
-  requireScope((principal, req) =>
-    canCreatePaymentForObligation(principal, (req.params as unknown as IdParams).id),
-  ),
-  auditMutation("PaystackTransaction", "PAYSTACK_PAYMENT_INITIALIZED"),
-  controller.initializePaystackPayment,
-);
-feesRouter.post(
-  "/fee-obligations/:id/paystack/verify",
-  validate({ params: idParamsSchema, body: verifyPaystackPaymentSchema }),
-  requireScope((principal, req) =>
-    canCreatePaymentForObligation(principal, (req.params as unknown as IdParams).id),
-  ),
-  controller.verifyPaystackPayment,
-);
 const fetchPaymentBefore = (id: string) => prisma.payment.findUnique({ where: { id } });
 
 feesRouter.post(
@@ -180,10 +158,3 @@ feesRouter.get(
   validate({ query: feesSummaryQuerySchema }),
   controller.getFeesSummary,
 );
-
-/// Public: Paystack calls this, not a logged-in user. Authenticated by the
-/// x-paystack-signature HMAC inside the handler instead of requireAuth (see
-/// PUBLIC_ROUTES). Mounted on its own "/api/paystack" prefix — see app.ts.
-export const paystackWebhookRouter = Router();
-
-paystackWebhookRouter.post("/webhook", controller.handlePaystackWebhook);

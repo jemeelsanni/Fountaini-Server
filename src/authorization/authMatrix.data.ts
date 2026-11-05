@@ -190,8 +190,6 @@ export const BESPOKE_ROUTE_KEYS: readonly string[] = [
   "GET /api/students/:id/statement",
   "GET /api/fee-obligations/:id",
   "POST /api/fee-obligations/:id/payments",
-  "POST /api/fee-obligations/:id/paystack/initialize",
-  "POST /api/fee-obligations/:id/paystack/verify",
   "GET /api/class-subject-assignments/:id/students",
   "GET /api/class-subject-assignments/:id/scores",
   "PUT /api/class-subject-assignments/:id/scores",
@@ -794,31 +792,6 @@ export async function buildBespokeRows(generics: GenericActors): Promise<MatrixR
         Promise.resolve({
           url: `/api/fee-obligations/${world.feeObligationId}/payments`,
           body: { amountKobo: 100_00, paymentDate: new Date().toISOString(), bankReference: "MATRIX-REF" },
-          tokens: world.studentScopeTokens,
-        }),
-    },
-    // Both Paystack rows use a body the service rejects (400 / 404) before
-    // it would ever call Paystack — "allowed" only needs past the auth
-    // layer, and this keeps the matrix off the network entirely.
-    {
-      name: "POST /api/fee-obligations/:id/paystack/initialize",
-      method: "post",
-      cases: PAYMENT_CREATE_SCOPE_CASES,
-      setup: () =>
-        Promise.resolve({
-          url: `/api/fee-obligations/${world.feeObligationId}/paystack/initialize`,
-          body: { amountKobo: 2_000_000_000 },
-          tokens: world.studentScopeTokens,
-        }),
-    },
-    {
-      name: "POST /api/fee-obligations/:id/paystack/verify",
-      method: "post",
-      cases: PAYMENT_CREATE_SCOPE_CASES,
-      setup: () =>
-        Promise.resolve({
-          url: `/api/fee-obligations/${world.feeObligationId}/paystack/verify`,
-          body: { reference: "MATRIX-NO-SUCH-REFERENCE" },
           tokens: world.studentScopeTokens,
         }),
     },

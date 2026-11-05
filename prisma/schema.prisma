@@ -1037,8 +1037,7 @@ model FeeObligation {
   createdAt         DateTime            @default(now())
   updatedAt         DateTime            @updatedAt
 
-  payments             Payment[]
-  paystackTransactions PaystackTransaction[]
+  payments Payment[]
 
   @@unique([studentId, feeStructureId, termId])
   @@index([studentId, status])
@@ -1051,10 +1050,6 @@ model FeeObligation {
 
 enum PaymentMethod {
   BANK_TRANSFER
-  /// Paid online through Paystack checkout — created already CONFIRMED by
-  /// finalizePaystackTransaction() (fees.service.ts), never a PENDING claim
-  /// for the bursar to review: Paystack itself is the proof of payment.
-  PAYSTACK
 }
 
 enum PaymentStatus {
@@ -1084,8 +1079,7 @@ model Payment {
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
-  receipt             Receipt?
-  paystackTransaction PaystackTransaction?
+  receipt Receipt?
 
   @@index([feeObligationId, status])
   /// Added for GET /api/payments (the bursar's queue — status is nearly
@@ -1102,45 +1096,6 @@ model Receipt {
   receiptNumber  String   @unique
   issuedByUserId String
   issuedAt       DateTime @default(now())
-}
-
-enum PaystackTransactionStatus {
-  PENDING
-  SUCCESS
-  FAILED
-}
-
-/// One Paystack checkout attempt against one obligation. Deliberately a
-/// separate table rather than a PENDING Payment row: most checkouts a parent
-/// opens are abandoned, and a PENDING Payment would land each one in the
-/// bursar's confirm/reject queue and in the dashboard's pendingKobo bucket.
-/// A Payment (CONFIRMED, method PAYSTACK, bankReference = this reference) is
-/// only created once Paystack reports the charge succeeded — see
-/// finalizePaystackTransaction() in fees.service.ts.
-///
-/// The row is written BEFORE Paystack is called, not after: if it were the
-/// other way round, a DB failure right after a successful initialize would
-/// leave a live checkout whose webhook references a transaction this server
-/// has no record of — a parent could pay and the money would never be
-/// credited to anything.
-model PaystackTransaction {
-  id                String                    @id @default(cuid())
-  /// Our own reference, sent to Paystack on initialize and echoed back on
-  /// every webhook/verify response — the one key both sides share.
-  reference         String                    @unique
-  feeObligationId   String
-  feeObligation     FeeObligation             @relation(fields: [feeObligationId], references: [id])
-  amountKobo        Int
-  initiatedByUserId String
-  status            PaystackTransactionStatus @default(PENDING)
-  /// Null until Paystack's initialize call returns (or forever, if it failed).
-  authorizationUrl  String?
-  paymentId         String?                   @unique
-  payment           Payment?                  @relation(fields: [paymentId], references: [id])
-  createdAt         DateTime                  @default(now())
-  updatedAt         DateTime                  @updatedAt
-
-  @@index([feeObligationId, status])
 }
 
 // =========================================================================

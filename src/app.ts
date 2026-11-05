@@ -13,7 +13,7 @@ import { admissionsRouter } from "./modules/admissions/admissions.routes.js";
 import { attendanceRouter } from "./modules/attendance/attendance.routes.js";
 import { auditRouter } from "./modules/audit/audit.routes.js";
 import { authRouter } from "./modules/auth/auth.routes.js";
-import { feesRouter, paystackWebhookRouter } from "./modules/fees/fees.routes.js";
+import { feesRouter } from "./modules/fees/fees.routes.js";
 import { gradingRouter } from "./modules/grading/grading.routes.js";
 import { idCardsRouter } from "./modules/id-cards/id-cards.routes.js";
 import { madrassahRouter } from "./modules/madrassah/madrassah.routes.js";
@@ -48,15 +48,7 @@ export const routeMounts: RouteMount[] = [
   { prefix: "/api/staff", router: staffRouter },
   { prefix: "/api/audit-log", router: auditRouter },
   { prefix: "/api/school", router: schoolRouter },
-<<<<<<< Updated upstream
   { prefix: "/api/id-cards", router: idCardsRouter },
-=======
-  // Public (Paystack calls it, authenticated by HMAC signature, not a
-  // token) — on its own prefix and ahead of every bare-"/api" router below
-  // for the same blanket-requireAuth reason admissionsRouter's comment
-  // gives.
-  { prefix: "/api/paystack", router: paystackWebhookRouter },
->>>>>>> Stashed changes
   // admissionsRouter must be mounted before any other router sharing the bare
   // "/api" prefix: it's the only one with a public route, and every other
   // router below applies requireAuth as a blanket router.use() with no path —
@@ -112,13 +104,7 @@ export function createApp() {
       },
     }),
   );
-  app.use(
-    express.json({
-      verify: (req, _res, buf) => {
-        (req as Request).rawBody = buf;
-      },
-    }),
-  );
+  app.use(express.json());
   app.use(pinoHttp({ logger }));
 
   app.get("/health", (_req: Request, res: Response) => {

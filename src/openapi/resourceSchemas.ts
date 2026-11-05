@@ -56,7 +56,7 @@ const FeeCategorySchema = z.enum(["TUITION", "REGISTRATION", "EXAM", "UNIFORM", 
 const FeeObligationStatusSchema = z
   .enum(["PENDING", "PARTIALLY_PAID", "PAID", "WAIVED"])
   .openapi("FeeObligationStatus");
-const PaymentMethodSchema = z.enum(["BANK_TRANSFER", "PAYSTACK"]).openapi("PaymentMethod");
+const PaymentMethodSchema = z.enum(["BANK_TRANSFER"]).openapi("PaymentMethod");
 const PaymentStatusSchema = z.enum(["PENDING", "CONFIRMED", "REJECTED"]).openapi("PaymentStatus");
 const AttendanceSessionStatusSchema = z.enum(["OPEN", "CLOSED"]).openapi("AttendanceSessionStatus");
 const AttendanceStatusSchema = z.enum(["PRESENT", "ABSENT", "LATE"]).openapi("AttendanceStatus");
@@ -897,27 +897,6 @@ export const ReceiptSchema = z
     issuedAt: isoDateTime(),
   })
   .openapi("Receipt");
-
-export const PaystackCheckoutSchema = z
-  .object({
-    id: id(),
-    reference: z.string(),
-    amountKobo: kobo(),
-    /// Send the parent's browser here (or open it with Paystack Inline via accessCode).
-    authorizationUrl: z.string(),
-    accessCode: z.string(),
-  })
-  .openapi("PaystackCheckout");
-
-export const PaystackTransactionResultSchema = z
-  .object({
-    reference: z.string(),
-    status: z.enum(["PENDING", "SUCCESS", "FAILED"]),
-    amountKobo: kobo(),
-    /// Set once status is SUCCESS: the CONFIRMED Payment (method PAYSTACK) and its receipt.
-    payment: PaymentSchema.extend({ receipt: ReceiptSchema.nullable() }).nullable(),
-  })
-  .openapi("PaystackTransactionResult");
 
 export const PaymentWithRelationsSchema = PaymentSchema.extend({
   feeObligation: z.object({

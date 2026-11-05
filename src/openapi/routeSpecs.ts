@@ -13,7 +13,7 @@ import {
 } from "../modules/auth/auth.schemas.js";
 import { classAttendanceQuerySchema, correctAttendanceSchema, idParamsSchema as attendanceIdParamsSchema, openSessionSchema, scanSchema } from "../modules/attendance/attendance.schemas.js";
 import { listAuditLogQuerySchema } from "../modules/audit/audit.schemas.js";
-import { createFeeStructureSchema, feesSummaryQuerySchema, idParamsSchema as feesIdParamsSchema, initializePaystackPaymentSchema, listPaymentsQuerySchema, recordPaymentSchema, studentStatementQuerySchema, updateFeeObligationSchema, updateFeeStructureSchema, verifyPaystackPaymentSchema } from "../modules/fees/fees.schemas.js";
+import { createFeeStructureSchema, feesSummaryQuerySchema, idParamsSchema as feesIdParamsSchema, listPaymentsQuerySchema, recordPaymentSchema, studentStatementQuerySchema, updateFeeObligationSchema, updateFeeStructureSchema } from "../modules/fees/fees.schemas.js";
 import { paymentHistoryQuerySchema, scopedReportQuerySchema } from "../modules/reports/reports.schemas.js";
 import { createAssessmentComponentSchema, createGradeBandSchema, createGradingScaleSchema, idParamsSchema as gradingIdParamsSchema, updateAssessmentComponentSchema, updateGradeBandSchema } from "../modules/grading/grading.schemas.js";
 import { idParamsSchema as idCardsIdParamsSchema, listStudentIdCardsQuerySchema } from "../modules/id-cards/id-cards.schemas.js";
@@ -94,8 +94,6 @@ import {
   StudentStatementResponseSchema,
   PaymentQueueResponseSchema,
   PaymentSchema,
-  PaystackCheckoutSchema,
-  PaystackTransactionResultSchema,
   PaymentWithRelationsSchema,
   TermSummaryResponseSchema,
   RatingScaleLevelSchema,
@@ -557,33 +555,6 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     requestBody: recordPaymentSchema,
     responses: { 201: { description: "Created", schema: PaymentSchema } },
     scopeNote: SCOPE_NOTES.canCreatePaymentForObligation,
-  },
-  "POST /api/fee-obligations/:id/paystack/initialize": {
-    summary:
-      "Start a Paystack checkout for a fee obligation. amountKobo defaults to the whole outstanding balance " +
-      "and may not exceed it. Redirect the parent to authorizationUrl; the payment is credited (CONFIRMED, " +
-      "with a receipt — no bursar step) once Paystack reports success via the webhook or the verify route. " +
-      "503 if this server has no PAYSTACK_SECRET_KEY; 502 if Paystack itself refuses.",
-    requestParams: feesIdParamsSchema,
-    requestBody: initializePaystackPaymentSchema,
-    responses: { 201: { description: "Created", schema: PaystackCheckoutSchema } },
-    scopeNote: SCOPE_NOTES.canCreatePaymentForObligation,
-  },
-  "POST /api/fee-obligations/:id/paystack/verify": {
-    summary:
-      "Check a Paystack checkout's outcome with Paystack and credit it if it succeeded — call this from " +
-      "the page Paystack redirects the parent back to, passing the reference it appends. Safe to call " +
-      "repeatedly; a payment is only ever credited once.",
-    requestParams: feesIdParamsSchema,
-    requestBody: verifyPaystackPaymentSchema,
-    responses: { 200: { description: "OK", schema: PaystackTransactionResultSchema } },
-    scopeNote: SCOPE_NOTES.canCreatePaymentForObligation,
-  },
-  "POST /api/paystack/webhook": {
-    summary:
-      "Paystack webhook receiver (public — authenticated by the x-paystack-signature HMAC, not a token). " +
-      "Set <PUBLIC_BASE_URL>/api/paystack/webhook as the webhook URL in the Paystack dashboard.",
-    responses: { 200: { description: "Acknowledged", schema: z.object({ received: z.literal(true) }) } },
   },
   "POST /api/payments/:id/confirm": {
     summary: "Confirm a pending payment",

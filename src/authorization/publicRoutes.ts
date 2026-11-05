@@ -15,9 +15,6 @@ export const PUBLIC_ROUTES: ReadonlySet<string> = new Set([
   "POST /api/auth/forgot-password",
   "POST /api/auth/reset-password",
   "POST /api/admission-enquiries",
-  // Called by Paystack's servers, which hold no access token — verified by
-  // its x-paystack-signature HMAC in handlePaystackWebhook() instead.
-  "POST /api/paystack/webhook",
   // /api/docs itself is exempt from needing an entry here at all — it's
   // mounted via router.use(), which the route-guard inventory walker never
   // sees (only router.get/post/etc. produce a discoverable Route). Only
