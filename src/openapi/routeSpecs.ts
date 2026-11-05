@@ -38,6 +38,7 @@ import {
   idParamsSchema as resultsIdParamsSchema,
   listResultsForStudentQuerySchema,
   overrideResultSchema,
+  programmeQuerySchema,
   releaseWithholdingSchema,
   studentSessionParamsSchema,
   studentTermParamsSchema,
@@ -264,7 +265,9 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     responses: { 200: { description: "OK", schema: TermSchema } },
   },
   "POST /api/classes": {
-    summary: "Create a class",
+    summary:
+      "Create a class. `programme: MADRASSAH` makes it a Weekday Madrasa group — its students get a " +
+      "separate Islamiyyah result alongside their regular class's. Fixed once created.",
     requestBody: createClassSchema,
     responses: { 201: { description: "Created", schema: ClassSchema } },
   },
@@ -919,7 +922,8 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     summary:
       "Bulk upsert affective/psychomotor ratings for a class+term. Only while the targeted student's " +
       "Result for this term is DRAFT — same rule as the class-teacher comment; rejects (409) the whole " +
-      "batch if any targeted student's result is no longer DRAFT. Appear on the result read once written.",
+      "batch if any targeted student's result is no longer DRAFT. Appear on the result read once written. " +
+      "Ratings belong to the class's programme — a Madrasa group's ratings go on the Islamiyyah card only.",
     requestParams: ratingsClassTermParamsSchema,
     requestBody: bulkUpsertRatingsSchema,
     responses: { 200: { description: "OK", schema: z.array(RatingWithTraitSchema) } },
@@ -928,13 +932,20 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
 
   // --- results ----------------------------------------------------------------
   "POST /api/results/compute": {
-    summary: "Compute/refresh DRAFT report-card results for a class/term from submitted subject results",
+    summary:
+      "Compute/refresh DRAFT report-card results for a class/term from submitted subject results. Uses " +
+      "only subject work from classes of the same programme as this class, so a student's academic and " +
+      "Islamiyyah results (and positions) are computed independently.",
     requestBody: computeResultsSchema,
     responses: { 200: { description: "OK", schema: z.array(ResultSchema) } },
   },
   "GET /api/results/:studentId/:termId": {
-    summary: "Get a student's report-card result for a term, with this term's affective/psychomotor ratings",
+    summary:
+      "Get a student's report-card result for a term, with this term's affective/psychomotor ratings. " +
+      "`programme` picks the card (default ACADEMIC; MADRASSAH for the Islamiyyah sheet) — the two are " +
+      "computed, ranked, rated and commented on separately.",
     requestParams: studentTermParamsSchema,
+    requestQuery: programmeQuerySchema,
     responses: { 200: { description: "OK", schema: ResultWithRatingsSchema } },
     scopeNote:
       `${SCOPE_NOTES.canReadStudent} A PARENT or STUDENT caller only ever sees a FINALIZED result — ` +
@@ -1011,13 +1022,17 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
       "Roll up a class's students' FINALIZED term results into per-session results, per subject then " +
       "overall — averaged or carried-forward per GradingScale.sessionAverageMethod. A student with only " +
       "some terms FINALIZED is averaged over those, never counting a missing term as zero. Purely " +
-      "derived, so every row this produces is immediately FINALIZED — there's no separate finalize step.",
+      "derived, so every row this produces is immediately FINALIZED — there's no separate finalize step. " +
+      "Scoped to the class's programme, like POST /results/compute.",
     requestBody: computeSessionResultsSchema,
     responses: { 200: { description: "OK", schema: z.array(SessionResultWithSubjectAveragesSchema) } },
   },
   "GET /api/session-results/:studentId/:academicSessionId": {
-    summary: "Get a student's session-level rollup result, with its per-subject averages",
+    summary:
+      "Get a student's session-level rollup result, with its per-subject averages. `programme` picks the " +
+      "card, as for GET /results/:studentId/:termId.",
     requestParams: studentSessionParamsSchema,
+    requestQuery: programmeQuerySchema,
     responses: { 200: { description: "OK", schema: SessionResultWithSubjectAveragesSchema } },
     scopeNote:
       `${SCOPE_NOTES.canReadStudent} Same finalized-only visibility and fee-withholding rules as ` +

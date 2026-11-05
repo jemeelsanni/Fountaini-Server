@@ -142,7 +142,9 @@ export async function generateObligations(feeStructureId: string, actorUserId: s
     throw AppError.badRequest("No actively enrolled students match this fee structure's scope");
   }
 
-  const studentIds = enrollments.map((e) => e.studentId);
+  // Deduped: a school-wide structure matches a student once per programme
+  // they're enrolled in (regular class + Madrasa group), but owes once.
+  const studentIds = [...new Set(enrollments.map((e) => e.studentId))];
   const existing = await prisma.feeObligation.findMany({
     where: { feeStructureId, studentId: { in: studentIds }, termId: feeStructure.termId },
     select: { studentId: true },
@@ -492,7 +494,15 @@ export async function listPayments(filter: ListPaymentsFilter) {
         feeObligation: {
           include: {
             student: {
-              include: { enrollments: { where: { status: "ACTIVE" }, include: { class: true }, take: 1 } },
+              include: {
+                enrollments: {
+                  where: { status: "ACTIVE" },
+                  include: { class: true },
+                  // Regular class before a Madrasa group (ACADEMIC sorts first).
+                  orderBy: { programme: "asc" },
+                  take: 1,
+                },
+              },
             },
             payments: { where: { status: "CONFIRMED" } },
           },
@@ -808,7 +818,15 @@ export async function getPaymentById(paymentId: string) {
           feeStructure: true,
           payments: { where: { status: "CONFIRMED" } },
           student: {
-            include: { enrollments: { where: { status: "ACTIVE" }, include: { class: true }, take: 1 } },
+            include: {
+                enrollments: {
+                  where: { status: "ACTIVE" },
+                  include: { class: true },
+                  // Regular class before a Madrasa group (ACADEMIC sorts first).
+                  orderBy: { programme: "asc" },
+                  take: 1,
+                },
+              },
           },
         },
       },

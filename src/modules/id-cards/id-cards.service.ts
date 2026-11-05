@@ -62,10 +62,13 @@ export async function getStudentIdCard(studentId: string) {
     prisma.student.findUnique({ where: { id: studentId, deletedAt: null }, include: studentCardInclude }),
     // Current-session, ACTIVE enrollment only — same rule as
     // searchStudents' className: a withdrawn student, or one not enrolled
-    // this session, gets class: null rather than a stale class.
+    // this session, gets class: null rather than a stale class. A student
+    // also in a Madrasa group shows their regular class (ACADEMIC sorts
+    // first); a Madrasa-only scholar shows their Madrasa group.
     prisma.enrollment.findFirst({
       where: { studentId, status: "ACTIVE", academicSession: { isCurrent: true } },
       include: enrollmentCardInclude,
+      orderBy: { programme: "asc" },
     }),
     getSchoolHeader(),
   ]);

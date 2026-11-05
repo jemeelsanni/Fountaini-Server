@@ -353,10 +353,15 @@ export async function getScoresForAssignment(assignmentId: string, termId: strin
   return { status, students };
 }
 
+/// The assignment's class (and so its programme) is included so a client
+/// can split a student's academic and Islamiyyah subjects the same way
+/// computeResultsForClass does — by the class the work was done in, not
+/// the student's current enrollment, which a mid-term transfer edits in
+/// place.
 export function getScoresForStudent(studentId: string) {
   return prisma.subjectResult.findMany({
     where: { studentId },
-    include: { classSubjectAssignment: { include: { subject: true } }, term: true },
+    include: { classSubjectAssignment: { include: { subject: true, class: true } }, term: true },
     orderBy: { computedAt: "desc" },
   });
 }

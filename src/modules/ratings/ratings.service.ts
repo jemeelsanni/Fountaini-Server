@@ -1,4 +1,4 @@
-import { Prisma } from "../../../generated/prisma/index.js";
+import { Prisma, type Programme } from "../../../generated/prisma/index.js";
 import { prisma } from "../../db/client.js";
 import { AppError } from "../../errors/AppError.js";
 import type { BulkUpsertRatingsBody, CreateTraitBody, UpdateTraitBody } from "./ratings.schemas.js";
@@ -78,11 +78,13 @@ async function lockResultsForUpdate(
   tx: Prisma.TransactionClient,
   studentIds: string[],
   termId: string,
+  programme: Programme,
 ): Promise<LockedResult[]> {
   return tx.$queryRaw<LockedResult[]>`
     SELECT "studentId", "status"
     FROM "Result"
     WHERE "studentId" IN (${Prisma.join(studentIds)}) AND "termId" = ${termId}
+      AND "programme" = ${programme}::"Programme"
     FOR UPDATE
   `;
 }
@@ -93,6 +95,11 @@ async function lockResultsForUpdate(
 /// DRAFT (SUBMITTED or FINALIZED) rejects the WHOLE batch, re-checked at
 /// write time inside the same transaction that locks those Result rows —
 /// not just at this pre-check read.
+///
+/// Ratings belong to the class's programme: a Madrasa group's form teacher
+/// rates the Islamiyyah card, independently of the academic class's form
+/// teacher rating the same student on the academic card, and only that
+/// programme's Result gates the write.
 export async function bulkUpsertRatings(
   classId: string,
   termId: string,
@@ -107,6 +114,7 @@ export async function bulkUpsertRatings(
   if (!term) {
     throw AppError.notFound("Term not found");
   }
+  const { programme } = klass;
 
   const traitIds = [...new Set(input.entries.map((e) => e.traitId))];
   const traits = await prisma.trait.findMany({
@@ -137,7 +145,7 @@ export async function bulkUpsertRatings(
   }
 
   return prisma.$transaction(async (tx) => {
-    const lockedResults = await lockResultsForUpdate(tx, studentIds, termId);
+    const lockedResults = await lockResultsForUpdate(tx, studentIds, termId, programme);
     const nonDraft = lockedResults.filter((r) => r.status !== "DRAFT");
     if (nonDraft.length > 0) {
       throw AppError.conflict(
@@ -149,6 +157,7 @@ export async function bulkUpsertRatings(
     const existing = await tx.rating.findMany({
       where: {
         termId,
+        programme,
         OR: input.entries.map((e) => ({ studentId: e.studentId, traitId: e.traitId })),
       },
       select: { studentId: true, traitId: true },
@@ -164,6 +173,7 @@ export async function bulkUpsertRatings(
           studentId: entry.studentId,
           termId,
           traitId: entry.traitId,
+          programme,
           value: entry.value,
           enteredByUserId: actorUserId,
         })),
@@ -172,13 +182,13 @@ export async function bulkUpsertRatings(
     }
     for (const entry of toUpdate) {
       await tx.rating.updateMany({
-        where: { studentId: entry.studentId, termId, traitId: entry.traitId },
+        where: { studentId: entry.studentId, termId, traitId: entry.traitId, programme },
         data: { value: entry.value, updatedByUserId: actorUserId },
       });
     }
 
     return tx.rating.findMany({
-      where: { termId, studentId: { in: studentIds }, traitId: { in: traitIds } },
+      where: { termId, programme, studentId: { in: studentIds }, traitId: { in: traitIds } },
       include: { trait: true },
     });
   });

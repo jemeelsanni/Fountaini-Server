@@ -91,7 +91,7 @@ describe("computeResultsForClass — first-ever compute", () => {
 
     expect(results).toHaveLength(1);
     const created = await prisma.result.findUnique({
-      where: { studentId_termId: { studentId: student.id, termId: term.id } },
+      where: { studentId_termId_programme: { studentId: student.id, termId: term.id, programme: "ACADEMIC" } },
     });
     expect(created).not.toBeNull();
     expect(created?.status).toBe("DRAFT");

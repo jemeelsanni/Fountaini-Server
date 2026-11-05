@@ -185,6 +185,9 @@ export function createAssignment(
   });
 }
 
-export function enrollStudent(studentId: string, classId: string, academicSessionId: string) {
-  return prisma.enrollment.create({ data: { studentId, classId, academicSessionId } });
+/// Copies the class's programme onto the enrollment, as createEnrollment
+/// does — a Madrasa-group enrollment made here must not default to ACADEMIC.
+export async function enrollStudent(studentId: string, classId: string, academicSessionId: string) {
+  const { programme } = await prisma.class.findUniqueOrThrow({ where: { id: classId }, select: { programme: true } });
+  return prisma.enrollment.create({ data: { studentId, classId, academicSessionId, programme } });
 }

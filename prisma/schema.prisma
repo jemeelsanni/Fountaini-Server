@@ -204,9 +204,9 @@ model Staff {
 }
 
 model Parent {
-  id             String   @id @default(cuid())
-  userId         String   @unique
-  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id             String    @id @default(cuid())
+  userId         String    @unique
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   firstName      String
   lastName       String
   phone          String?
@@ -410,13 +410,27 @@ model Term {
   @@index([isCurrent])
 }
 
+/// Which report card a class's work lands on. A child can be in one
+/// ACADEMIC class (e.g. Basic 4) and one MADRASSAH class (a Weekday Madrasa
+/// group) in the same session, and gets a separate term result, session
+/// result, position, ratings and comments for each — see Enrollment.
+/// Values mirror SubjectType's, but it's the CLASS's programme, not a
+/// subject's type, that decides which card a subject result counts toward:
+/// Basic classes teach Qur'an/Hadith too, and those stay on the academic
+/// card.
+enum Programme {
+  ACADEMIC
+  MADRASSAH
+}
+
 model Class {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   gradeName String // e.g. "JSS1", "Primary 4"
   /// Nullable: schools/classes without streams simply leave this blank.
   arm       String? // e.g. "A", "B"
   order     Int // display / promotion order across grade levels
-  createdAt DateTime @default(now())
+  programme Programme @default(ACADEMIC)
+  createdAt DateTime  @default(now())
 
   enrollments             Enrollment[]
   classSubjectAssignments ClassSubjectAssignment[]
@@ -554,12 +568,17 @@ model Enrollment {
   /// closed it.
   closedAt          DateTime?
   closedByUserId    String?
+  /// Copied from class.programme when the enrollment is created, so
+  /// "one enrollment per student, session AND programme" can be a plain
+  /// unique constraint — a class's programme is set at creation and never
+  /// edited, and transferStudent only moves within the same programme.
+  programme         Programme        @default(ACADEMIC)
   createdAt         DateTime         @default(now())
 
   results        Result[]
   sessionResults SessionResult[]
 
-  @@unique([studentId, academicSessionId])
+  @@unique([studentId, academicSessionId, programme])
   @@index([classId, academicSessionId])
 }
 
@@ -707,20 +726,24 @@ model RatingScaleLevel {
 /// AssessmentComponent.maxScore. Writable only while the student's Result
 /// for that term is DRAFT — same rule as the class-teacher comment.
 model Rating {
-  id              String   @id @default(cuid())
+  id              String    @id @default(cuid())
   studentId       String
-  student         Student  @relation(fields: [studentId], references: [id])
+  student         Student   @relation(fields: [studentId], references: [id])
   termId          String
-  term            Term     @relation(fields: [termId], references: [id])
+  term            Term      @relation(fields: [termId], references: [id])
   traitId         String
-  trait           Trait    @relation(fields: [traitId], references: [id])
+  trait           Trait     @relation(fields: [traitId], references: [id])
   value           Int
+  /// The programme of the class whose form teacher entered it — the
+  /// Islamiyyah sheet's ratings are entered separately from the academic
+  /// sheet's, against the same session traits.
+  programme       Programme @default(ACADEMIC)
   enteredByUserId String
-  enteredAt       DateTime @default(now())
+  enteredAt       DateTime  @default(now())
   updatedByUserId String?
-  updatedAt       DateTime @updatedAt
+  updatedAt       DateTime  @updatedAt
 
-  @@unique([studentId, termId, traitId])
+  @@unique([studentId, termId, traitId, programme])
   @@index([termId, traitId])
 }
 
@@ -793,6 +816,10 @@ model Result {
   termId                 String
   term                   Term         @relation(fields: [termId], references: [id])
   status                 ResultStatus @default(DRAFT)
+  /// Copied from enrollment.programme — one academic and one Islamiyyah
+  /// result per student per term, each computed only from its own
+  /// programme's classes (see computeResultsForClass).
+  programme              Programme    @default(ACADEMIC)
   totalScore             Decimal?     @db.Decimal(7, 2)
   averageScore           Decimal?     @db.Decimal(5, 2)
   position               Int?
@@ -819,7 +846,7 @@ model Result {
 
   overrides ResultOverride[]
 
-  @@unique([studentId, termId])
+  @@unique([studentId, termId, programme])
   @@index([enrollmentId])
 }
 
@@ -847,6 +874,8 @@ model SessionResult {
   academicSessionId String
   academicSession   AcademicSession @relation(fields: [academicSessionId], references: [id])
   status            ResultStatus    @default(DRAFT)
+  /// Same split as Result.programme.
+  programme         Programme       @default(ACADEMIC)
   averageScore      Decimal?        @db.Decimal(5, 2)
   position          Int?
   outOf             Int?
@@ -856,7 +885,7 @@ model SessionResult {
 
   subjectAverages SessionSubjectAverage[]
 
-  @@unique([studentId, academicSessionId])
+  @@unique([studentId, academicSessionId, programme])
 }
 
 /// Per-subject piece of a SessionResult — the simple average (or, under

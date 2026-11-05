@@ -243,9 +243,9 @@ async function seedAcademicStructure() {
   await academicStructure.setCurrentTerm(term1.id);
   manifest.termIds.push(term1.id, term2.id, term3.id);
 
-  const jss1a = await academicStructure.createClass({ gradeName: "JSS1", arm: "A", order: 1 });
-  const jss1b = await academicStructure.createClass({ gradeName: "JSS1", arm: "B", order: 2 });
-  const jss2a = await academicStructure.createClass({ gradeName: "JSS2", arm: "A", order: 1 });
+  const jss1a = await academicStructure.createClass({ gradeName: "JSS1", arm: "A", order: 1, programme: "ACADEMIC" });
+  const jss1b = await academicStructure.createClass({ gradeName: "JSS1", arm: "B", order: 2, programme: "ACADEMIC" });
+  const jss2a = await academicStructure.createClass({ gradeName: "JSS2", arm: "A", order: 1, programme: "ACADEMIC" });
   manifest.classIds.push(jss1a.id, jss1b.id, jss2a.id);
 
   const mathematics = await academicStructure.createSubject({ name: "Mathematics", code: "MTH", type: "ACADEMIC" });

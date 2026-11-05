@@ -131,16 +131,17 @@ studentsRouter.get(
 // JSS1 B) — 400 for a cross-grade-level target, naming
 // POST /api/students/:id/enrollments as the right tool for that instead
 // (see transferStudent's own comment, students.service.ts, for why).
-// fetchBefore captures the student's current-session enrollment — old
+// fetchBefore captures the student's current-session enrollments — old
 // class included — before the move, since :id here is the student, not
-// the enrollment.
+// the enrollment (all of them: which programme moves depends on the target
+// class in the body, which fetchBefore never sees).
 studentsRouter.post(
   "/:id/transfer",
   requireRole("ADMIN"),
   validate({ params: idParamsSchema, body: transferStudentSchema }),
   auditMutation("Student", "STUDENT_TRANSFERRED", {
     fetchBefore: (studentId) =>
-      prisma.enrollment.findFirst({
+      prisma.enrollment.findMany({
         where: { studentId, status: "ACTIVE", academicSession: { isCurrent: true } },
       }),
   }),

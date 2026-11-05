@@ -32,6 +32,10 @@ export const createClassSchema = z.object({
   gradeName: z.string().min(1),
   arm: z.string().min(1).optional(),
   order: z.coerce.number().int().nonnegative(),
+  /// MADRASSAH for a Weekday Madrasa group — its students get a separate
+  /// Islamiyyah result alongside their academic class's. Fixed at creation:
+  /// there's no route that edits it, since enrollments copy it.
+  programme: z.enum(["ACADEMIC", "MADRASSAH"]).default("ACADEMIC"),
 });
 export type CreateClassBody = z.infer<typeof createClassSchema>;
 

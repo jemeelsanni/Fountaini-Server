@@ -32,6 +32,15 @@ export const computeSessionResultsSchema = z.object({
 });
 export type ComputeSessionResultsBody = z.infer<typeof computeSessionResultsSchema>;
 
+/// Which of a student's report cards to read — a student in both a regular
+/// class and a Weekday Madrasa group has one result per programme per
+/// term/session. Defaults to ACADEMIC so callers that predate the split
+/// keep getting the result they always did.
+export const programmeQuerySchema = z.object({
+  programme: z.enum(["ACADEMIC", "MADRASSAH"]).default("ACADEMIC"),
+});
+export type ProgrammeQuery = z.infer<typeof programmeQuerySchema>;
+
 export const studentSessionParamsSchema = z.object({
   studentId: z.string().min(1),
   academicSessionId: z.string().min(1),

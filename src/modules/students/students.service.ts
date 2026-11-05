@@ -259,10 +259,19 @@ export async function searchStudents(query: SearchStudentsQuery): Promise<Studen
       s.id, s."admissionNumber", s."firstName", s."lastName", s."otherNames", s.status,
       cls."gradeName", cls.arm
     FROM "Student" s
-    LEFT JOIN "Enrollment" e
-      ON e."studentId" = s.id
-     AND e.status = 'ACTIVE'
-     AND e."academicSessionId" = (SELECT id FROM "AcademicSession" WHERE "isCurrent" = true LIMIT 1)
+    -- LATERAL + LIMIT 1, not a plain join: a student in both a regular
+    -- class and a Madrasa group has two ACTIVE enrollments this session and
+    -- would otherwise come back twice. The regular class wins (ACADEMIC is
+    -- the enum's first value), same rule as the ID card.
+    LEFT JOIN LATERAL (
+      SELECT e."classId"
+      FROM "Enrollment" e
+      WHERE e."studentId" = s.id
+        AND e.status = 'ACTIVE'
+        AND e."academicSessionId" = (SELECT id FROM "AcademicSession" WHERE "isCurrent" = true LIMIT 1)
+      ORDER BY e.programme
+      LIMIT 1
+    ) e ON true
     LEFT JOIN "Class" cls ON cls.id = e."classId"
     WHERE (
       s."admissionNumber" ILIKE ${containsPattern}
@@ -456,13 +465,24 @@ export async function createEnrollment(studentId: string, input: CreateEnrollmen
   if (!klass) throw AppError.notFound("Class not found");
   if (!session) throw AppError.notFound("Academic session not found");
 
+  // One enrollment per programme per session: a student can be in a
+  // regular class and a Weekday Madrasa group at once, never two of either.
   try {
     return await prisma.enrollment.create({
-      data: { studentId, classId: input.classId, academicSessionId: input.academicSessionId },
+      data: {
+        studentId,
+        classId: input.classId,
+        academicSessionId: input.academicSessionId,
+        programme: klass.programme,
+      },
     });
   } catch (err) {
     if (isUniqueConstraintError(err)) {
-      throw AppError.conflict("This student is already enrolled for this academic session");
+      throw AppError.conflict(
+        klass.programme === "MADRASSAH"
+          ? "This student is already in a Madrasa class for this academic session"
+          : "This student is already enrolled in a class for this academic session",
+      );
     }
     throw err;
   }
@@ -498,25 +518,31 @@ export async function createEnrollment(studentId: string, input: CreateEnrollmen
 /// with how position already works for every result, not something to
 /// engineer around here. That's a fairness question for the school to
 /// weigh, not a bug.
+///
+/// Moves the enrollment in the TARGET class's programme — a student in both
+/// a regular class and a Madrasa group transfers each independently, and a
+/// move can never turn an academic enrollment into a Madrasa one.
 export async function transferStudent(studentId: string, newClassId: string) {
   const student = await prisma.student.findUnique({ where: { id: studentId, deletedAt: null } });
   if (!student) {
     throw AppError.notFound("Student not found");
   }
 
+  const newClass = await prisma.class.findUnique({ where: { id: newClassId } });
+  if (!newClass) {
+    throw AppError.notFound("Class not found");
+  }
+
   const enrollment = await prisma.enrollment.findFirst({
-    where: { studentId, status: "ACTIVE", academicSession: { isCurrent: true } },
+    where: { studentId, programme: newClass.programme, status: "ACTIVE", academicSession: { isCurrent: true } },
     include: { class: true },
   });
   if (!enrollment) {
     throw AppError.badRequest(
-      "This student has no active enrollment in the current academic session to transfer",
+      newClass.programme === "MADRASSAH"
+        ? "This student has no active Madrasa enrollment in the current academic session to transfer"
+        : "This student has no active enrollment in the current academic session to transfer",
     );
-  }
-
-  const newClass = await prisma.class.findUnique({ where: { id: newClassId } });
-  if (!newClass) {
-    throw AppError.notFound("Class not found");
   }
 
   if (enrollment.class.gradeName !== newClass.gradeName) {

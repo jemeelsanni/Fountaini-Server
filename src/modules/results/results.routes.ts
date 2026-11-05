@@ -14,15 +14,16 @@ import {
   classTermParamsSchema,
   computeResultsSchema,
   computeSessionResultsSchema,
-  idParamsSchema,
   type IdParams,
+  idParamsSchema,
   listResultsForStudentQuerySchema,
   overrideResultSchema,
+  programmeQuerySchema,
   releaseWithholdingSchema,
-  studentSessionParamsSchema,
   type StudentSessionParams,
-  studentTermParamsSchema,
+  studentSessionParamsSchema,
   type StudentTermParams,
+  studentTermParamsSchema,
   writeCommentSchema,
 } from "./results.schemas.js";
 
@@ -48,7 +49,7 @@ resultsRouter.get(
 );
 resultsRouter.get(
   "/results/:studentId/:termId",
-  validate({ params: studentTermParamsSchema }),
+  validate({ params: studentTermParamsSchema, query: programmeQuerySchema }),
   requireScope((principal, req) =>
     canReadStudent(principal, (req.params as unknown as StudentTermParams).studentId),
   ),
@@ -117,7 +118,7 @@ resultsRouter.post(
 );
 resultsRouter.get(
   "/session-results/:studentId/:academicSessionId",
-  validate({ params: studentSessionParamsSchema }),
+  validate({ params: studentSessionParamsSchema, query: programmeQuerySchema }),
   requireScope((principal, req) =>
     canReadStudent(principal, (req.params as unknown as StudentSessionParams).studentId),
   ),

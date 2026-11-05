@@ -818,6 +818,9 @@
           "status": {
             "$ref": "#/components/schemas/EnrollmentStatus"
           },
+          "programme": {
+            "$ref": "#/components/schemas/Programme"
+          },
           "enrolledAt": {
             "type": "string",
             "format": "date-time"
@@ -848,6 +851,7 @@
           "classId",
           "academicSessionId",
           "status",
+          "programme",
           "enrolledAt",
           "closedAt",
           "closedByUserId",
@@ -862,6 +866,14 @@
           "WITHDRAWN",
           "GRADUATED"
         ]
+      },
+      "Programme": {
+        "type": "string",
+        "enum": [
+          "ACADEMIC",
+          "MADRASSAH"
+        ],
+        "description": "Which report card: ACADEMIC (regular class) or MADRASSAH (Weekday Madrasa — the Islamiyyah sheet). A student can hold one enrollment, result and set of ratings per programme."
       },
       "EnrollmentWithRelations": {
         "allOf": [
@@ -904,6 +916,9 @@
           "order": {
             "type": "integer"
           },
+          "programme": {
+            "$ref": "#/components/schemas/Programme"
+          },
           "createdAt": {
             "type": "string",
             "format": "date-time"
@@ -914,6 +929,7 @@
           "gradeName",
           "arm",
           "order",
+          "programme",
           "createdAt"
         ]
       },
@@ -2446,10 +2462,14 @@
                     "properties": {
                       "subject": {
                         "$ref": "#/components/schemas/Subject"
+                      },
+                      "class": {
+                        "$ref": "#/components/schemas/Class"
                       }
                     },
                     "required": [
-                      "subject"
+                      "subject",
+                      "class"
                     ]
                   }
                 ]
@@ -2486,6 +2506,9 @@
           },
           "status": {
             "$ref": "#/components/schemas/ResultStatus"
+          },
+          "programme": {
+            "$ref": "#/components/schemas/Programme"
           },
           "totalScore": {
             "type": [
@@ -2587,6 +2610,7 @@
           "enrollmentId",
           "termId",
           "status",
+          "programme",
           "totalScore",
           "averageScore",
           "position",
@@ -2727,6 +2751,9 @@
             "type": "string",
             "description": "cuid"
           },
+          "programme": {
+            "$ref": "#/components/schemas/Programme"
+          },
           "term": {
             "type": "object",
             "properties": {
@@ -2782,6 +2809,7 @@
         },
         "required": [
           "termId",
+          "programme",
           "term",
           "session",
           "status",
@@ -2824,6 +2852,9 @@
           "termId": {
             "type": "string",
             "description": "cuid"
+          },
+          "programme": {
+            "$ref": "#/components/schemas/Programme"
           },
           "value": {
             "type": "integer"
@@ -2876,6 +2907,7 @@
           "id",
           "studentId",
           "termId",
+          "programme",
           "value",
           "enteredByUserId",
           "enteredAt",
@@ -3048,6 +3080,9 @@
           "status": {
             "$ref": "#/components/schemas/ResultStatus"
           },
+          "programme": {
+            "$ref": "#/components/schemas/Programme"
+          },
           "averageScore": {
             "type": [
               "string",
@@ -3092,6 +3127,7 @@
           "enrollmentId",
           "academicSessionId",
           "status",
+          "programme",
           "averageScore",
           "position",
           "outOf",
@@ -10992,7 +11028,7 @@
     },
     "/api/classes": {
       "post": {
-        "summary": "Create a class",
+        "summary": "Create a class. `programme: MADRASSAH` makes it a Weekday Madrasa group — its students get a separate Islamiyyah result alongside their regular class's. Fixed once created.",
         "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
@@ -11022,6 +11058,14 @@
                       "null"
                     ],
                     "minimum": 0
+                  },
+                  "programme": {
+                    "type": "string",
+                    "enum": [
+                      "ACADEMIC",
+                      "MADRASSAH"
+                    ],
+                    "default": "ACADEMIC"
                   }
                 },
                 "required": [
@@ -13451,7 +13495,7 @@
     },
     "/api/results/compute": {
       "post": {
-        "summary": "Compute/refresh DRAFT report-card results for a class/term from submitted subject results",
+        "summary": "Compute/refresh DRAFT report-card results for a class/term from submitted subject results. Uses only subject work from classes of the same programme as this class, so a student's academic and Islamiyyah results (and positions) are computed independently.",
         "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
@@ -13618,7 +13662,7 @@
     },
     "/api/results/{studentId}/{termId}": {
       "get": {
-        "summary": "Get a student's report-card result for a term, with this term's affective/psychomotor ratings",
+        "summary": "Get a student's report-card result for a term, with this term's affective/psychomotor ratings. `programme` picks the card (default ACADEMIC; MADRASSAH for the Islamiyyah sheet) — the two are computed, ranked, rated and commented on separately.",
         "description": "ADMIN, the student's linked parent, the student themself, or a teacher currently assigned to their class. A PARENT or STUDENT caller only ever sees a FINALIZED result — DRAFT/SUBMITTED reads as 404 for them, the same as if compute had never run. IMPORTANT: for a PARENT/STUDENT caller, a FINALIZED result with an outstanding fee balance for this term (or a session-wide, not-term-specific fee) is withheld — see the 402 response below, not returned here as 200. Released via POST /results/:id/release-withholding.",
         "security": [
           {
@@ -13643,6 +13687,19 @@
             "required": true,
             "name": "termId",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "ACADEMIC",
+                "MADRASSAH"
+              ],
+              "default": "ACADEMIC"
+            },
+            "required": false,
+            "name": "programme",
+            "in": "query"
           }
         ],
         "responses": {
@@ -14319,7 +14376,7 @@
     },
     "/api/session-results/compute": {
       "post": {
-        "summary": "Roll up a class's students' FINALIZED term results into per-session results, per subject then overall — averaged or carried-forward per GradingScale.sessionAverageMethod. A student with only some terms FINALIZED is averaged over those, never counting a missing term as zero. Purely derived, so every row this produces is immediately FINALIZED — there's no separate finalize step.",
+        "summary": "Roll up a class's students' FINALIZED term results into per-session results, per subject then overall — averaged or carried-forward per GradingScale.sessionAverageMethod. A student with only some terms FINALIZED is averaged over those, never counting a missing term as zero. Purely derived, so every row this produces is immediately FINALIZED — there's no separate finalize step. Scoped to the class's programme, like POST /results/compute.",
         "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
@@ -14408,7 +14465,7 @@
     },
     "/api/session-results/{studentId}/{academicSessionId}": {
       "get": {
-        "summary": "Get a student's session-level rollup result, with its per-subject averages",
+        "summary": "Get a student's session-level rollup result, with its per-subject averages. `programme` picks the card, as for GET /results/:studentId/:termId.",
         "description": "ADMIN, the student's linked parent, the student themself, or a teacher currently assigned to their class. Same finalized-only visibility and fee-withholding rules as GET /results/:studentId/:termId, checked session-wide (any outstanding obligation anywhere in the session withholds this) rather than against one term — see the 402 response below. Release is per-term only; a term's release does not affect this session-wide check.",
         "security": [
           {
@@ -14433,6 +14490,19 @@
             "required": true,
             "name": "academicSessionId",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "ACADEMIC",
+                "MADRASSAH"
+              ],
+              "default": "ACADEMIC"
+            },
+            "required": false,
+            "name": "programme",
+            "in": "query"
           }
         ],
         "responses": {
@@ -15197,7 +15267,7 @@
     },
     "/api/classes/{id}/results/{termId}/ratings": {
       "put": {
-        "summary": "Bulk upsert affective/psychomotor ratings for a class+term. Only while the targeted student's Result for this term is DRAFT — same rule as the class-teacher comment; rejects (409) the whole batch if any targeted student's result is no longer DRAFT. Appear on the result read once written.",
+        "summary": "Bulk upsert affective/psychomotor ratings for a class+term. Only while the targeted student's Result for this term is DRAFT — same rule as the class-teacher comment; rejects (409) the whole batch if any targeted student's result is no longer DRAFT. Appear on the result read once written. Ratings belong to the class's programme — a Madrasa group's ratings go on the Islamiyyah card only.",
         "description": "Roles: ADMIN, TEACHER. ADMIN, or that class's form teacher — not a subject teacher assigned to the class.",
         "x-roles": [
           "ADMIN",

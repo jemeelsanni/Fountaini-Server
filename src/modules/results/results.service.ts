@@ -1,4 +1,4 @@
-import { Prisma, type Result, type SessionAverageMethod } from "../../../generated/prisma/index.js";
+import { Prisma, type Programme, type Result, type SessionAverageMethod } from "../../../generated/prisma/index.js";
 import { resolveStudentAccessLevel } from "../../authorization/scopeResolvers.js";
 import type { Principal } from "../../authorization/types.js";
 import { logger } from "../../config/logger.js";
@@ -110,6 +110,12 @@ function throwWithheld(info: Withholding): never {
 /// only assigned among students who have at least one submitted subject.
 /// Already-FINALIZED results are never touched by a recompute — they're
 /// immutable except via overrideResult().
+///
+/// Scoped to the class's programme throughout: a Weekday Madrasa group's
+/// compute only ever reads/writes its students' MADRASSAH results, built
+/// from subject work done in MADRASSAH classes, and an academic class's
+/// compute never sees that work — the same student's two report cards
+/// never blend.
 export async function computeResultsForClass(input: ComputeResultsBody) {
   const term = await prisma.term.findUnique({ where: { id: input.termId } });
   if (!term) {
@@ -129,6 +135,7 @@ export async function computeResultsForClass(input: ComputeResultsBody) {
   }
 
   const studentIds = enrollments.map((e) => e.studentId);
+  const { programme } = klass;
 
   // Scoped by studentId + termId, not by "this class's own assignment ids"
   // — the latter was a latent bug on its own, not just a transfer-support
@@ -147,7 +154,7 @@ export async function computeResultsForClass(input: ComputeResultsBody) {
       studentId: { in: studentIds },
       termId: input.termId,
       status: "SUBMITTED",
-      classSubjectAssignment: { academicSessionId: term.academicSessionId },
+      classSubjectAssignment: { academicSessionId: term.academicSessionId, class: { programme } },
     },
   });
 
@@ -182,7 +189,7 @@ export async function computeResultsForClass(input: ComputeResultsBody) {
   // merely trying to remember to check.
   await prisma.$transaction(async (tx) => {
     const existingResults = await tx.result.findMany({
-      where: { studentId: { in: studentIds }, termId: input.termId },
+      where: { studentId: { in: studentIds }, termId: input.termId, programme },
       select: { studentId: true },
     });
     const existingStudentIds = new Set(existingResults.map((r) => r.studentId));
@@ -196,6 +203,7 @@ export async function computeResultsForClass(input: ComputeResultsBody) {
           studentId: c.enrollment.studentId,
           enrollmentId: c.enrollment.id,
           termId: input.termId,
+          programme,
           status: "DRAFT" as const,
           totalScore: c.totalScore,
           averageScore: c.averageScore,
@@ -212,7 +220,12 @@ export async function computeResultsForClass(input: ComputeResultsBody) {
 
     for (const c of toUpdate) {
       await tx.result.updateMany({
-        where: { studentId: c.enrollment.studentId, termId: input.termId, status: { not: "FINALIZED" } },
+        where: {
+          studentId: c.enrollment.studentId,
+          termId: input.termId,
+          programme,
+          status: { not: "FINALIZED" },
+        },
         data: {
           totalScore: c.totalScore,
           averageScore: c.averageScore,
@@ -223,7 +236,7 @@ export async function computeResultsForClass(input: ComputeResultsBody) {
     }
   });
 
-  return prisma.result.findMany({ where: { studentId: { in: studentIds }, termId: input.termId } });
+  return prisma.result.findMany({ where: { studentId: { in: studentIds }, termId: input.termId, programme } });
 }
 
 /// The finalized-only filter below is deliberately not an authorization
@@ -235,8 +248,15 @@ export async function computeResultsForClass(input: ComputeResultsBody) {
 /// their visible set, which reads as the same 404 as asking before compute
 /// ever ran. FULL access (ADMIN, or a TEACHER assigned to this student's
 /// class) sees every status.
-export async function getResultForStudentTerm(studentId: string, termId: string, principal: Principal) {
-  const result = await prisma.result.findUnique({ where: { studentId_termId: { studentId, termId } } });
+export async function getResultForStudentTerm(
+  studentId: string,
+  termId: string,
+  programme: Programme,
+  principal: Principal,
+) {
+  const result = await prisma.result.findUnique({
+    where: { studentId_termId_programme: { studentId, termId, programme } },
+  });
   if (!result) {
     throw AppError.notFound("No result found for this student/term");
   }
@@ -258,7 +278,7 @@ export async function getResultForStudentTerm(studentId: string, termId: string,
   }
 
   const ratings = await prisma.rating.findMany({
-    where: { studentId, termId },
+    where: { studentId, termId, programme },
     include: { trait: { select: { id: true, category: true, name: true, order: true } } },
     orderBy: [{ trait: { category: "asc" } }, { trait: { order: "asc" } }],
   });
@@ -329,6 +349,9 @@ async function listResultsForStudentAtLevel(
     if (withholding) {
       return {
         termId: result.termId,
+        // A student with both cards gets two rows per term — the marker
+        // keeps the programme so they stay distinguishable.
+        programme: result.programme,
         term: termSummary,
         session: term.academicSession,
         status: "WITHHELD" as const,
@@ -404,12 +427,17 @@ export function listResultsForClass(classId: string, termId: string) {
 /// directly would (two classes each closing their own session on the same
 /// day are two different records for two different students, not two
 /// records for the same one).
+///
+/// Also scoped to the result's programme: Madrasa days are taken in the
+/// Madrasa group's own sessions and belong on the Islamiyyah card only,
+/// not added to the academic card's school days (or vice versa).
 async function computeAttendanceSnapshot(
   studentId: string,
   termId: string,
+  programme: Programme,
 ): Promise<{ daysPresent: number; daysSchoolOpened: number }> {
   const records = await prisma.attendanceRecord.findMany({
-    where: { studentId, attendanceSession: { termId, status: "CLOSED" } },
+    where: { studentId, attendanceSession: { termId, status: "CLOSED", class: { programme } } },
     select: { status: true },
   });
   const daysSchoolOpened = records.length;
@@ -500,7 +528,11 @@ export async function finalizeResult(id: string, actorUserId: string) {
     throw AppError.conflict("This result is already finalized");
   }
 
-  const { daysPresent, daysSchoolOpened } = await computeAttendanceSnapshot(result.studentId, result.termId);
+  const { daysPresent, daysSchoolOpened } = await computeAttendanceSnapshot(
+    result.studentId,
+    result.termId,
+    result.programme,
+  );
 
   const finalized = await prisma.result.update({
     where: { id },
@@ -643,7 +675,8 @@ async function getSessionAverageMethod(academicSessionId: string): Promise<Sessi
 /// A student with zero FINALIZED terms gets no row at all yet. Purely
 /// derived from already-finalized inputs, so every row this writes goes
 /// straight to FINALIZED — there's no separate human review/finalize step
-/// for the rollup itself.
+/// for the rollup itself. Scoped to the class's programme the same way
+/// computeResultsForClass is.
 export async function computeSessionResultsForClass(input: ComputeSessionResultsBody, actorUserId: string) {
   const session = await prisma.academicSession.findUnique({ where: { id: input.academicSessionId } });
   if (!session) {
@@ -661,13 +694,19 @@ export async function computeSessionResultsForClass(input: ComputeSessionResults
     throw AppError.badRequest("No students are actively enrolled in this class for this session");
   }
   const studentIds = enrollments.map((e) => e.studentId);
+  const { programme } = klass;
 
   const terms = await prisma.term.findMany({ where: { academicSessionId: input.academicSessionId } });
   const termOrderById = new Map(terms.map((t) => [t.id, t.order]));
   const method = await getSessionAverageMethod(input.academicSessionId);
 
   const finalizedResults = await prisma.result.findMany({
-    where: { studentId: { in: studentIds }, termId: { in: terms.map((t) => t.id) }, status: "FINALIZED" },
+    where: {
+      studentId: { in: studentIds },
+      termId: { in: terms.map((t) => t.id) },
+      programme,
+      status: "FINALIZED",
+    },
     select: { studentId: true, termId: true },
   });
   const finalizedTermIdsByStudent = new Map<string, Set<string>>();
@@ -681,7 +720,11 @@ export async function computeSessionResultsForClass(input: ComputeSessionResults
   const subjectResults =
     allFinalizedTermIds.length > 0
       ? await prisma.subjectResult.findMany({
-          where: { studentId: { in: studentIds }, termId: { in: allFinalizedTermIds } },
+          where: {
+            studentId: { in: studentIds },
+            termId: { in: allFinalizedTermIds },
+            classSubjectAssignment: { class: { programme } },
+          },
           include: { classSubjectAssignment: { select: { subjectId: true } } },
         })
       : [];
@@ -737,12 +780,17 @@ export async function computeSessionResultsForClass(input: ComputeSessionResults
     for (const c of computed) {
       const sessionResult = await tx.sessionResult.upsert({
         where: {
-          studentId_academicSessionId: { studentId: c.studentId, academicSessionId: input.academicSessionId },
+          studentId_academicSessionId_programme: {
+            studentId: c.studentId,
+            academicSessionId: input.academicSessionId,
+            programme,
+          },
         },
         create: {
           studentId: c.studentId,
           enrollmentId: c.enrollmentId,
           academicSessionId: input.academicSessionId,
+          programme,
           status: "FINALIZED",
           averageScore: c.overallAverage,
           finalizedByUserId: actorUserId,
@@ -771,7 +819,7 @@ export async function computeSessionResultsForClass(input: ComputeSessionResults
   });
 
   return prisma.sessionResult.findMany({
-    where: { studentId: { in: studentIds }, academicSessionId: input.academicSessionId },
+    where: { studentId: { in: studentIds }, academicSessionId: input.academicSessionId, programme },
     include: { subjectAverages: true },
   });
 }
@@ -783,10 +831,11 @@ export async function computeSessionResultsForClass(input: ComputeSessionResults
 export async function getSessionResultForStudent(
   studentId: string,
   academicSessionId: string,
+  programme: Programme,
   principal: Principal,
 ) {
   const result = await prisma.sessionResult.findUnique({
-    where: { studentId_academicSessionId: { studentId, academicSessionId } },
+    where: { studentId_academicSessionId_programme: { studentId, academicSessionId, programme } },
     include: { subjectAverages: { include: { subject: true } } },
   });
   if (!result) {

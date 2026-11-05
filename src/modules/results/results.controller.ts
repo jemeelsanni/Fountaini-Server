@@ -8,6 +8,7 @@ import type {
   IdParams,
   ListResultsForStudentQuery,
   OverrideResultBody,
+  ProgrammeQuery,
   ReleaseWithholdingBody,
   StudentSessionParams,
   StudentTermParams,
@@ -24,7 +25,8 @@ export async function getResultForStudentTerm(req: Request, res: Response): Prom
     throw AppError.unauthorized();
   }
   const { studentId, termId } = req.params as unknown as StudentTermParams;
-  res.status(200).json(await service.getResultForStudentTerm(studentId, termId, req.principal));
+  const { programme } = req.validatedQuery as ProgrammeQuery;
+  res.status(200).json(await service.getResultForStudentTerm(studentId, termId, programme, req.principal));
 }
 
 export async function listResultsForStudent(req: Request, res: Response): Promise<void> {
@@ -90,7 +92,10 @@ export async function getSessionResultForStudent(req: Request, res: Response): P
     throw AppError.unauthorized();
   }
   const { studentId, academicSessionId } = req.params as unknown as StudentSessionParams;
-  res.status(200).json(await service.getSessionResultForStudent(studentId, academicSessionId, req.principal));
+  const { programme } = req.validatedQuery as ProgrammeQuery;
+  res.status(200).json(
+    await service.getSessionResultForStudent(studentId, academicSessionId, programme, req.principal),
+  );
 }
 
 export async function overrideResult(req: Request, res: Response): Promise<void> {

@@ -35,6 +35,13 @@ const FamilyRelationshipSchema = z
   .enum(["FATHER", "MOTHER", "GUARDIAN", "OTHER"])
   .openapi("FamilyRelationship");
 const SubjectTypeSchema = z.enum(["ACADEMIC", "MADRASSAH"]).openapi("SubjectType");
+const ProgrammeSchema = z
+  .enum(["ACADEMIC", "MADRASSAH"])
+  .openapi("Programme", {
+    description:
+      "Which report card: ACADEMIC (regular class) or MADRASSAH (Weekday Madrasa — the Islamiyyah sheet). " +
+      "A student can hold one enrollment, result and set of ratings per programme.",
+  });
 const EnrollmentStatusSchema = z
   .enum(["ACTIVE", "TRANSFERRED_OUT", "WITHDRAWN", "GRADUATED"])
   .openapi("EnrollmentStatus");
@@ -376,6 +383,7 @@ export const ClassSchema = z
     gradeName: z.string(),
     arm: z.string().nullable(),
     order: z.number().int(),
+    programme: ProgrammeSchema,
     createdAt: isoDateTime(),
   })
   .openapi("Class");
@@ -450,6 +458,7 @@ export const EnrollmentSchema = z
     classId: id(),
     academicSessionId: id(),
     status: EnrollmentStatusSchema,
+    programme: ProgrammeSchema,
     enrolledAt: isoDateTime(),
     closedAt: isoDateTime().nullable().openapi({
       description: "Set together with closedByUserId when status moves off ACTIVE",
@@ -600,7 +609,7 @@ export const SubjectResultSchema = z
   .openapi("SubjectResult");
 
 export const SubjectResultWithRelationsSchema = SubjectResultSchema.extend({
-  classSubjectAssignment: ClassSubjectAssignmentSchema.extend({ subject: SubjectSchema }),
+  classSubjectAssignment: ClassSubjectAssignmentSchema.extend({ subject: SubjectSchema, class: ClassSchema }),
   term: TermSchema,
 }).openapi("SubjectResultWithRelations");
 
@@ -611,6 +620,7 @@ export const ResultSchema = z
     enrollmentId: id(),
     termId: id(),
     status: ResultStatusSchema,
+    programme: ProgrammeSchema,
     totalScore: decimalString().nullable(),
     averageScore: decimalString().nullable(),
     position: z.number().int().nullable().openapi({
@@ -670,6 +680,7 @@ export const RatingSchema = z
     studentId: id(),
     termId: id(),
     traitId: id(),
+    programme: ProgrammeSchema,
     value: z.number().int(),
     enteredByUserId: id(),
     enteredAt: isoDateTime(),
@@ -714,6 +725,7 @@ export const ResultWithTermSchema = ResultSchema.extend({
 export const WithheldResultListItemSchema = z
   .object({
     termId: id(),
+    programme: ProgrammeSchema,
     term: z.object({ id: id(), name: z.string(), order: z.number().int() }),
     session: z.object({ id: id(), name: z.string() }),
     status: z.literal("WITHHELD"),
@@ -766,6 +778,7 @@ export const SessionResultSchema = z
     enrollmentId: id(),
     academicSessionId: id(),
     status: ResultStatusSchema,
+    programme: ProgrammeSchema,
     averageScore: decimalString().nullable().openapi({
       description: "Mean of subjectAverages' per-subject averages — never computed independently of them.",
     }),
