@@ -200,6 +200,9 @@ export const BESPOKE_ROUTE_KEYS: readonly string[] = [
   "GET /api/classes/:id/students",
   "GET /api/classes/:id/results/:termId",
   "PATCH /api/results/:id/class-teacher-comment",
+  "PATCH /api/results/:id/early-years",
+  "POST /api/results/:id/submit",
+  "POST /api/results/:id/return-to-draft",
   "GET /api/parents/:id/children",
   "GET /api/students/:id/parents",
   "POST /api/students/:id/qr-code/rotate",
@@ -909,6 +912,41 @@ export async function buildBespokeRows(generics: GenericActors): Promise<MatrixR
         Promise.resolve({
           url: `/api/results/${world.targetResult.id}/class-teacher-comment`,
           body: { comment: "Matrix test comment" },
+          tokens: classTeacherCommentTokens,
+        }),
+    },
+    // Same resolver (canWriteClassTeacherComment) and therefore the same
+    // form-teacher-not-subject-teacher split as the row above.
+    {
+      name: "PATCH /api/results/:id/early-years",
+      method: "patch",
+      cases: CLASS_TEACHER_COMMENT_CASES,
+      setup: () =>
+        Promise.resolve({
+          url: `/api/results/${world.targetResult.id}/early-years`,
+          body: { weightKg: 14.5 },
+          tokens: classTeacherCommentTokens,
+        }),
+    },
+    // Same resolver again. Whether the call then succeeds or 400s on the
+    // result's current status is the service's business, not this matrix's.
+    {
+      name: "POST /api/results/:id/submit",
+      method: "post",
+      cases: CLASS_TEACHER_COMMENT_CASES,
+      setup: () =>
+        Promise.resolve({
+          url: `/api/results/${world.targetResult.id}/submit`,
+          tokens: classTeacherCommentTokens,
+        }),
+    },
+    {
+      name: "POST /api/results/:id/return-to-draft",
+      method: "post",
+      cases: CLASS_TEACHER_COMMENT_CASES,
+      setup: () =>
+        Promise.resolve({
+          url: `/api/results/${world.targetResult.id}/return-to-draft`,
           tokens: classTeacherCommentTokens,
         }),
     },

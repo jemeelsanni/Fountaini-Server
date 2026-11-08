@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { Prisma } from "../../../generated/prisma/index.js";
+import { Prisma, type Programme } from "../../../generated/prisma/index.js";
 import type { Principal } from "../../authorization/types.js";
 import { logger } from "../../config/logger.js";
 import { prisma } from "../../db/client.js";
@@ -19,23 +19,39 @@ import type {
 // Fee structures
 // ---------------------------------------------------------------------------
 
+/// The class (or a class at the grade level) a structure targets must be in
+/// the structure's own programme — a Madrasa fee pinned to Basic 4 could
+/// never match anyone, since the matcher requires both.
+async function assertTargetInProgramme(
+  classId: string | null | undefined,
+  gradeName: string | null | undefined,
+  programme: Programme,
+): Promise<void> {
+  if (classId) {
+    const klass = await prisma.class.findUnique({ where: { id: classId } });
+    if (!klass) {
+      throw AppError.notFound("Class not found");
+    }
+    if (klass.programme !== programme) {
+      throw AppError.badRequest(`This class is a ${klass.programme} class, but the fee structure's programme is ${programme}`);
+    }
+  }
+  if (gradeName && !(await prisma.class.findFirst({ where: { gradeName, programme }, select: { id: true } }))) {
+    // Only on the failure path: tell "wrong programme" apart from "no such grade".
+    const other = await prisma.class.findFirst({ where: { gradeName }, select: { id: true } });
+    if (!other) {
+      throw AppError.notFound("No class exists at this grade level");
+    }
+    throw AppError.badRequest(`No ${programme} class exists at grade level ${gradeName}`);
+  }
+}
+
 export async function createFeeStructure(input: CreateFeeStructureBody) {
   const session = await prisma.academicSession.findUnique({ where: { id: input.academicSessionId } });
   if (!session) {
     throw AppError.notFound("Academic session not found");
   }
-  if (input.classId) {
-    const klass = await prisma.class.findUnique({ where: { id: input.classId } });
-    if (!klass) {
-      throw AppError.notFound("Class not found");
-    }
-  }
-  if (input.gradeName) {
-    const klass = await prisma.class.findFirst({ where: { gradeName: input.gradeName } });
-    if (!klass) {
-      throw AppError.notFound("No class exists at this grade level");
-    }
-  }
+  await assertTargetInProgramme(input.classId, input.gradeName, input.programme);
   if (input.termId) {
     const term = await prisma.term.findUnique({ where: { id: input.termId } });
     if (!term || term.academicSessionId !== input.academicSessionId) {
@@ -77,17 +93,29 @@ export async function updateFeeStructure(id: string, input: UpdateFeeStructureBo
     throw AppError.badRequest("A fee structure may target a specific class or a grade level, not both");
   }
 
-  if (input.classId) {
-    const klass = await prisma.class.findUnique({ where: { id: input.classId } });
-    if (!klass) {
-      throw AppError.notFound("Class not found");
+  // Who a structure bills can't change once it has billed anyone: the
+  // obligations already raised were for the old programme/audience/gender,
+  // and nothing here could reconcile them (a girl billed for a uniform the
+  // structure now says is boys-only would stay liable for it). Make a new
+  // structure instead, and waive what no longer applies.
+  const retargets = (["programme", "audience", "gender"] as const).filter(
+    (field) => input[field] !== undefined && input[field] !== structure[field],
+  );
+  if (retargets.length > 0) {
+    const billed = await prisma.feeObligation.count({ where: { feeStructureId: id } });
+    if (billed > 0) {
+      throw AppError.conflict(
+        `This fee structure has already billed ${billed} student${billed === 1 ? "" : "s"}, so its ` +
+          `${retargets.join(", ")} can't be changed — create a new fee structure for the new group ` +
+          "and waive any obligations that no longer apply.",
+      );
     }
   }
-  if (input.gradeName) {
-    const klass = await prisma.class.findFirst({ where: { gradeName: input.gradeName } });
-    if (!klass) {
-      throw AppError.notFound("No class exists at this grade level");
-    }
+
+  // Re-checked against the merged row whenever the target or the programme
+  // changes, same reasoning as the merge check above.
+  if (input.classId !== undefined || input.gradeName !== undefined || input.programme !== undefined) {
+    await assertTargetInProgramme(mergedClassId, mergedGradeName, input.programme ?? structure.programme);
   }
 
   return prisma.feeStructure.update({ where: { id }, data: input });
@@ -112,10 +140,131 @@ export async function deleteFeeStructure(id: string) {
 // Fee obligations
 // ---------------------------------------------------------------------------
 
-/// Generates one FeeObligation per actively-enrolled student in scope
-/// (feeStructure.classId, or every class if null) who doesn't already have
-/// one for this fee structure — skips students who already have a row rather
-/// than erroring, so this is safe to re-run after new students enroll.
+type FeeStructureRow = Prisma.FeeStructureGetPayload<object>;
+type ScopedEnrollment = Prisma.EnrollmentGetPayload<{ include: { class: { select: { gradeName: true } } } }>;
+
+/// What the matcher needs to know about the candidate students, loaded once
+/// per call rather than once per structure — billEnrollment checks every
+/// active structure in a session against the same student, and doing these
+/// lookups per structure kept its transaction open for a query storm.
+interface BillingContext {
+  genderByStudentId: Map<string, string | null>;
+  /// Students with an enrollment in `programme`, of any status, in a
+  /// session that started before `sessionId` — RETURNING_STUDENTS.
+  returningStudentIds: Set<string>;
+  sessionId: string;
+  programme: Programme;
+}
+
+async function loadBillingContext(
+  client: Prisma.TransactionClient,
+  studentIds: string[],
+  sessionId: string,
+  programme: Programme,
+): Promise<BillingContext> {
+  const session = await client.academicSession.findUniqueOrThrow({
+    where: { id: sessionId },
+    select: { startDate: true },
+  });
+  const [students, earlier] = await Promise.all([
+    client.student.findMany({ where: { id: { in: studentIds } }, select: { id: true, gender: true } }),
+    client.enrollment.findMany({
+      where: { studentId: { in: studentIds }, programme, academicSession: { startDate: { lt: session.startDate } } },
+      select: { studentId: true },
+    }),
+  ]);
+  return {
+    genderByStudentId: new Map(students.map((st) => [st.id, st.gender])),
+    returningStudentIds: new Set(earlier.map((e) => e.studentId)),
+    sessionId,
+    programme,
+  };
+}
+
+/// The single matcher behind both generateObligations and billEnrollment:
+/// which of these enrollments' students a structure bills. An enrollment is
+/// in scope when its programme matches and it sits in the structure's class
+/// (classId), grade level (gradeName) or anywhere (neither). Its student
+/// then has to match the structure's gender — a student with no gender
+/// recorded is skipped by a gendered fee, never guessed at — and audience:
+/// NEW_STUDENTS = no enrollment in this programme, of any status, in a
+/// session that started before this structure's session; RETURNING_STUDENTS
+/// = has one. Pure — everything it looks up is in `ctx`.
+function selectBillableStudentIds(
+  structure: FeeStructureRow,
+  enrollments: ScopedEnrollment[],
+  ctx: BillingContext,
+): string[] {
+  if (structure.academicSessionId !== ctx.sessionId || structure.programme !== ctx.programme) {
+    return [];
+  }
+  const inScope = enrollments.filter(
+    (e) =>
+      e.academicSessionId === structure.academicSessionId &&
+      e.programme === structure.programme &&
+      (structure.classId
+        ? e.classId === structure.classId
+        : structure.gradeName
+          ? e.class.gradeName === structure.gradeName
+          : true),
+  );
+  return [...new Set(inScope.map((e) => e.studentId))].filter(
+    (id) =>
+      (!structure.gender || ctx.genderByStudentId.get(id) === structure.gender) &&
+      (structure.audience === "ALL" ||
+        (structure.audience === "RETURNING_STUDENTS") === ctx.returningStudentIds.has(id)),
+  );
+}
+
+/// Creates every (structure, student) obligation in `plan` that doesn't
+/// already exist, in one read and one write. Idempotent: the existing-row
+/// read is what covers a session-wide (termId null) structure — Postgres
+/// treats NULLs as distinct, so the (studentId, feeStructureId, termId)
+/// unique constraint alone wouldn't.
+async function createObligations(
+  client: Prisma.TransactionClient,
+  plan: Array<{ structure: FeeStructureRow; studentIds: string[] }>,
+  actorUserId: string,
+): Promise<void> {
+  const wanted = plan.filter((p) => p.studentIds.length > 0);
+  if (wanted.length === 0) {
+    return;
+  }
+  const existing = await client.feeObligation.findMany({
+    where: { OR: wanted.map((p) => ({ feeStructureId: p.structure.id, studentId: { in: p.studentIds } })) },
+    select: { feeStructureId: true, studentId: true, termId: true },
+  });
+  const key = (structureId: string, studentId: string, termId: string | null) => `${structureId}:${studentId}:${termId}`;
+  const existingKeys = new Set(existing.map((o) => key(o.feeStructureId, o.studentId, o.termId)));
+  const data = wanted.flatMap(({ structure, studentIds }) =>
+    studentIds
+      .filter((studentId) => !existingKeys.has(key(structure.id, studentId, structure.termId)))
+      .map((studentId) => ({
+        studentId,
+        feeStructureId: structure.id,
+        academicSessionId: structure.academicSessionId,
+        termId: structure.termId,
+        amountDueKobo: structure.amountKobo,
+        createdByUserId: actorUserId,
+      })),
+  );
+  if (data.length === 0) {
+    return;
+  }
+  // The existing-obligations read above is a stale read the instant a
+  // concurrent (or double-clicked) generate for the same fee structure
+  // lands in between — without this, createMany aborts the WHOLE batch
+  // (unhandled -> 500) on the first row that collides with the unique
+  // constraint on (studentId, feeStructureId, termId), instead of quietly
+  // keeping whichever obligations already exist.
+  await client.feeObligation.createMany({ data, skipDuplicates: true });
+}
+
+/// Generates one FeeObligation per actively-enrolled student the structure
+/// matches (selectBillableStudentIds) who doesn't already have one — skips
+/// existing rows rather than erroring, so this is safe to re-run after new
+/// students enroll. Deliberately not term-aware the way billEnrollment is:
+/// an admin generating a term's fee is choosing to bill that term.
 export async function generateObligations(feeStructureId: string, actorUserId: string) {
   const feeStructure = await prisma.feeStructure.findUnique({ where: { id: feeStructureId } });
   if (!feeStructure) {
@@ -124,55 +273,93 @@ export async function generateObligations(feeStructureId: string, actorUserId: s
 
   // Resolved fresh here, at generation time, not baked in at creation —
   // this is what makes a class added to a gradeName after the structure
-  // was created still get covered: this query re-joins against Class on
+  // was created still get covered: the matcher re-checks Class.gradeName on
   // every call, so a new arm is picked up the moment it exists, with no
   // change needed to the FeeStructure row itself.
   const enrollments = await prisma.enrollment.findMany({
-    where: {
-      academicSessionId: feeStructure.academicSessionId,
-      status: "ACTIVE",
-      ...(feeStructure.classId
-        ? { classId: feeStructure.classId }
-        : feeStructure.gradeName
-          ? { class: { gradeName: feeStructure.gradeName } }
-          : {}),
-    },
+    where: { academicSessionId: feeStructure.academicSessionId, programme: feeStructure.programme, status: "ACTIVE" },
+    include: { class: { select: { gradeName: true } } },
   });
-  if (enrollments.length === 0) {
-    throw AppError.badRequest("No actively enrolled students match this fee structure's scope");
+  const ctx = await loadBillingContext(
+    prisma,
+    [...new Set(enrollments.map((e) => e.studentId))],
+    feeStructure.academicSessionId,
+    feeStructure.programme,
+  );
+  const studentIds = selectBillableStudentIds(feeStructure, enrollments, ctx);
+  if (studentIds.length === 0) {
+    throw AppError.badRequest(
+      "No actively enrolled students match this fee structure's class, programme, audience and gender",
+    );
   }
 
-  // Deduped: a school-wide structure matches a student once per programme
-  // they're enrolled in (regular class + Madrasa group), but owes once.
-  const studentIds = [...new Set(enrollments.map((e) => e.studentId))];
-  const existing = await prisma.feeObligation.findMany({
-    where: { feeStructureId, studentId: { in: studentIds }, termId: feeStructure.termId },
-    select: { studentId: true },
-  });
-  const existingStudentIds = new Set(existing.map((o) => o.studentId));
-  const toCreate = studentIds.filter((id) => !existingStudentIds.has(id));
-
-  if (toCreate.length > 0) {
-    await prisma.feeObligation.createMany({
-      data: toCreate.map((studentId) => ({
-        studentId,
-        feeStructureId,
-        academicSessionId: feeStructure.academicSessionId,
-        termId: feeStructure.termId,
-        amountDueKobo: feeStructure.amountKobo,
-        createdByUserId: actorUserId,
-      })),
-      // The existing-obligations read above is a stale read the instant a
-      // concurrent (or double-clicked) generate for the same fee structure
-      // lands in between — without this, createMany aborts the WHOLE batch
-      // (unhandled -> 500) on the first row that collides with the unique
-      // constraint on (studentId, feeStructureId, termId), instead of
-      // quietly keeping whichever obligations already exist.
-      skipDuplicates: true,
-    });
-  }
-
+  await createObligations(prisma, [{ structure: feeStructure, studentIds }], actorUserId);
   return prisma.feeObligation.findMany({ where: { feeStructureId, studentId: { in: studentIds } } });
+}
+
+/// Auto-billing for a student who just enrolled or transferred: every
+/// active fee structure in the enrollment's session that matches it gets an
+/// obligation, by the same matcher generateObligations uses. Runs inside
+/// the caller's transaction so an enrollment never exists without the fees
+/// it should have raised. Only ever adds — never alters or removes an
+/// existing obligation. Two exceptions keep it from over-billing:
+///   - A term-specific fee for a term that had already ended when the
+///     student enrolled isn't raised — joining in third term doesn't owe
+///     first and second term's tuition. Session-wide fees still apply.
+///   - On a transfer (`fromClassId`), a fee targeted at the NEW class is
+///     skipped when the student already owes the same category for the same
+///     term through a fee targeted at the OLD class — moving JSS1 A to
+///     JSS1 B replaces the arm's tuition, it doesn't add a second one. The
+///     old obligation is left as it was; adjusting it is the bursar's call.
+export async function billEnrollment(
+  tx: Prisma.TransactionClient,
+  enrollmentId: string,
+  actorUserId: string,
+  options: { fromClassId?: string } = {},
+) {
+  const enrollment = await tx.enrollment.findUniqueOrThrow({
+    where: { id: enrollmentId },
+    include: { class: { select: { gradeName: true } } },
+  });
+  const [structures, endedTerms] = await Promise.all([
+    tx.feeStructure.findMany({
+      where: {
+        academicSessionId: enrollment.academicSessionId,
+        programme: enrollment.programme,
+        isActive: true,
+        OR: [
+          { classId: enrollment.classId },
+          { gradeName: enrollment.class.gradeName },
+          { classId: null, gradeName: null },
+        ],
+      },
+    }),
+    tx.term.findMany({
+      where: { academicSessionId: enrollment.academicSessionId, endDate: { lt: enrollment.enrolledAt } },
+      select: { id: true },
+    }),
+  ]);
+  const endedTermIds = new Set(endedTerms.map((t) => t.id));
+  let candidates = structures.filter((st) => st.termId === null || !endedTermIds.has(st.termId));
+
+  if (options.fromClassId) {
+    const replaced = await tx.feeObligation.findMany({
+      where: { studentId: enrollment.studentId, feeStructure: { classId: options.fromClassId } },
+      select: { termId: true, feeStructure: { select: { category: true } } },
+    });
+    const owed = new Set(replaced.map((o) => `${o.feeStructure.category}:${o.termId}`));
+    candidates = candidates.filter((st) => !(st.classId && owed.has(`${st.category}:${st.termId}`)));
+  }
+  if (candidates.length === 0) {
+    return;
+  }
+
+  const ctx = await loadBillingContext(tx, [enrollment.studentId], enrollment.academicSessionId, enrollment.programme);
+  await createObligations(
+    tx,
+    candidates.map((structure) => ({ structure, studentIds: selectBillableStudentIds(structure, [enrollment], ctx) })),
+    actorUserId,
+  );
 }
 
 /// Exported for results.service.ts's fee-withholding check (Feature D) —

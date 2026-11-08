@@ -41,6 +41,16 @@ export const programmeQuerySchema = z.object({
 });
 export type ProgrammeQuery = z.infer<typeof programmeQuerySchema>;
 
+/// Admin → Results' whole-school release: one term, optionally one programme.
+export const termSummaryQuerySchema = z.object({
+  termId: z.string().min(1),
+  programme: z.enum(["ACADEMIC", "MADRASSAH"]).optional(),
+});
+export type TermSummaryQuery = z.infer<typeof termSummaryQuerySchema>;
+
+export const finalizeAllSchema = termSummaryQuerySchema;
+export type FinalizeAllBody = z.infer<typeof finalizeAllSchema>;
+
 export const studentSessionParamsSchema = z.object({
   studentId: z.string().min(1),
   academicSessionId: z.string().min(1),
@@ -80,3 +90,17 @@ export const writeCommentSchema = z.object({
   comment: z.string().min(1),
 });
 export type WriteCommentBody = z.infer<typeof writeCommentSchema>;
+
+/// PATCH /results/:id/early-years — the Creche/Early Years report's weight,
+/// height and "Area(s) of reinforcement". Bounds match the columns'
+/// Decimal(5,2) / Decimal(5,1).
+export const writeEarlyYearsSchema = z
+  .object({
+    weightKg: z.number().positive().max(999.99).nullable().optional(),
+    heightCm: z.number().positive().max(9999.9).nullable().optional(),
+    areasOfReinforcement: z.string().trim().min(1).max(2000).nullable().optional(),
+  })
+  .refine((data) => Object.values(data).some((v) => v !== undefined), {
+    message: "Provide at least one of weightKg, heightCm or areasOfReinforcement",
+  });
+export type WriteEarlyYearsBody = z.infer<typeof writeEarlyYearsSchema>;

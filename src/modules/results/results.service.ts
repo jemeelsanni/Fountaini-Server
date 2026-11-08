@@ -1,4 +1,10 @@
-import { Prisma, type Programme, type Result, type SessionAverageMethod } from "../../../generated/prisma/index.js";
+import {
+  Prisma,
+  type Programme,
+  type Result,
+  type ResultStatus,
+  type SessionAverageMethod,
+} from "../../../generated/prisma/index.js";
 import { resolveStudentAccessLevel } from "../../authorization/scopeResolvers.js";
 import type { Principal } from "../../authorization/types.js";
 import { logger } from "../../config/logger.js";
@@ -7,7 +13,14 @@ import { AppError } from "../../errors/AppError.js";
 import { fireAndForget } from "../../lib/fireAndForget.js";
 import { writeAuditLog } from "../audit/audit.service.js";
 import { withBalance } from "../fees/fees.service.js";
-import type { ComputeResultsBody, ComputeSessionResultsBody, OverrideResultBody } from "./results.schemas.js";
+import type {
+  ComputeResultsBody,
+  ComputeSessionResultsBody,
+  FinalizeAllBody,
+  OverrideResultBody,
+  TermSummaryQuery,
+  WriteEarlyYearsBody,
+} from "./results.schemas.js";
 
 // ---------------------------------------------------------------------------
 // Fee withholding (Feature D)
@@ -279,7 +292,7 @@ export async function getResultForStudentTerm(
 
   const ratings = await prisma.rating.findMany({
     where: { studentId, termId, programme },
-    include: { trait: { select: { id: true, category: true, name: true, order: true } } },
+    include: { trait: { select: { id: true, category: true, name: true, section: true, order: true } } },
     orderBy: [{ trait: { category: "asc" } }, { trait: { order: "asc" } }],
   });
 
@@ -517,15 +530,32 @@ async function withPositionFillLock<T>(classId: string, termId: string, fn: (tx:
 }
 
 export async function finalizeResult(id: string, actorUserId: string) {
+  const outcome = await finalizeResultIfStatus(id, actorUserId, ["DRAFT", "SUBMITTED"]);
+  if ("statusChangedTo" in outcome) {
+    // Only FINALIZED falls outside DRAFT/SUBMITTED — a concurrent publish.
+    throw AppError.conflict("This result is already finalized");
+  }
+  return outcome.finalized;
+}
+
+/// The one finalize path, for a single publish and the whole-school
+/// release alike. The status precondition is re-checked by the write's own
+/// WHERE, not just the read before it — so a result returned to draft (or
+/// finalized by someone else) after it was picked can never be published
+/// on stale information: finalize-all passes ["SUBMITTED"] and a concurrent
+/// return-to-draft wins cleanly. A status outside `allowed` comes back as
+/// `statusChangedTo` for the caller to decide on, not as an error.
+async function finalizeResultIfStatus(
+  id: string,
+  actorUserId: string,
+  allowed: ResultStatus[],
+): Promise<{ finalized: Result } | { statusChangedTo: ResultStatus }> {
   const result = await prisma.result.findUnique({
     where: { id },
     include: { enrollment: { select: { classId: true, academicSessionId: true } } },
   });
   if (!result) {
     throw AppError.notFound("Result not found");
-  }
-  if (result.status === "FINALIZED") {
-    throw AppError.conflict("This result is already finalized");
   }
 
   const { daysPresent, daysSchoolOpened } = await computeAttendanceSnapshot(
@@ -534,8 +564,8 @@ export async function finalizeResult(id: string, actorUserId: string) {
     result.programme,
   );
 
-  const finalized = await prisma.result.update({
-    where: { id },
+  const { count } = await prisma.result.updateMany({
+    where: { id, status: { in: allowed } },
     data: {
       status: "FINALIZED",
       finalizedByUserId: actorUserId,
@@ -544,6 +574,11 @@ export async function finalizeResult(id: string, actorUserId: string) {
       daysSchoolOpened,
     },
   });
+  if (count === 0) {
+    const current = await prisma.result.findUniqueOrThrow({ where: { id }, select: { status: true } });
+    return { statusChangedTo: current.status };
+  }
+  const finalized = await prisma.result.findUniqueOrThrow({ where: { id } });
 
   const { classId, academicSessionId } = result.enrollment;
   await withPositionFillLock(classId, result.termId, async (tx) => {
@@ -552,7 +587,7 @@ export async function finalizeResult(id: string, actorUserId: string) {
     }
   });
 
-  return finalized;
+  return { finalized };
 }
 
 /// Admin escape hatch for a class that never reaches 100% finalized (e.g. a
@@ -925,22 +960,30 @@ export async function overrideResult(id: string, actorUserId: string, input: Ove
 /// read and a plain write here could let a routine comment silently land on
 /// an already-FINALIZED result — exactly the "backwards" bug this whole
 /// feature exists to close, just moved one race window over.
+///
+/// `writableWhile` widens the DRAFT-only rule for the one field that
+/// belongs to the review stage itself: the principal's comment is the
+/// admin's, written while a form teacher's SUBMITTED card awaits release.
 async function writeDraftResultField(
   id: string,
-  data: { classTeacherComment: string } | { principalComment: string },
+  data: Prisma.ResultUpdateManyMutationInput,
+  what = "Comments",
+  writableWhile: ResultStatus[] = ["DRAFT"],
 ) {
   const { count } = await prisma.result.updateMany({
-    where: { id, status: "DRAFT" },
+    where: { id, status: { in: writableWhile } },
     data,
   });
 
   if (count === 0) {
-    const result = await prisma.result.findUnique({ where: { id }, select: { id: true } });
+    const result = await prisma.result.findUnique({ where: { id }, select: { status: true } });
     if (!result) {
       throw AppError.notFound("Result not found");
     }
     throw AppError.badRequest(
-      "Comments can only be written directly while the result is DRAFT — once finalized, use the override endpoint",
+      result.status === "SUBMITTED"
+        ? `${what} can't be changed while the result is submitted for review — return it to draft first`
+        : `${what} can only be written directly before the result is published — once finalized, use the override endpoint`,
     );
   }
 
@@ -952,5 +995,218 @@ export function writeClassTeacherComment(id: string, comment: string) {
 }
 
 export function writePrincipalComment(id: string, comment: string) {
-  return writeDraftResultField(id, { principalComment: comment });
+  return writeDraftResultField(id, { principalComment: comment }, "The principal's comment", ["DRAFT", "SUBMITTED"]);
+}
+
+/// The Early Years report's extra fields, under the same DRAFT-only rule as
+/// the class-teacher comment (and the same form-teacher/ADMIN scope, at the
+/// route). Omitted fields are left alone; null clears one.
+export function writeEarlyYearsDetails(id: string, input: WriteEarlyYearsBody) {
+  return writeDraftResultField(id, input, "Early Years details");
+}
+
+// ---------------------------------------------------------------------------
+// Review: form teacher submits, admin publishes
+// ---------------------------------------------------------------------------
+
+/// The form teacher's hand-off: DRAFT -> SUBMITTED, "my remarks and ratings
+/// are done — ready for an admin to publish". Publishing (finalizeResult)
+/// stays ADMIN-only and accepts DRAFT or SUBMITTED. A SUBMITTED result is
+/// locked like a FINALIZED one for comments and ratings (both DRAFT-only)
+/// until it's returned to draft. The status re-check in the write's own
+/// WHERE is the same race guard as writeDraftResultField.
+export async function submitResultForReview(id: string, actorUserId: string) {
+  const { count } = await prisma.result.updateMany({
+    where: { id, status: "DRAFT" },
+    data: { status: "SUBMITTED", submittedByUserId: actorUserId, submittedAt: new Date() },
+  });
+  if (count === 0) {
+    const result = await prisma.result.findUnique({ where: { id }, select: { status: true } });
+    if (!result) {
+      throw AppError.notFound("Result not found");
+    }
+    throw AppError.badRequest(
+      result.status === "SUBMITTED"
+        ? "This result has already been submitted for review"
+        : "This result has already been published",
+    );
+  }
+  return prisma.result.findUniqueOrThrow({ where: { id } });
+}
+
+/// Undo a submission before it's published — the form teacher spotting a
+/// mistake, or an admin sending it back for changes. Never touches a
+/// FINALIZED result; that's the override endpoint's job.
+export async function returnResultToDraft(id: string) {
+  const { count } = await prisma.result.updateMany({
+    where: { id, status: "SUBMITTED" },
+    data: { status: "DRAFT", submittedByUserId: null, submittedAt: null },
+  });
+  if (count === 0) {
+    const result = await prisma.result.findUnique({ where: { id }, select: { status: true } });
+    if (!result) {
+      throw AppError.notFound("Result not found");
+    }
+    throw AppError.badRequest(
+      result.status === "DRAFT"
+        ? "This result is already a draft"
+        : "A published result can't be returned to draft — use the override endpoint",
+    );
+  }
+  return prisma.result.findUniqueOrThrow({ where: { id } });
+}
+
+// ---------------------------------------------------------------------------
+// Whole-school release for a term (Admin → Results "Publish all")
+// ---------------------------------------------------------------------------
+
+async function getTermOrThrow(termId: string) {
+  const term = await prisma.term.findUnique({ where: { id: termId }, select: { id: true } });
+  if (!term) {
+    throw AppError.notFound("Term not found");
+  }
+  return term;
+}
+
+type ClassSummary = {
+  classId: string;
+  gradeName: string;
+  arm: string | null;
+  programme: Programme;
+  order: number;
+  draft: number;
+  submitted: number;
+  finalized: number;
+};
+
+const STATUS_KEY = { DRAFT: "draft", SUBMITTED: "submitted", FINALIZED: "finalized" } as const;
+
+/// Per-class DRAFT/SUBMITTED/FINALIZED counts of the term's results — what
+/// "Publish all" is about to do, and what it can't (DRAFT: the form teacher
+/// hasn't submitted it). Classes with no results this term are left out.
+export async function getTermResultsSummary(query: TermSummaryQuery) {
+  await getTermOrThrow(query.termId);
+  const results = await prisma.result.findMany({
+    where: { termId: query.termId, ...(query.programme ? { programme: query.programme } : {}) },
+    select: {
+      status: true,
+      enrollment: { select: { class: { select: { id: true, gradeName: true, arm: true, programme: true, order: true } } } },
+    },
+  });
+
+  const byClass = new Map<string, ClassSummary>();
+  for (const { status, enrollment } of results) {
+    const klass = enrollment.class;
+    const row = byClass.get(klass.id) ?? {
+      classId: klass.id,
+      gradeName: klass.gradeName,
+      arm: klass.arm,
+      programme: klass.programme,
+      order: klass.order,
+      draft: 0,
+      submitted: 0,
+      finalized: 0,
+    };
+    row[STATUS_KEY[status]] += 1;
+    byClass.set(klass.id, row);
+  }
+
+  const classes = [...byClass.values()]
+    .sort((a, b) => a.order - b.order || a.gradeName.localeCompare(b.gradeName) || (a.arm ?? "").localeCompare(b.arm ?? ""))
+    .map(({ order: _order, ...row }) => row);
+  const totals = classes.reduce(
+    (acc, c) => ({ draft: acc.draft + c.draft, submitted: acc.submitted + c.submitted, finalized: acc.finalized + c.finalized }),
+    { draft: 0, submitted: 0, finalized: 0 },
+  );
+  return { termId: query.termId, classes, totals };
+}
+
+/// Publishes every SUBMITTED result for the term (optionally one programme)
+/// through finalizeResult itself — same attendance snapshot and automatic
+/// class ranking as publishing one by one, never a parallel copy of it.
+/// DRAFT results are left alone and only counted. Each result is its own
+/// unit: one failing is recorded and the rest carry on, so a stray bad row
+/// can't hold up the whole school's release. Not wrapped in auditMutation
+/// (one row per request, keyed by one id) — each published result gets its
+/// own RESULT_FINALIZED row here, the same shape the single route writes,
+/// plus one RESULTS_FINALIZED_IN_BULK row on the term.
+export async function finalizeAllForTerm(input: FinalizeAllBody, principal: Principal) {
+  await getTermOrThrow(input.termId);
+  const where = { termId: input.termId, ...(input.programme ? { programme: input.programme } : {}) };
+  const [submitted, draftCount] = await Promise.all([
+    prisma.result.findMany({
+      where: { ...where, status: "SUBMITTED" },
+      include: {
+        student: { select: { firstName: true, lastName: true } },
+        enrollment: { select: { classId: true } },
+      },
+      orderBy: { createdAt: "asc" },
+    }),
+    prisma.result.count({ where: { ...where, status: "DRAFT" } }),
+  ]);
+
+  let skippedDraft = draftCount;
+  const finalizedByClass = new Map<string, number>();
+  const failed: Array<{ resultId: string; studentName: string; message: string }> = [];
+  let returnedToDraft = 0;
+  let alreadyPublished = 0;
+  for (const result of submitted) {
+    const { student, enrollment, ...before } = result;
+    try {
+      const outcome = await finalizeResultIfStatus(result.id, principal.userId, ["SUBMITTED"]);
+      if ("statusChangedTo" in outcome) {
+        // Withdrawn by its form teacher while the release ran (now a
+        // draft, left alone like every other draft), or published by
+        // someone else in the meantime (nothing left to do).
+        if (outcome.statusChangedTo === "DRAFT") {
+          returnedToDraft += 1;
+        } else {
+          alreadyPublished += 1;
+        }
+        continue;
+      }
+      const after = outcome.finalized;
+      finalizedByClass.set(enrollment.classId, (finalizedByClass.get(enrollment.classId) ?? 0) + 1);
+      fireAndForget(
+        writeAuditLog({
+          actorUserId: principal.userId,
+          actorRoles: [...principal.roles],
+          action: "RESULT_FINALIZED",
+          entityType: "Result",
+          entityId: result.id,
+          beforeData: JSON.parse(JSON.stringify(before)) as Prisma.InputJsonValue,
+          afterData: JSON.parse(JSON.stringify(after)) as Prisma.InputJsonValue,
+        }),
+        (err) => logger.error({ err, resultId: result.id }, "Failed to write RESULT_FINALIZED audit log"),
+      );
+    } catch (err) {
+      logger.error({ err, resultId: result.id }, "Bulk finalize: result failed");
+      failed.push({
+        resultId: result.id,
+        studentName: `${student.firstName} ${student.lastName}`,
+        message: err instanceof AppError ? err.message : "Unexpected error publishing this result",
+      });
+    }
+  }
+
+  const finalized = submitted.length - failed.length - returnedToDraft - alreadyPublished;
+  skippedDraft += returnedToDraft;
+  fireAndForget(
+    writeAuditLog({
+      actorUserId: principal.userId,
+      actorRoles: [...principal.roles],
+      action: "RESULTS_FINALIZED_IN_BULK",
+      entityType: "Term",
+      entityId: input.termId,
+      afterData: { termId: input.termId, programme: input.programme ?? null, count: finalized, skippedDraft, failed: failed.length },
+    }),
+    (err) => logger.error({ err, termId: input.termId }, "Failed to write RESULTS_FINALIZED_IN_BULK audit log"),
+  );
+
+  return {
+    finalized,
+    skippedDraft,
+    failed,
+    classes: [...finalizedByClass].map(([classId, count]) => ({ classId, finalized: count })),
+  };
 }

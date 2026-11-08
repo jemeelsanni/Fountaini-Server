@@ -1337,6 +1337,10 @@
               "null"
             ]
           },
+          "hasHeadSignature": {
+            "type": "boolean",
+            "description": "Whether a head-of-school signature is uploaded. The image itself is GET /api/school/signature — kept out of this response because it can be megabytes."
+          },
           "createdAt": {
             "type": "string",
             "format": "date-time"
@@ -1352,8 +1356,24 @@
           "address",
           "contactEmail",
           "contactPhone",
+          "hasHeadSignature",
           "createdAt",
           "updatedAt"
+        ]
+      },
+      "HeadSignature": {
+        "type": "object",
+        "properties": {
+          "headSignature": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The head of school's signature for report cards, as a data URL (data:image/png|jpeg|webp;base64,…), at most 2 MB decoded. Null until uploaded."
+          }
+        },
+        "required": [
+          "headSignature"
         ]
       },
       "StudentIdCard": {
@@ -2612,6 +2632,27 @@
               "null"
             ]
           },
+          "weightKg": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Early Years report only"
+          },
+          "heightCm": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Early Years report only"
+          },
+          "areasOfReinforcement": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Early Years report only"
+          },
           "submittedByUserId": {
             "type": [
               "string",
@@ -2668,6 +2709,9 @@
           "daysSchoolOpened",
           "classTeacherComment",
           "principalComment",
+          "weightKg",
+          "heightCm",
+          "areasOfReinforcement",
           "submittedByUserId",
           "submittedAt",
           "finalizedByUserId",
@@ -2908,6 +2952,13 @@
           "value": {
             "type": "integer"
           },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An EARLY_YEARS item's fill-in blanks, \"|\"-separated when there are several."
+          },
           "enteredByUserId": {
             "type": "string",
             "description": "cuid"
@@ -2940,6 +2991,12 @@
               "name": {
                 "type": "string"
               },
+              "section": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "order": {
                 "type": "integer"
               }
@@ -2948,6 +3005,7 @@
               "id",
               "category",
               "name",
+              "section",
               "order"
             ]
           }
@@ -2958,6 +3016,7 @@
           "termId",
           "programme",
           "value",
+          "note",
           "enteredByUserId",
           "enteredAt",
           "updatedByUserId",
@@ -2969,8 +3028,10 @@
         "type": "string",
         "enum": [
           "AFFECTIVE",
-          "PSYCHOMOTOR"
-        ]
+          "PSYCHOMOTOR",
+          "EARLY_YEARS"
+        ],
+        "description": "EARLY_YEARS = the Creche/Early Years report checklist, rated 1-4 (the others are 1-5)."
       },
       "PaymentRequiredError": {
         "type": "object",
@@ -3034,6 +3095,144 @@
               "student"
             ]
           }
+        ]
+      },
+      "TermResultsSummary": {
+        "type": "object",
+        "properties": {
+          "termId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "classes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "draft": {
+                  "type": "integer"
+                },
+                "submitted": {
+                  "type": "integer",
+                  "description": "Awaiting release — what finalize-all would publish"
+                },
+                "finalized": {
+                  "type": "integer"
+                },
+                "classId": {
+                  "type": "string",
+                  "description": "cuid"
+                },
+                "gradeName": {
+                  "type": "string"
+                },
+                "arm": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "programme": {
+                  "$ref": "#/components/schemas/Programme"
+                }
+              },
+              "required": [
+                "draft",
+                "submitted",
+                "finalized",
+                "classId",
+                "gradeName",
+                "arm",
+                "programme"
+              ]
+            },
+            "description": "Only classes with results this term, in class order"
+          },
+          "totals": {
+            "type": "object",
+            "properties": {
+              "draft": {
+                "type": "integer"
+              },
+              "submitted": {
+                "type": "integer",
+                "description": "Awaiting release — what finalize-all would publish"
+              },
+              "finalized": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "draft",
+              "submitted",
+              "finalized"
+            ]
+          }
+        },
+        "required": [
+          "termId",
+          "classes",
+          "totals"
+        ]
+      },
+      "FinalizeAllResult": {
+        "type": "object",
+        "properties": {
+          "finalized": {
+            "type": "integer"
+          },
+          "skippedDraft": {
+            "type": "integer",
+            "description": "DRAFT results left alone — not yet submitted"
+          },
+          "failed": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "resultId": {
+                  "type": "string",
+                  "description": "cuid"
+                },
+                "studentName": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "resultId",
+                "studentName",
+                "message"
+              ]
+            }
+          },
+          "classes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "classId": {
+                  "type": "string",
+                  "description": "cuid"
+                },
+                "finalized": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "classId",
+                "finalized"
+              ]
+            }
+          }
+        },
+        "required": [
+          "finalized",
+          "skippedDraft",
+          "failed",
+          "classes"
         ]
       },
       "SessionResultWithSubjectAverages": {
@@ -3202,6 +3401,13 @@
           "name": {
             "type": "string"
           },
+          "section": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The heading an EARLY_YEARS item prints under (e.g. \"Literacy\"); null otherwise."
+          },
           "order": {
             "type": "integer"
           },
@@ -3219,6 +3425,7 @@
           "academicSessionId",
           "category",
           "name",
+          "section",
           "order",
           "isActive",
           "createdAt"
@@ -3586,6 +3793,29 @@
             "type": "integer",
             "description": "Amount in kobo (1/100 of a naira)"
           },
+          "programme": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Programme"
+              },
+              {
+                "description": "Only enrollments in this programme are billed (a Madrasa-only student never gets an ACADEMIC fee)."
+              }
+            ]
+          },
+          "audience": {
+            "$ref": "#/components/schemas/FeeAudience"
+          },
+          "gender": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Gender"
+              },
+              {
+                "description": "null = everyone. A gendered fee skips students whose gender isn't recorded."
+              }
+            ]
+          },
           "isActive": {
             "type": "boolean"
           },
@@ -3603,6 +3833,9 @@
           "academicSessionId",
           "termId",
           "amountKobo",
+          "programme",
+          "audience",
+          "gender",
           "isActive",
           "createdAt"
         ]
@@ -3616,6 +3849,15 @@
           "UNIFORM",
           "OTHER"
         ]
+      },
+      "FeeAudience": {
+        "type": "string",
+        "enum": [
+          "ALL",
+          "NEW_STUDENTS",
+          "RETURNING_STUDENTS"
+        ],
+        "description": "NEW_STUDENTS = no enrollment in the structure's programme in any earlier session (any status); RETURNING_STUDENTS = has one."
       },
       "FeeObligation": {
         "type": "object",
@@ -7369,7 +7611,7 @@
     },
     "/api/students/{id}/enrollments": {
       "post": {
-        "summary": "Enroll a student in a class for an academic session",
+        "summary": "Enroll a student in a class for an academic session. In the same transaction, bills the student for every active fee structure in that session the new enrollment matches (class/grade/school-wide, programme, audience, gender) — same rules as generate-obligations, never duplicating one.",
         "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
@@ -7568,7 +7810,7 @@
     },
     "/api/students/{id}/transfer": {
       "post": {
-        "summary": "Move a student's current-session enrollment to a different class — in place, not a new enrollment: scores, subject results, and attendance already recorded stay exactly where they are (never repointed to the new class), and remain correctly counted because the compute path is scoped by student, not by one class. 400 if the target class is at a different grade level than the student's current one (e.g. JSS1 to JSS2) — this endpoint only covers arms of the same grade level (e.g. JSS1 A to JSS1 B); a cross-grade move is POST /api/students/:id/enrollments instead. No partial-term awareness: a result already FINALIZED before the move is re-ranked against its new class's cohort the next time that class is ranked, same as any other re-rank.",
+        "summary": "Move a student's current-session enrollment to a different class — in place, not a new enrollment: scores, subject results, and attendance already recorded stay exactly where they are (never repointed to the new class), and remain correctly counted because the compute path is scoped by student, not by one class. 400 if the target class is at a different grade level than the student's current one (e.g. JSS1 to JSS2) — this endpoint only covers arms of the same grade level (e.g. JSS1 A to JSS1 B); a cross-grade move is POST /api/students/:id/enrollments instead. No partial-term awareness: a result already FINALIZED before the move is re-ranked against its new class's cohort the next time that class is ranked, same as any other re-rank. Fees: bills any active fee structure the new class matches; obligations from the old class are left as they are.",
         "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
@@ -9408,6 +9650,192 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/school/signature": {
+      "get": {
+        "summary": "The head of school's signature image, for printing on report cards. Separate from GET /api/school (which only says hasHeadSignature) so ordinary page loads don't carry a multi-megabyte image.",
+        "description": "Roles: ADMIN, BURSAR, PARENT, STUDENT, TEACHER.",
+        "x-roles": [
+          "ADMIN",
+          "BURSAR",
+          "PARENT",
+          "STUDENT",
+          "TEACHER"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeadSignature"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Upload or replace the head of school's signature printed on report cards. `dataUrl` must be a base64 PNG, JPEG or WebP data URL whose image is at most 2 MB (this route alone accepts a body up to 3 MB); anything else is a 400 with a readable message. The audit log records that it was set, never the image.",
+        "description": "Roles: ADMIN.",
+        "x-roles": [
+          "ADMIN"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "dataUrl": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "dataUrl"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/School"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Remove the head of school's signature (headSignature becomes null)",
+        "description": "Roles: ADMIN.",
+        "x-roles": [
+          "ADMIN"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/School"
                 }
               }
             }
@@ -14012,6 +14440,180 @@
         }
       }
     },
+    "/api/results/term-summary": {
+      "get": {
+        "summary": "Per-class counts of a term's results by status (draft / submitted / finalized), for the whole-school release. `programme` narrows to ACADEMIC or MADRASSAH; omitted means both. 404 for an unknown term.",
+        "description": "Roles: ADMIN.",
+        "x-roles": [
+          "ADMIN"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "termId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "ACADEMIC",
+                "MADRASSAH"
+              ]
+            },
+            "required": false,
+            "name": "programme",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TermResultsSummary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/results/finalize-all": {
+      "post": {
+        "summary": "Publish every SUBMITTED result for a term across all classes (optionally one programme), each exactly as POST /results/:id/finalize would — attendance snapshot, class ranking, a RESULT_FINALIZED audit row each. DRAFT results are never touched, only counted (skippedDraft). One failure doesn't stop the rest; failures are listed. Nothing submitted is a 200 with finalized: 0. 404 for an unknown term.",
+        "description": "Roles: ADMIN.",
+        "x-roles": [
+          "ADMIN"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "termId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "programme": {
+                    "type": "string",
+                    "enum": [
+                      "ACADEMIC",
+                      "MADRASSAH"
+                    ]
+                  }
+                },
+                "required": [
+                  "termId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FinalizeAllResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/results/{id}/finalize": {
       "post": {
         "summary": "Finalize a report-card result, locking it except via override. Snapshots daysPresent/daysSchoolOpened at this moment (never recomputed later). Once every actively-enrolled student in this class+term is FINALIZED, this call also triggers the class-wide position/outOf pass (ranked strictly among FINALIZED peers, ties sharing a position) — see POST /classes/:id/results/:termId/rank for the admin escape hatch if a class never completes.",
@@ -14099,6 +14701,176 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ConflictError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/results/{id}/submit": {
+      "post": {
+        "summary": "Form teacher submits a DRAFT result for an admin to publish (DRAFT -> SUBMITTED). Publishing stays ADMIN-only (POST /results/:id/finalize, which accepts DRAFT or SUBMITTED). While SUBMITTED, comments and ratings are locked as for a published result. 400 if it isn't DRAFT.",
+        "description": "Roles: ADMIN, TEACHER. ADMIN, or that class's form teacher — not a subject teacher assigned to the class.",
+        "x-roles": [
+          "ADMIN",
+          "TEACHER"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Result"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/results/{id}/return-to-draft": {
+      "post": {
+        "summary": "Take a SUBMITTED result back to DRAFT so its remarks/ratings can be changed — the form teacher fixing a mistake, or an admin sending it back. 400 if it isn't SUBMITTED (a published result needs the override endpoint).",
+        "description": "Roles: ADMIN, TEACHER. ADMIN, or that class's form teacher — not a subject teacher assigned to the class.",
+        "x-roles": [
+          "ADMIN",
+          "TEACHER"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Result"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
                 }
               }
             }
@@ -14728,6 +15500,126 @@
         }
       }
     },
+    "/api/results/{id}/early-years": {
+      "patch": {
+        "summary": "Write the Early Years (Creche) report's weightKg, heightCm and areasOfReinforcement on a DRAFT result. Omitted fields are left alone, null clears one; at least one is required. Same who/when rules as the class-teacher comment: the form teacher of the result's class or ADMIN, DRAFT only.",
+        "description": "Roles: ADMIN, TEACHER. ADMIN, or that class's form teacher — not a subject teacher assigned to the class.",
+        "x-roles": [
+          "ADMIN",
+          "TEACHER"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "weightKg": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "exclusiveMinimum": 0,
+                    "maximum": 999.99
+                  },
+                  "heightCm": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "exclusiveMinimum": 0,
+                    "maximum": 9999.9
+                  },
+                  "areasOfReinforcement": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "minLength": 1,
+                    "maxLength": 2000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Result"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/results/{id}/principal-comment": {
       "patch": {
         "summary": "Write the principal's comment on a DRAFT result — not an override, no ResultOverride row",
@@ -14863,11 +15755,19 @@
                     "type": "string",
                     "enum": [
                       "AFFECTIVE",
-                      "PSYCHOMOTOR"
+                      "PSYCHOMOTOR",
+                      "EARLY_YEARS"
                     ]
                   },
                   "name": {
                     "type": "string",
+                    "minLength": 1
+                  },
+                  "section": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
                     "minLength": 1
                   },
                   "order": {
@@ -15080,11 +15980,19 @@
                     "type": "string",
                     "enum": [
                       "AFFECTIVE",
-                      "PSYCHOMOTOR"
+                      "PSYCHOMOTOR",
+                      "EARLY_YEARS"
                     ]
                   },
                   "name": {
                     "type": "string",
+                    "minLength": 1
+                  },
+                  "section": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
                     "minLength": 1
                   },
                   "order": {
@@ -15370,6 +16278,13 @@
                           "type": "integer",
                           "minimum": 1,
                           "maximum": 5
+                        },
+                        "note": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "maxLength": 100
                         }
                       },
                       "required": [
@@ -16250,7 +17165,7 @@
     },
     "/api/fee-structures": {
       "post": {
-        "summary": "Create a fee structure. Targets exactly one of classId (a specific class), gradeName (every class at that grade level, e.g. \"JSS1\" — resolved fresh each time obligations are generated, not baked in here, so a class added later is still covered), or neither (school-wide). 400 if both classId and gradeName are set.",
+        "summary": "Create a fee structure. Targets exactly one of classId (a specific class), gradeName (every class at that grade level, e.g. \"JSS1\" — resolved fresh each time obligations are generated, not baked in here, so a class added later is still covered), or neither (school-wide). 400 if both classId and gradeName are set. `programme` (default ACADEMIC), `audience` (default ALL) and `gender` (default everyone) narrow who is billed; a targeted class/grade must be in `programme` (400).",
         "description": "Roles: ADMIN, BURSAR.",
         "x-roles": [
           "ADMIN",
@@ -16300,6 +17215,30 @@
                   "amountKobo": {
                     "type": "integer",
                     "exclusiveMinimum": 0
+                  },
+                  "programme": {
+                    "type": "string",
+                    "enum": [
+                      "ACADEMIC",
+                      "MADRASSAH"
+                    ],
+                    "default": "ACADEMIC"
+                  },
+                  "audience": {
+                    "type": "string",
+                    "enum": [
+                      "ALL",
+                      "NEW_STUDENTS",
+                      "RETURNING_STUDENTS"
+                    ],
+                    "default": "ALL"
+                  },
+                  "gender": {
+                    "type": "string",
+                    "enum": [
+                      "MALE",
+                      "FEMALE"
+                    ]
                   }
                 },
                 "required": [
@@ -16440,7 +17379,7 @@
     },
     "/api/fee-structures/{id}": {
       "patch": {
-        "summary": "Edit a fee structure's name, amount, or targeting (classId/gradeName — see the create route's own summary for the targeting rules; 400 if the edit would leave both set, whether both are set in this same request or one is set here and the other is already on the row from before). Never retroactively alters obligations already generated from it — only the next generate-obligations run sees the new amount or targeting.",
+        "summary": "Edit a fee structure's name, amount, or targeting (classId/gradeName — see the create route's own summary for the targeting rules; 400 if the edit would leave both set, whether both are set in this same request or one is set here and the other is already on the row from before). Never retroactively alters obligations already generated from it — only the next generate-obligations run sees the new amount or targeting. 409 if it would change programme, audience or gender after the structure has already billed someone — create a new structure instead, since the existing obligations can't be reconciled.",
         "description": "Roles: ADMIN, BURSAR.",
         "x-roles": [
           "ADMIN",
@@ -16489,6 +17428,32 @@
                   "amountKobo": {
                     "type": "integer",
                     "exclusiveMinimum": 0
+                  },
+                  "programme": {
+                    "type": "string",
+                    "enum": [
+                      "ACADEMIC",
+                      "MADRASSAH"
+                    ]
+                  },
+                  "audience": {
+                    "type": "string",
+                    "enum": [
+                      "ALL",
+                      "NEW_STUDENTS",
+                      "RETURNING_STUDENTS"
+                    ]
+                  },
+                  "gender": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "enum": [
+                      "MALE",
+                      "FEMALE",
+                      null
+                    ]
                   }
                 }
               }
@@ -16549,6 +17514,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with the resource's current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictError"
                 }
               }
             }
@@ -16644,7 +17619,7 @@
     },
     "/api/fee-structures/{id}/generate-obligations": {
       "post": {
-        "summary": "Generate a fee obligation for every actively-enrolled student matching this fee structure's scope — a specific class, every class at a grade level, or school-wide (see POST /api/fee-structures). Targeting is resolved fresh on every call against the live Class table, not fixed at the structure's creation time — a class added to a targeted grade level after the structure existed is still covered the next time this runs.",
+        "summary": "Generate a fee obligation for every actively-enrolled student matching this fee structure's scope — a specific class, every class at a grade level, or school-wide (see POST /api/fee-structures). Targeting is resolved fresh on every call against the live Class table, not fixed at the structure's creation time — a class added to a targeted grade level after the structure existed is still covered the next time this runs. Also filtered by the structure's programme, audience (new vs returning) and gender. Idempotent — students already billed for it are skipped. 400 if no student matches.",
         "description": "Roles: ADMIN, BURSAR.",
         "x-roles": [
           "ADMIN",

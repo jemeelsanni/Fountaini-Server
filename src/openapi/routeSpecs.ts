@@ -35,6 +35,7 @@ import {
   classTermParamsSchema,
   computeResultsSchema,
   computeSessionResultsSchema,
+  finalizeAllSchema,
   idParamsSchema as resultsIdParamsSchema,
   listResultsForStudentQuerySchema,
   overrideResultSchema,
@@ -42,9 +43,11 @@ import {
   releaseWithholdingSchema,
   studentSessionParamsSchema,
   studentTermParamsSchema,
+  termSummaryQuerySchema,
   writeCommentSchema,
+  writeEarlyYearsSchema,
 } from "../modules/results/results.schemas.js";
-import { createSchoolSchema, updateSchoolSchema } from "../modules/school/school.schemas.js";
+import { createSchoolSchema, setHeadSignatureSchema, updateSchoolSchema } from "../modules/school/school.schemas.js";
 import { bulkUpsertScoresSchema, idParamsSchema as scoresIdParamsSchema, scoresForAssignmentQuerySchema, submitScoresSchema } from "../modules/scores/scores.schemas.js";
 import { createStaffSchema, idParamsSchema as staffIdParamsSchema, updateStaffSchema } from "../modules/staff/staff.schemas.js";
 import { idParamsSchema as subjectTemplatesIdParamsSchema, subjectTemplateInputSchema } from "../modules/subject-templates/subject-templates.schemas.js";
@@ -77,9 +80,11 @@ import {
   FeeObligationSchema,
   FeeObligationWithBalanceSchema,
   FeeStructureSchema,
+  FinalizeAllResultSchema,
   GradeBandSchema,
   GradingScaleSchema,
   GradingScaleWithBandsSchema,
+  HeadSignatureSchema,
   MadrassahProgressSchema,
   MadrassahProgressWithRelationsSchema,
   MarkAllNotificationsReadResultSchema,
@@ -129,6 +134,7 @@ import {
   SubjectSchema,
   SubjectTemplateSchema,
   SurahSchema,
+  TermResultsSummarySchema,
   TermSchema,
   TraitSchema,
   TimeSlotSchema,
@@ -528,7 +534,8 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
       "Create a fee structure. Targets exactly one of classId (a specific class), gradeName (every " +
       "class at that grade level, e.g. \"JSS1\" — resolved fresh each time obligations are generated, " +
       "not baked in here, so a class added later is still covered), or neither (school-wide). 400 if " +
-      "both classId and gradeName are set.",
+      "both classId and gradeName are set. `programme` (default ACADEMIC), `audience` (default ALL) and " +
+      "`gender` (default everyone) narrow who is billed; a targeted class/grade must be in `programme` (400).",
     requestBody: createFeeStructureSchema,
     responses: { 201: { description: "Created", schema: FeeStructureSchema } },
   },
@@ -543,7 +550,9 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
       "own summary for the targeting rules; 400 if the edit would leave both set, whether both are set " +
       "in this same request or one is set here and the other is already on the row from before). " +
       "Never retroactively alters obligations already generated from it — only the next " +
-      "generate-obligations run sees the new amount or targeting.",
+      "generate-obligations run sees the new amount or targeting. 409 if it would change programme, " +
+      "audience or gender after the structure has already billed someone — create a new structure " +
+      "instead, since the existing obligations can't be reconciled.",
     requestParams: feesIdParamsSchema,
     requestBody: updateFeeStructureSchema,
     responses: { 200: { description: "OK", schema: FeeStructureSchema } },
@@ -561,7 +570,9 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
       "scope — a specific class, every class at a grade level, or school-wide (see " +
       "POST /api/fee-structures). Targeting is resolved fresh on every call against the live Class " +
       "table, not fixed at the structure's creation time — a class added to a targeted grade level " +
-      "after the structure existed is still covered the next time this runs.",
+      "after the structure existed is still covered the next time this runs. Also filtered by the " +
+      "structure's programme, audience (new vs returning) and gender. Idempotent — students already " +
+      "billed for it are skipped. 400 if no student matches.",
     requestParams: feesIdParamsSchema,
     responses: { 201: { description: "Created", schema: z.array(FeeObligationSchema) } },
   },
@@ -1047,6 +1058,51 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     responses: { 200: { description: "OK", schema: ResultSchema } },
     scopeNote: SCOPE_NOTES.canReadClassResults,
   },
+  "PATCH /api/results/:id/early-years": {
+    summary:
+      "Write the Early Years (Creche) report's weightKg, heightCm and areasOfReinforcement on a DRAFT " +
+      "result. Omitted fields are left alone, null clears one; at least one is required. Same who/when " +
+      "rules as the class-teacher comment: the form teacher of the result's class or ADMIN, DRAFT only.",
+    requestParams: resultsIdParamsSchema,
+    requestBody: writeEarlyYearsSchema,
+    responses: { 200: { description: "OK", schema: ResultSchema } },
+    scopeNote: SCOPE_NOTES.canReadClassResults,
+  },
+  "GET /api/results/term-summary": {
+    summary:
+      "Per-class counts of a term's results by status (draft / submitted / finalized), for the whole-school " +
+      "release. `programme` narrows to ACADEMIC or MADRASSAH; omitted means both. 404 for an unknown term.",
+    requestQuery: termSummaryQuerySchema,
+    responses: { 200: { description: "OK", schema: TermResultsSummarySchema } },
+  },
+  "POST /api/results/finalize-all": {
+    summary:
+      "Publish every SUBMITTED result for a term across all classes (optionally one programme), each " +
+      "exactly as POST /results/:id/finalize would — attendance snapshot, class ranking, a RESULT_FINALIZED " +
+      "audit row each. DRAFT results are never touched, only counted (skippedDraft). One failure doesn't " +
+      "stop the rest; failures are listed. Nothing submitted is a 200 with finalized: 0. 404 for an " +
+      "unknown term.",
+    requestBody: finalizeAllSchema,
+    responses: { 200: { description: "OK", schema: FinalizeAllResultSchema } },
+  },
+  "POST /api/results/:id/submit": {
+    summary:
+      "Form teacher submits a DRAFT result for an admin to publish (DRAFT -> SUBMITTED). Publishing stays " +
+      "ADMIN-only (POST /results/:id/finalize, which accepts DRAFT or SUBMITTED). While SUBMITTED, comments " +
+      "and ratings are locked as for a published result. 400 if it isn't DRAFT.",
+    requestParams: resultsIdParamsSchema,
+    responses: { 200: { description: "OK", schema: ResultSchema } },
+    scopeNote: SCOPE_NOTES.canReadClassResults,
+  },
+  "POST /api/results/:id/return-to-draft": {
+    summary:
+      "Take a SUBMITTED result back to DRAFT so its remarks/ratings can be changed — the form teacher " +
+      "fixing a mistake, or an admin sending it back. 400 if it isn't SUBMITTED (a published result needs " +
+      "the override endpoint).",
+    requestParams: resultsIdParamsSchema,
+    responses: { 200: { description: "OK", schema: ResultSchema } },
+    scopeNote: SCOPE_NOTES.canReadClassResults,
+  },
   "PATCH /api/results/:id/principal-comment": {
     summary: "Write the principal's comment on a DRAFT result — not an override, no ResultOverride row",
     requestParams: resultsIdParamsSchema,
@@ -1096,6 +1152,25 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
   "PATCH /api/school": {
     summary: "Update the school's singleton record",
     requestBody: updateSchoolSchema,
+    responses: { 200: { description: "OK", schema: SchoolSchema } },
+  },
+  "GET /api/school/signature": {
+    summary:
+      "The head of school's signature image, for printing on report cards. Separate from GET /api/school " +
+      "(which only says hasHeadSignature) so ordinary page loads don't carry a multi-megabyte image.",
+    responses: { 200: { description: "OK", schema: HeadSignatureSchema } },
+  },
+  "PUT /api/school/signature": {
+    summary:
+      "Upload or replace the head of school's signature printed on report cards. `dataUrl` must be a " +
+      "base64 PNG, JPEG or WebP data URL whose image is at most 2 MB (this route alone accepts a body " +
+      "up to 3 MB); anything else is a 400 with a readable message. The audit log records that it was " +
+      "set, never the image.",
+    requestBody: setHeadSignatureSchema,
+    responses: { 200: { description: "OK", schema: SchoolSchema } },
+  },
+  "DELETE /api/school/signature": {
+    summary: "Remove the head of school's signature (headSignature becomes null)",
     responses: { 200: { description: "OK", schema: SchoolSchema } },
   },
 
@@ -1274,7 +1349,10 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     scopeNote: SCOPE_NOTES.canReadStudentParents,
   },
   "POST /api/students/:id/enrollments": {
-    summary: "Enroll a student in a class for an academic session",
+    summary:
+      "Enroll a student in a class for an academic session. In the same transaction, bills the student " +
+      "for every active fee structure in that session the new enrollment matches (class/grade/school-wide, " +
+      "programme, audience, gender) — same rules as generate-obligations, never duplicating one.",
     requestParams: studentsIdParamsSchema,
     requestBody: createEnrollmentSchema,
     responses: { 201: { description: "Created", schema: EnrollmentSchema } },
@@ -1294,7 +1372,9 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
       "than the student's current one (e.g. JSS1 to JSS2) — this endpoint only covers arms of the same " +
       "grade level (e.g. JSS1 A to JSS1 B); a cross-grade move is POST /api/students/:id/enrollments " +
       "instead. No partial-term awareness: a result already FINALIZED before the move is re-ranked " +
-      "against its new class's cohort the next time that class is ranked, same as any other re-rank.",
+      "against its new class's cohort the next time that class is ranked, same as any other re-rank. " +
+      "Fees: bills any active fee structure the new class matches; obligations from the old class are " +
+      "left as they are.",
     requestParams: studentsIdParamsSchema,
     requestBody: transferStudentSchema,
     responses: { 200: { description: "OK", schema: EnrollmentSchema } },

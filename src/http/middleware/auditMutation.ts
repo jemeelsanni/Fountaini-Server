@@ -19,10 +19,20 @@ import { writeAuditLog } from "../../modules/audit/audit.service.js";
 /// this entry to do anything.
 const REDACTED_RESPONSE_FIELDS: ReadonlySet<string> = new Set(["temporaryPassword", "passwordHash"]);
 
+/// Fields whose value is too large to be worth storing in every audit row,
+/// but whose presence matters — kept as "[set]" or null, so the log still
+/// shows a signature being uploaded or cleared without carrying the image.
+const SUMMARIZED_RESPONSE_FIELDS: ReadonlySet<string> = new Set(["headSignature"]);
+
 function redact(body: Record<string, unknown>): Record<string, unknown> {
   const out = { ...body };
   for (const field of REDACTED_RESPONSE_FIELDS) {
     delete out[field];
+  }
+  for (const field of SUMMARIZED_RESPONSE_FIELDS) {
+    if (field in out) {
+      out[field] = out[field] == null ? null : "[set]";
+    }
   }
   return out;
 }
@@ -52,7 +62,12 @@ export interface AuditMutationOptions {
   /// to be documenting — caught and logged, and the write proceeds with
   /// beforeData: undefined, same posture as a failed audit WRITE never
   /// failing the request that triggered it.
-  fetchBefore?: (id: string) => Promise<unknown>;
+  ///
+  /// `req` is passed too (body already validated — validate() runs first)
+  /// for the rare route where :id alone doesn't pin down which row the
+  /// handler will touch, e.g. a transfer whose target class decides which
+  /// of a student's enrollments moves.
+  fetchBefore?: (id: string, req: Request) => Promise<unknown>;
 }
 
 /// Declarative audit logging for admin/bursar mutation routes — one line at
@@ -105,7 +120,7 @@ export function auditMutation(entityType: string, action: string, options: Audit
       return;
     }
 
-    options.fetchBefore(id).then(
+    options.fetchBefore(id, req).then(
       (value) => {
         beforeData = value;
         next();

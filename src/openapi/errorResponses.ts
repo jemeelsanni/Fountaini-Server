@@ -54,6 +54,8 @@ export const CONFLICT_ROUTE_KEYS: ReadonlySet<string> = new Set([
   "POST /api/timetable-entries",
   "POST /api/school",
   "DELETE /api/fee-structures/:id",
+  // Changing programme/audience/gender after the structure has billed anyone.
+  "PATCH /api/fee-structures/:id",
   "PUT /api/classes/:id/results/:termId/ratings",
   "POST /api/academic-sessions/:id/traits",
   "DELETE /api/class-subject-assignments/:id",

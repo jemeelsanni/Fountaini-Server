@@ -65,6 +65,11 @@ model School {
   address                  String?
   contactEmail             String?
   contactPhone             String?
+  /// The head of school's signature, printed on report cards — a data URL
+  /// ("data:image/png;base64,…"), kept in the row because the backend has no
+  /// file storage. Capped at 2 MB decoded (setHeadSignature); the admin
+  /// frontend downsizes to at most 600×200 PNG first, typically 10–40 KB.
+  headSignature            String?
   currentAcademicSessionId String?          @unique
   currentAcademicSession   AcademicSession? @relation("SchoolCurrentSession", fields: [currentAcademicSessionId], references: [id])
   createdAt                DateTime         @default(now())
@@ -677,9 +682,13 @@ model GradeBand {
   @@unique([gradingScaleId, grade])
 }
 
+/// EARLY_YEARS is the Creche/Early Years report's checklist (~70 items in
+/// sections, rated 1-4 stars), stored as traits so it reuses ratings, the
+/// ratings route and its form-teacher permissions.
 enum TraitCategory {
   AFFECTIVE
   PSYCHOMOTOR
+  EARLY_YEARS
 }
 
 /// Configurable per session, one flat list per category — same pattern as
@@ -695,6 +704,10 @@ model Trait {
   academicSession   AcademicSession @relation(fields: [academicSessionId], references: [id])
   category          TraitCategory
   name              String
+  /// The heading an EARLY_YEARS item prints under (e.g. "Literacy"); null
+  /// for AFFECTIVE/PSYCHOMOTOR. order runs across all sections, so sorting
+  /// by order keeps sections together.
+  section           String?
   order             Int
   /// Soft-deactivation, not delete: a Rating references its trait by FK
   /// (RESTRICT, same posture as AssessmentComponent/Score), so a trait
@@ -734,6 +747,10 @@ model Rating {
   traitId         String
   trait           Trait     @relation(fields: [traitId], references: [id])
   value           Int
+  /// Fill-in blanks on an EARLY_YEARS item ("Rote counts to ___"), max 100
+  /// chars; several blanks in one item are "|"-separated and split by the
+  /// frontend ("Al-Fatiha|An-Nas").
+  note            String?
   /// The programme of the class whose form teacher entered it — the
   /// Islamiyyah sheet's ratings are entered separately from the academic
   /// sheet's, against the same session traits.
@@ -832,6 +849,11 @@ model Result {
   daysSchoolOpened       Int?
   classTeacherComment    String?
   principalComment       String?
+  /// Early Years report only — written by the form teacher while DRAFT
+  /// (PATCH /results/:id/early-years), like classTeacherComment.
+  weightKg               Decimal?     @db.Decimal(5, 2)
+  heightCm               Decimal?     @db.Decimal(5, 1)
+  areasOfReinforcement   String?
   submittedByUserId      String?
   submittedAt            DateTime?
   finalizedByUserId      String?
@@ -1043,6 +1065,14 @@ enum FeeCategory {
   OTHER
 }
 
+/// Who a FeeStructure bills within its class/programme scope — see
+/// FeeStructure.audience.
+enum FeeAudience {
+  ALL
+  NEW_STUDENTS
+  RETURNING_STUDENTS
+}
+
 model FeeStructure {
   id                String          @id @default(cuid())
   name              String
@@ -1065,6 +1095,17 @@ model FeeStructure {
   /// Null = session-wide (e.g. registration fee), not tied to one term.
   termId            String?
   amountKobo        Int
+  /// Which enrollments it bills: an ACADEMIC school-wide fee never reaches a
+  /// student whose only enrollment is a Madrasa group, and Weekday Madrasa
+  /// fees target MADRASSAH classes.
+  programme         Programme       @default(ACADEMIC)
+  /// NEW_STUDENTS = no enrollment in this programme in any earlier session
+  /// (by AcademicSession.startDate, any status) — e.g. the admission form
+  /// and uniform; RETURNING_STUDENTS = has one.
+  audience          FeeAudience     @default(ALL)
+  /// Null = everyone. A gendered fee (the boys' and girls' uniforms) skips a
+  /// student whose gender isn't recorded rather than guessing.
+  gender            Gender?
   isActive          Boolean         @default(true)
   createdAt         DateTime        @default(now())
 

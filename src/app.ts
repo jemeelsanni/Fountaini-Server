@@ -40,6 +40,9 @@ export interface RouteMount {
 /// createApp() and the route-guard inventory test — so the test walks
 /// exactly what's actually mounted, in exactly the order it's mounted in,
 /// with no separate list to fall out of sync.
+/// See the JSON-parser comment in createApp().
+const SCHOOL_SIGNATURE_PATH = "/api/school/signature";
+
 export const routeMounts: RouteMount[] = [
   { prefix: "/api/auth", router: authRouter },
   { prefix: "/api/admin", router: adminRouter },
@@ -106,7 +109,20 @@ export function createApp() {
       },
     }),
   );
-  app.use(express.json());
+  // Skipped for the signature upload only, which parses its own body with a
+  // larger limit (school.routes.ts) — a parser here would 413 it first.
+  // Every other route keeps the default 100 KB.
+  const jsonParser = express.json();
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    // Normalized the way Express itself routes — case-insensitive, a
+    // trailing slash tolerated — or /api/School/signature/ would reach the
+    // signature route only after this parser had already rejected the body.
+    if (req.path.toLowerCase().replace(/\/+$/, "") === SCHOOL_SIGNATURE_PATH) {
+      next();
+      return;
+    }
+    jsonParser(req, res, next);
+  });
   app.use(pinoHttp({ logger }));
 
   app.get("/health", (_req: Request, res: Response) => {

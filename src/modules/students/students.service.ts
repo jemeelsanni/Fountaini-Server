@@ -5,6 +5,7 @@ import { AppError } from "../../errors/AppError.js";
 import { fireAndForget } from "../../lib/fireAndForget.js";
 import { generateTemporaryPassword, hashPassword } from "../auth/password.js";
 import { writeAuditLog } from "../audit/audit.service.js";
+import { billEnrollment } from "../fees/fees.service.js";
 import {
   generateAdmissionNumber,
   getCurrentSessionStartYear,
@@ -454,7 +455,9 @@ export async function bulkUpdateStudentStatus(
   return { updated, failed };
 }
 
-export async function createEnrollment(studentId: string, input: CreateEnrollmentBody) {
+/// Bills the new enrollment for every matching active fee structure in its
+/// session (billEnrollment), in the same transaction.
+export async function createEnrollment(studentId: string, input: CreateEnrollmentBody, actorUserId: string) {
   const [student, klass, session] = await Promise.all([
     prisma.student.findUnique({ where: { id: studentId, deletedAt: null } }),
     prisma.class.findUnique({ where: { id: input.classId } }),
@@ -468,13 +471,17 @@ export async function createEnrollment(studentId: string, input: CreateEnrollmen
   // One enrollment per programme per session: a student can be in a
   // regular class and a Weekday Madrasa group at once, never two of either.
   try {
-    return await prisma.enrollment.create({
-      data: {
-        studentId,
-        classId: input.classId,
-        academicSessionId: input.academicSessionId,
-        programme: klass.programme,
-      },
+    return await prisma.$transaction(async (tx) => {
+      const enrollment = await tx.enrollment.create({
+        data: {
+          studentId,
+          classId: input.classId,
+          academicSessionId: input.academicSessionId,
+          programme: klass.programme,
+        },
+      });
+      await billEnrollment(tx, enrollment.id, actorUserId);
+      return enrollment;
     });
   } catch (err) {
     if (isUniqueConstraintError(err)) {
@@ -522,7 +529,12 @@ export async function createEnrollment(studentId: string, input: CreateEnrollmen
 /// Moves the enrollment in the TARGET class's programme — a student in both
 /// a regular class and a Madrasa group transfers each independently, and a
 /// move can never turn an academic enrollment into a Madrasa one.
-export async function transferStudent(studentId: string, newClassId: string) {
+///
+/// Fees: any active structure the NEW class matches is billed (in the same
+/// transaction), except a class-specific fee replacing one the student
+/// already owes for the old class — see billEnrollment. Obligations raised
+/// for the old class are left untouched.
+export async function transferStudent(studentId: string, newClassId: string, actorUserId: string) {
   const student = await prisma.student.findUnique({ where: { id: studentId, deletedAt: null } });
   if (!student) {
     throw AppError.notFound("Student not found");
@@ -554,7 +566,11 @@ export async function transferStudent(studentId: string, newClassId: string) {
     );
   }
 
-  return prisma.enrollment.update({ where: { id: enrollment.id }, data: { classId: newClassId } });
+  return prisma.$transaction(async (tx) => {
+    const moved = await tx.enrollment.update({ where: { id: enrollment.id }, data: { classId: newClassId } });
+    await billEnrollment(tx, moved.id, actorUserId, { fromClassId: enrollment.classId });
+    return moved;
+  });
 }
 
 export function listParentsForStudent(studentId: string) {

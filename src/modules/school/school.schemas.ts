@@ -22,3 +22,11 @@ export const updateSchoolSchema = z.object({
   contactPhone: z.string().min(1).optional(),
 });
 export type UpdateSchoolBody = z.infer<typeof updateSchoolSchema>;
+
+/// Only the shape here — the MIME type, base64 payload and size are checked
+/// in setHeadSignature, so each failure gets its own readable 400 instead of
+/// validate()'s generic "Invalid request body".
+export const setHeadSignatureSchema = z.object({
+  dataUrl: z.string(),
+});
+export type SetHeadSignatureBody = z.infer<typeof setHeadSignatureSchema>;

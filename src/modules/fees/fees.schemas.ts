@@ -13,6 +13,13 @@ function targetsAtMostOne(classId: string | undefined, gradeName: string | undef
   return !(classId !== undefined && gradeName !== undefined);
 }
 
+const programmeSchema = z.enum(["ACADEMIC", "MADRASSAH"]);
+const feeAudienceSchema = z.enum(["ALL", "NEW_STUDENTS", "RETURNING_STUDENTS"]);
+const genderSchema = z.enum(["MALE", "FEMALE"]);
+
+// programme/audience/gender narrow who a structure bills on top of its
+// class/grade scope — see FeeStructure's own comments in schema.prisma and
+// fees.service.ts's selectBillableStudentIds for the exact rules.
 export const createFeeStructureSchema = z
   .object({
     name: z.string().min(1),
@@ -22,6 +29,9 @@ export const createFeeStructureSchema = z
     academicSessionId: z.string().min(1),
     termId: z.string().min(1).optional(),
     amountKobo: z.coerce.number().int().positive(),
+    programme: programmeSchema.default("ACADEMIC"),
+    audience: feeAudienceSchema.default("ALL"),
+    gender: genderSchema.optional(),
   })
   .refine((data) => targetsAtMostOne(data.classId, data.gradeName), {
     message: "A fee structure may target a specific class or a grade level, not both",
@@ -43,6 +53,10 @@ export const updateFeeStructureSchema = z
     classId: z.string().min(1).nullable().optional(),
     gradeName: z.string().min(1).nullable().optional(),
     amountKobo: z.coerce.number().int().positive().optional(),
+    programme: programmeSchema.optional(),
+    audience: feeAudienceSchema.optional(),
+    // null clears it back to "everyone".
+    gender: genderSchema.nullable().optional(),
   })
   .refine((data) => targetsAtMostOne(data.classId ?? undefined, data.gradeName ?? undefined), {
     message: "A fee structure may target a specific class or a grade level, not both",

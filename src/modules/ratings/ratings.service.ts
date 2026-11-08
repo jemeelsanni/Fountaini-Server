@@ -1,7 +1,12 @@
 import { Prisma, type Programme } from "../../../generated/prisma/index.js";
 import { prisma } from "../../db/client.js";
 import { AppError } from "../../errors/AppError.js";
-import type { BulkUpsertRatingsBody, CreateTraitBody, UpdateTraitBody } from "./ratings.schemas.js";
+import {
+  type BulkUpsertRatingsBody,
+  type CreateTraitBody,
+  EARLY_YEARS_MAX_RATING,
+  type UpdateTraitBody,
+} from "./ratings.schemas.js";
 
 function isUniqueConstraintError(err: unknown): boolean {
   return err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002";
@@ -139,6 +144,11 @@ export async function bulkUpsertRatings(
     if (!trait.isActive) {
       throw AppError.badRequest(`Trait ${entry.traitId} has been deactivated and can no longer be rated against`);
     }
+    if (trait.category === "EARLY_YEARS" && entry.value > EARLY_YEARS_MAX_RATING) {
+      throw AppError.badRequest(
+        `"${trait.name}" is an Early Years checklist item, rated 1 to ${EARLY_YEARS_MAX_RATING} stars — ${entry.value} is out of range`,
+      );
+    }
     if (!enrolledStudentIds.has(entry.studentId)) {
       throw AppError.badRequest(`Student ${entry.studentId} is not actively enrolled in this class/session`);
     }
@@ -175,6 +185,7 @@ export async function bulkUpsertRatings(
           traitId: entry.traitId,
           programme,
           value: entry.value,
+          note: entry.note ?? null,
           enteredByUserId: actorUserId,
         })),
         skipDuplicates: true,
@@ -183,7 +194,11 @@ export async function bulkUpsertRatings(
     for (const entry of toUpdate) {
       await tx.rating.updateMany({
         where: { studentId: entry.studentId, termId, traitId: entry.traitId, programme },
-        data: { value: entry.value, updatedByUserId: actorUserId },
+        data: {
+          value: entry.value,
+          ...(entry.note !== undefined ? { note: entry.note } : {}),
+          updatedByUserId: actorUserId,
+        },
       });
     }
 

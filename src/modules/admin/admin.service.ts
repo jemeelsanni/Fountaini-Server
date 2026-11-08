@@ -55,7 +55,7 @@ export async function getSetupStatus(): Promise<SetupStatus> {
   const checks: SetupCheck[] = [];
 
   // --- 1. School record ---------------------------------------------------
-  const school = await prisma.school.findFirst();
+  const school = await prisma.school.findFirst({ omit: { headSignature: true } });
   if (!school) {
     checks.push(
       fail(

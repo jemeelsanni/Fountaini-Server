@@ -1639,3 +1639,98 @@ describe("GET /api/results/me", () => {
     expect(res.status).toBe(403);
   });
 });
+
+describe("submit for review / return to draft", () => {
+  async function setup() {
+    const session = await createCurrentAcademicSession("2026/2027");
+    const term = await createTermForSession(session.id, "First Term", 1);
+    const klass = await createClass("JSS1", "A");
+    const student = await createBareStudent("ADM-001");
+    await enrollStudent(student.id, klass.id, session.id);
+    const { staff: formTeacher, token: formTeacherToken } = await createTeacher("form-teacher@test.local");
+    await prisma.classFormTeacher.create({
+      data: { classId: klass.id, teacherId: formTeacher.id, academicSessionId: session.id },
+    });
+    const { staff: subjectTeacher, token: subjectTeacherToken } = await createTeacher("subject-teacher@test.local");
+    const subject = await createSubject("Mathematics", "MTH");
+    await createAssignment(klass.id, subject.id, subjectTeacher.id, session.id);
+    const { user: admin, token: adminToken } = await createAdmin("admin@test.local");
+    const [result] = await computeResultsForClass({ classId: klass.id, termId: term.id });
+    const call = (token: string, action: "submit" | "return-to-draft" | "finalize" | "class-teacher-comment") =>
+      action === "class-teacher-comment"
+        ? request(server)
+            .patch(`/api/results/${result!.id}/class-teacher-comment`)
+            .set("Authorization", `Bearer ${token}`)
+            .send({ comment: "Edited" })
+        : request(server).post(`/api/results/${result!.id}/${action}`).set("Authorization", `Bearer ${token}`);
+    return { result: result!, admin, adminToken, formTeacherToken, subjectTeacherToken, call };
+  }
+
+  it("lets the form teacher submit, locks remarks while submitted, and an admin publishes it", async () => {
+    const { formTeacherToken, adminToken, call } = await setup();
+
+    const submitted = await call(formTeacherToken, "submit");
+    const lockedComment = await call(formTeacherToken, "class-teacher-comment");
+    const teacherFinalize = await call(formTeacherToken, "finalize");
+    const published = await call(adminToken, "finalize");
+
+    expect(submitted.status).toBe(200);
+    expect(submitted.body).toMatchObject({ status: "SUBMITTED" });
+    expect(submitted.body.submittedAt).not.toBeNull();
+    expect(lockedComment.status).toBe(400);
+    expect(teacherFinalize.status).toBe(403);
+    expect(published.status).toBe(200);
+    expect(published.body.status).toBe("FINALIZED");
+  });
+
+  it("returns a submitted result to draft so it can be edited again, and clears the submission", async () => {
+    const { formTeacherToken, call } = await setup();
+    await call(formTeacherToken, "submit");
+
+    const reopened = await call(formTeacherToken, "return-to-draft");
+    const edited = await call(formTeacherToken, "class-teacher-comment");
+
+    expect(reopened.status).toBe(200);
+    expect(reopened.body).toMatchObject({ status: "DRAFT", submittedAt: null, submittedByUserId: null });
+    expect(edited.status).toBe(200);
+  });
+
+  it("rejects submitting twice, returning a draft, and touching a published result", async () => {
+    const { result, admin, formTeacherToken, call } = await setup();
+
+    const draftReturn = await call(formTeacherToken, "return-to-draft");
+    await call(formTeacherToken, "submit");
+    const secondSubmit = await call(formTeacherToken, "submit");
+    await finalizeResult(result.id, admin.id);
+    const publishedReturn = await call(formTeacherToken, "return-to-draft");
+
+    expect(draftReturn.status).toBe(400);
+    expect(secondSubmit.status).toBe(400);
+    expect(secondSubmit.body.error.message).toBe("This result has already been submitted for review");
+    expect(publishedReturn.status).toBe(400);
+  });
+
+  it("lets an admin write the principal's comment while the result awaits release, but not the form teacher's", async () => {
+    const { formTeacherToken, adminToken, result, call } = await setup();
+    await call(formTeacherToken, "submit");
+
+    const principal = await request(server)
+      .patch(`/api/results/${result.id}/principal-comment`)
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ comment: "Well done." });
+    const teacher = await call(formTeacherToken, "class-teacher-comment");
+
+    expect(principal.status).toBe(200);
+    expect(principal.body).toMatchObject({ principalComment: "Well done.", status: "SUBMITTED" });
+    expect(teacher.status).toBe(400);
+    expect(teacher.body.error.message).toMatch(/submitted for review — return it to draft first/);
+  });
+
+  it("doesn't let a subject teacher submit", async () => {
+    const { subjectTeacherToken, call } = await setup();
+
+    const res = await call(subjectTeacherToken, "submit");
+
+    expect(res.status).toBe(403);
+  });
+});

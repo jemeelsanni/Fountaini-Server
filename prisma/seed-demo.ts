@@ -105,6 +105,17 @@ const admissionsService = await import("../src/modules/admissions/admissions.ser
 const notificationsService = await import("../src/modules/notifications/notifications.service.js");
 const auditService = await import("../src/modules/audit/audit.service.js");
 const identifiersService = await import("../src/modules/identifiers/identifiers.service.js");
+const { earlyYearsTraitRows } = await import("./earlyYearsChecklist.js");
+
+/// The Early Years checklist for one session. Kept out of the traits the
+/// demo rates (JSS1A/Basic 6/Madrasa use 1-5 values, and EARLY_YEARS caps
+/// at 4) — only created, so the Creche report has its items to show.
+async function seedEarlyYearsChecklist(academicSessionId: string) {
+  for (const { section, name, order } of earlyYearsTraitRows()) {
+    const trait = await ratings.createTrait(academicSessionId, { category: "EARLY_YEARS", name, section, order });
+    manifest.traitIds.push(trait.id);
+  }
+}
 
 const DEMO_PASSWORD = "Demo@2026!";
 const EMAIL_DOMAIN = "example.com"; // IANA-reserved, undeliverable — second safeguard alongside the console provider.
@@ -273,7 +284,17 @@ async function seedAcademicStructure() {
     await grading.createGradeBand(gradingScale.id, band);
   }
 
-  const affectiveTraits = ["Punctuality", "Neatness", "Politeness", "Attentiveness in Class"];
+  // The school's report-sheet list and order — same as prisma/seedTraits.ts.
+  const affectiveTraits = [
+    "Attentiveness",
+    "Attitude to work",
+    "Punctuality",
+    "Neatness",
+    "Politeness",
+    "Cooperation with others",
+    "Health",
+    "Speaking and writing",
+  ];
   const psychomotorTraits = ["Handwriting", "Games and Sports", "Drawing and Painting", "Verbal Fluency"];
   const traits: Record<string, Awaited<ReturnType<typeof ratings.createTrait>>> = {};
   for (const [index, name] of affectiveTraits.entries()) {
@@ -286,6 +307,8 @@ async function seedAcademicStructure() {
     traits[name] = trait;
     manifest.traitIds.push(trait.id);
   }
+
+  await seedEarlyYearsChecklist(session.id);
 
   const timeSlotDefs = [
     { name: "Period 1", startTime: "08:00", endTime: "08:40" },
@@ -302,7 +325,7 @@ async function seedAcademicStructure() {
     manifest.timeSlotIds.push(created.id);
   }
 
-  console.log(`Academic structure: session ${session.name}, 3 terms, 3 classes, 5 subjects, grading scale, 8 traits, 6 time slots.`);
+  console.log(`Academic structure: session ${session.name}, 3 terms, 3 classes, 5 subjects, grading scale, 12 traits, 6 time slots.`);
 
   return {
     session,
@@ -319,6 +342,7 @@ async function seedAcademicStructure() {
     quran,
     gradingScale,
     traits,
+    affectiveTraitNames: affectiveTraits,
     timeSlots,
   };
 }
@@ -382,7 +406,10 @@ async function createParentAndLink(
   return parent;
 }
 
-async function seedStudentsAndParents(structure: Awaited<ReturnType<typeof seedAcademicStructure>>) {
+async function seedStudentsAndParents(
+  structure: Awaited<ReturnType<typeof seedAcademicStructure>>,
+  actorUserId: string,
+) {
   // --- JSS1A: 8 students, ranks 1-8 with a tie at 3rd (both students 3 and 4
   // get the identical per-subject score, so the tie is robust regardless of
   // whether Result.totalScore is a sum or an average of the 4 subjects). ---
@@ -399,7 +426,7 @@ async function seedStudentsAndParents(structure: Awaited<ReturnType<typeof seedA
   const jss1a: Record<string, Awaited<ReturnType<typeof createStudentBare>>> = {};
   for (const plan of jss1aPlans) {
     jss1a[plan.key] = await createStudentBare(plan.firstName, plan.lastName);
-    await studentsService.createEnrollment(jss1a[plan.key]!.id, { classId: plan.classId, academicSessionId: structure.session.id });
+    await studentsService.createEnrollment(jss1a[plan.key]!.id, { classId: plan.classId, academicSessionId: structure.session.id }, actorUserId);
   }
 
   // --- JSS1B: 4 students, scores entered but never submitted. ---
@@ -412,7 +439,7 @@ async function seedStudentsAndParents(structure: Awaited<ReturnType<typeof seedA
   const jss1b: Record<string, Awaited<ReturnType<typeof createStudentBare>>> = {};
   for (const plan of jss1bPlans) {
     jss1b[plan.key] = await createStudentBare(plan.firstName, plan.lastName);
-    await studentsService.createEnrollment(jss1b[plan.key]!.id, { classId: plan.classId, academicSessionId: structure.session.id });
+    await studentsService.createEnrollment(jss1b[plan.key]!.id, { classId: plan.classId, academicSessionId: structure.session.id }, actorUserId);
   }
 
   // --- Parents ---
@@ -773,7 +800,7 @@ async function seedIslamiyyah(
     },
   ];
   for (const plan of plans) {
-    await studentsService.createEnrollment(students.jss1a[plan.key]!.id, { classId: madrasa.id, academicSessionId: sessionId });
+    await studentsService.createEnrollment(students.jss1a[plan.key]!.id, { classId: madrasa.id, academicSessionId: sessionId }, actorUserId);
   }
 
   const components = await prisma.assessmentComponent.findMany({ where: { academicSessionId: sessionId }, orderBy: { order: "asc" } });
@@ -852,6 +879,209 @@ async function seedIslamiyyah(
     "Islamiyyah: Weekday Madrasa Level 1 with 8 subjects; Zainab Lawal, Aisha Abdullahi and Musa Aliyu " +
       "scored, rated, commented and finalized on a separate MADRASSAH card (Zainab 1st).",
   );
+
+  return { madrasa, subjects };
+}
+
+// ---------------------------------------------------------------------------
+// 6c. A past session (2024/2025) — three finalized terms, both cards
+// ---------------------------------------------------------------------------
+// Zainab Lawal's previous year, so report sheets have earlier terms to show
+// in their 1st/2nd/3rd term and cumulative columns: Basic 6 (academic) and
+// Weekday Madrasa Level 1 (Islamiyyah), each with every term finalized and a
+// session rollup. Aisha and Musa are her classmates on both cards again, so
+// positions and class highest/average/lowest mean something. No fee
+// obligations exist for this session, so none of it is withheld from
+// parents — unlike 2026/2027.
+async function seedPastSession(
+  structure: Awaited<ReturnType<typeof seedAcademicStructure>>,
+  staff: Awaited<ReturnType<typeof seedStaff>>,
+  students: Awaited<ReturnType<typeof seedStudentsAndParents>>,
+  islamiyyah: Awaited<ReturnType<typeof seedIslamiyyah>>,
+) {
+  const actorUserId = staff.admin.userId;
+
+  // Never made current — 2026/2027 stays the live session.
+  const session = await academicStructure.createAcademicSession({
+    name: "2024/2025",
+    startDate: new Date("2024-09-09"),
+    endDate: new Date("2025-07-25"),
+  });
+  manifest.academicSessionIds.push(session.id);
+  const termDates: Array<[string, string, string]> = [
+    ["First Term", "2024-09-09", "2024-12-13"],
+    ["Second Term", "2025-01-06", "2025-04-04"],
+    ["Third Term", "2025-04-28", "2025-07-25"],
+  ];
+  const terms = [];
+  for (const [index, [name, start, end]] of termDates.entries()) {
+    const term = await academicStructure.createTerm(session.id, {
+      name,
+      order: index + 1,
+      startDate: new Date(start),
+      endDate: new Date(end),
+    });
+    manifest.termIds.push(term.id);
+    terms.push(term);
+  }
+
+  // Grading config is per session — same 20/20/60 split, bands and traits.
+  const components: Array<Awaited<ReturnType<typeof grading.createAssessmentComponent>>> = [];
+  for (const [index, [code, name, type, maxScore]] of (
+    [
+      ["CA1", "First Continuous Assessment", "CA", 20],
+      ["CA2", "Second Continuous Assessment", "CA", 20],
+      ["EXAM", "Examination", "EXAM", 60],
+    ] as const
+  ).entries()) {
+    const component = await grading.createAssessmentComponent(session.id, { code, name, type, maxScore, order: index + 1 });
+    manifest.assessmentComponentIds.push(component.id);
+    components.push(component);
+  }
+  const gradingScale = await grading.createGradingScale(session.id, { sessionAverageMethod: "SESSION_AVERAGE" });
+  manifest.gradingScaleIds.push(gradingScale.id);
+  for (const band of [
+    { grade: "A", minScore: 70, maxScore: 100, remark: "Excellent", gradePoint: 4 },
+    { grade: "B", minScore: 60, maxScore: 69.99, remark: "Very Good", gradePoint: 3 },
+    { grade: "C", minScore: 50, maxScore: 59.99, remark: "Good", gradePoint: 2 },
+    { grade: "D", minScore: 40, maxScore: 49.99, remark: "Pass", gradePoint: 1 },
+    { grade: "F", minScore: 0, maxScore: 39.99, remark: "Fail", gradePoint: 0 },
+  ]) {
+    await grading.createGradeBand(gradingScale.id, band);
+  }
+  const affectiveTraitNames = structure.affectiveTraitNames;
+  const traitIds: string[] = [];
+  for (const [category, names] of [
+    ["AFFECTIVE", affectiveTraitNames],
+    ["PSYCHOMOTOR", ["Handwriting", "Games and Sports", "Drawing and Painting", "Verbal Fluency"]],
+  ] as const) {
+    for (const [index, name] of names.entries()) {
+      const trait = await ratings.createTrait(session.id, { category, name, order: index + 1 });
+      manifest.traitIds.push(trait.id);
+      traitIds.push(trait.id);
+    }
+  }
+
+  await seedEarlyYearsChecklist(session.id);
+
+  const basic6 = await academicStructure.createClass({ gradeName: "Basic 6", order: 0, programme: "ACADEMIC" });
+  manifest.classIds.push(basic6.id);
+
+  const studentKeys = ["zainabL", "aisha", "musa"] as const;
+  const cards = [
+    {
+      klass: basic6,
+      formTeacherId: staff.formTeacherJss1a.id,
+      subjects: [structure.mathematics, structure.english, structure.basicScience, structure.islamicStudies],
+      // Base percentage per student; each term and subject nudges it a little.
+      base: { zainabL: 64, aisha: 82, musa: 58 },
+      comment: "steady work across all subjects this term",
+    },
+    {
+      klass: islamiyyah.madrasa,
+      formTeacherId: staff.madrassahTeacher.id,
+      subjects: islamiyyah.subjects,
+      base: { zainabL: 84, aisha: 70, musa: 55 },
+      comment: "good progress in Hifz and Islamic studies this term",
+    },
+  ];
+
+  for (const card of cards) {
+    const formTeacher = await academicStructure.createClassFormTeacher({
+      classId: card.klass.id,
+      teacherId: card.formTeacherId,
+      academicSessionId: session.id,
+    });
+    manifest.classFormTeacherIds.push(formTeacher.id);
+    const assignments = [];
+    for (const subject of card.subjects) {
+      const assignment = await academicStructure.createClassSubjectAssignment({
+        classId: card.klass.id,
+        subjectId: subject.id,
+        teacherId: card.formTeacherId,
+        academicSessionId: session.id,
+      });
+      manifest.classSubjectAssignmentIds.push(assignment.id);
+      assignments.push(assignment);
+    }
+    for (const key of studentKeys) {
+      await studentsService.createEnrollment(students.jss1a[key]!.id, { classId: card.klass.id, academicSessionId: session.id }, actorUserId);
+    }
+
+    for (const [termIndex, term] of terms.entries()) {
+      for (const [subjectIndex, assignment] of assignments.entries()) {
+        const entries = studentKeys.flatMap((key) => {
+          // Deterministic spread: within ±6 of the student's base, never above 100.
+          const percent = Math.min(98, card.base[key] + ((termIndex * 3 + subjectIndex * 5) % 13) - 6);
+          const marks = [Math.round(percent * 0.2), Math.round(percent * 0.2), Math.round(percent * 0.6)];
+          return components.map((component, i) => ({
+            studentId: students.jss1a[key]!.id,
+            assessmentComponentId: component.id,
+            rawScore: marks[i]!,
+          }));
+        });
+        await scoresService.bulkUpsertScores(assignment.id, actorUserId, { termId: term.id, entries });
+        await scoresService.submitScores(assignment.id, actorUserId, term.id);
+      }
+
+      // Two school days a term, everyone present except Musa on the second.
+      for (const [dayIndex, day] of [0, 1].entries()) {
+        const date = new Date(term.startDate);
+        date.setDate(date.getDate() + 7 + day);
+        const attendance = await attendanceService.openSession(actorUserId, {
+          classId: card.klass.id,
+          academicSessionId: session.id,
+          termId: term.id,
+          date,
+        });
+        manifest.attendanceSessionIds.push(attendance.id);
+        for (const key of studentKeys) {
+          if (dayIndex === 1 && key === "musa") {
+            continue;
+          }
+          const qr = await attendanceService.getActiveQrCode(students.jss1a[key]!.id);
+          await attendanceService.scan(attendance.id, actorUserId, { code: qr!.code, late: false });
+        }
+        await attendanceService.closeSession(attendance.id, actorUserId);
+      }
+
+      await resultsService.computeResultsForClass({ classId: card.klass.id, termId: term.id });
+      await ratings.bulkUpsertRatings(card.klass.id, term.id, actorUserId, {
+        entries: studentKeys.flatMap((key, studentIndex) =>
+          traitIds.map((traitId, traitIndex) => ({
+            studentId: students.jss1a[key]!.id,
+            traitId,
+            value: 5 - ((studentIndex + traitIndex + termIndex) % 3),
+          })),
+        ),
+      });
+      const termResults = await prisma.result.findMany({
+        where: {
+          termId: term.id,
+          programme: card.klass.programme,
+          studentId: { in: studentKeys.map((key) => students.jss1a[key]!.id) },
+        },
+        include: { student: { select: { firstName: true } } },
+      });
+      for (const result of termResults) {
+        await resultsService.writeClassTeacherComment(result.id, `${result.student.firstName} showed ${card.comment}.`);
+        await resultsService.writePrincipalComment(result.id, `${term.name} result noted. Keep it up, ${result.student.firstName}.`);
+      }
+      for (const result of termResults) {
+        await resultsService.finalizeResult(result.id, actorUserId);
+      }
+    }
+
+    await resultsService.computeSessionResultsForClass(
+      { classId: card.klass.id, academicSessionId: session.id },
+      actorUserId,
+    );
+  }
+
+  console.log(
+    "Past session 2024/2025: Zainab Lawal, Aisha Abdullahi and Musa Aliyu in Basic 6 and Weekday Madrasa — " +
+      "all three terms finalized on both cards, plus session results.",
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -883,6 +1113,8 @@ async function seedFees(
     academicSessionId: structure.session.id,
     termId: structure.term1.id,
     amountKobo: TUITION_KOBO,
+    programme: "ACADEMIC",
+    audience: "ALL",
   });
   const jss1bTuition = await feesService.createFeeStructure({
     name: "First Term Tuition — JSS1B",
@@ -891,6 +1123,8 @@ async function seedFees(
     academicSessionId: structure.session.id,
     termId: structure.term1.id,
     amountKobo: TUITION_KOBO,
+    programme: "ACADEMIC",
+    audience: "ALL",
   });
   const developmentLevy = await feesService.createFeeStructure({
     name: "Development Levy",
@@ -899,6 +1133,8 @@ async function seedFees(
     academicSessionId: structure.session.id,
     // termId omitted — session-wide, so it withholds every term.
     amountKobo: 1_500_000, // ₦15,000
+    programme: "ACADEMIC",
+    audience: "ALL",
   });
   manifest.feeStructureIds.push(jss1aTuition.id, jss1bTuition.id, developmentLevy.id);
 
@@ -1076,7 +1312,7 @@ async function main() {
   await seedSchool();
   const structure = await seedAcademicStructure();
   const staff = await seedStaff();
-  const students = await seedStudentsAndParents(structure);
+  const students = await seedStudentsAndParents(structure, staff.admin.userId);
 
   // Teacher-parent dual role: no service supports granting an additional
   // role + linked record to an already-created User (out of scope for the
@@ -1097,7 +1333,8 @@ async function main() {
 
   const assignments = await seedAssignments(structure, staff);
   const results = await seedScoresAttendanceAndResults(structure, staff, students, assignments);
-  await seedIslamiyyah(structure, staff, students);
+  const islamiyyah = await seedIslamiyyah(structure, staff, students);
+  await seedPastSession(structure, staff, students, islamiyyah);
   await seedFees(structure, staff, students, results);
   await seedMadrassah(structure, staff, students);
   await seedAdmissions(structure, staff);

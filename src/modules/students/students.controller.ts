@@ -72,9 +72,12 @@ export async function restoreStudent(req: Request, res: Response): Promise<void>
 }
 
 export async function transferStudent(req: Request, res: Response): Promise<void> {
+  if (!req.principal) {
+    throw AppError.unauthorized();
+  }
   const { id } = req.params as unknown as IdParams;
   const { classId } = req.body as TransferStudentBody;
-  res.status(200).json(await service.transferStudent(id, classId));
+  res.status(200).json(await service.transferStudent(id, classId, req.principal.userId));
 }
 
 export async function reissueCredentials(req: Request, res: Response): Promise<void> {
@@ -88,8 +91,11 @@ export async function listParents(req: Request, res: Response): Promise<void> {
 }
 
 export async function createEnrollment(req: Request, res: Response): Promise<void> {
+  if (!req.principal) {
+    throw AppError.unauthorized();
+  }
   const { id } = req.params as unknown as IdParams;
-  const enrollment = await service.createEnrollment(id, req.body as CreateEnrollmentBody);
+  const enrollment = await service.createEnrollment(id, req.body as CreateEnrollmentBody, req.principal.userId);
   res.status(201).json(enrollment);
 }
 

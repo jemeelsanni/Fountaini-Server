@@ -18,6 +18,8 @@ export const SENSITIVE_ROUTE_ROLES: Readonly<Record<string, readonly Role[]>> = 
   // --- Results: compute / finalize / override ---
   "POST /api/results/compute": ["ADMIN"],
   "POST /api/results/:id/finalize": ["ADMIN"],
+  // Publishes every SUBMITTED result in a term, school-wide, in one call.
+  "POST /api/results/finalize-all": ["ADMIN"],
   "POST /api/results/:id/override": ["ADMIN"],
   // Unblocks a withheld report card despite an outstanding balance —
   // ADMIN-only for the same reason overriding a finalized field is.

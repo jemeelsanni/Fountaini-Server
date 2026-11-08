@@ -14,6 +14,7 @@ import {
   classTermParamsSchema,
   computeResultsSchema,
   computeSessionResultsSchema,
+  finalizeAllSchema,
   type IdParams,
   idParamsSchema,
   listResultsForStudentQuerySchema,
@@ -24,7 +25,9 @@ import {
   studentSessionParamsSchema,
   type StudentTermParams,
   studentTermParamsSchema,
+  termSummaryQuerySchema,
   writeCommentSchema,
+  writeEarlyYearsSchema,
 } from "./results.schemas.js";
 
 export const resultsRouter = Router();
@@ -71,6 +74,23 @@ resultsRouter.get(
   }),
   controller.listResultsForClass,
 );
+// Whole-school release for a term — Admin → Results' "Publish all". The
+// summary shows what will (SUBMITTED) and won't (DRAFT) be published;
+// finalize-all publishes every SUBMITTED result through finalizeResult and
+// writes its own per-result audit rows (see finalizeAllForTerm), so no
+// auditMutation here.
+resultsRouter.get(
+  "/results/term-summary",
+  requireRole("ADMIN"),
+  validate({ query: termSummaryQuerySchema }),
+  controller.getTermResultsSummary,
+);
+resultsRouter.post(
+  "/results/finalize-all",
+  requireRole("ADMIN"),
+  validate({ body: finalizeAllSchema }),
+  controller.finalizeAllForTerm,
+);
 resultsRouter.post(
   "/results/:id/finalize",
   requireRole("ADMIN"),
@@ -79,6 +99,31 @@ resultsRouter.post(
     fetchBefore: (id) => prisma.result.findUnique({ where: { id } }),
   }),
   controller.finalizeResult,
+);
+// The form teacher's side of publishing: submit a DRAFT for an admin to
+// publish (finalize, above, stays ADMIN-only), or take a SUBMITTED one back
+// to DRAFT to fix it. Same WHO as the class-teacher comment — the form
+// teacher of the result's class, or ADMIN; the status rules live in the
+// service.
+resultsRouter.post(
+  "/results/:id/submit",
+  requireRole("ADMIN", "TEACHER"),
+  validate({ params: idParamsSchema }),
+  requireScope((principal, req) =>
+    canWriteClassTeacherComment(principal, (req.params as unknown as IdParams).id),
+  ),
+  auditMutation("Result", "RESULT_SUBMITTED_FOR_REVIEW"),
+  controller.submitResultForReview,
+);
+resultsRouter.post(
+  "/results/:id/return-to-draft",
+  requireRole("ADMIN", "TEACHER"),
+  validate({ params: idParamsSchema }),
+  requireScope((principal, req) =>
+    canWriteClassTeacherComment(principal, (req.params as unknown as IdParams).id),
+  ),
+  auditMutation("Result", "RESULT_RETURNED_TO_DRAFT"),
+  controller.returnResultToDraft,
 );
 // Admin escape hatch: a class that never reaches 100% finalized (a student
 // withdrew mid-term, say) never gets the automatic class-wide position pass
@@ -139,6 +184,19 @@ resultsRouter.patch(
   ),
   auditMutation("Result", "CLASS_TEACHER_COMMENT_WRITTEN"),
   controller.writeClassTeacherComment,
+);
+// The Early Years report's weight/height/areas of reinforcement — the same
+// WHO (form teacher of the result's class, or ADMIN) and WHEN (DRAFT only,
+// in the service) as the class-teacher comment just above.
+resultsRouter.patch(
+  "/results/:id/early-years",
+  requireRole("ADMIN", "TEACHER"),
+  validate({ params: idParamsSchema, body: writeEarlyYearsSchema }),
+  requireScope((principal, req) =>
+    canWriteClassTeacherComment(principal, (req.params as unknown as IdParams).id),
+  ),
+  auditMutation("Result", "EARLY_YEARS_DETAILS_WRITTEN"),
+  controller.writeEarlyYearsDetails,
 );
 resultsRouter.patch(
   "/results/:id/principal-comment",

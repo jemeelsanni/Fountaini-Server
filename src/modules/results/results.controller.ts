@@ -8,9 +8,12 @@ import type {
   IdParams,
   ListResultsForStudentQuery,
   OverrideResultBody,
+  FinalizeAllBody,
   ProgrammeQuery,
+  TermSummaryQuery,
   ReleaseWithholdingBody,
   StudentSessionParams,
+  WriteEarlyYearsBody,
   StudentTermParams,
   WriteCommentBody,
 } from "./results.schemas.js";
@@ -117,4 +120,33 @@ export async function writePrincipalComment(req: Request, res: Response): Promis
   const { id } = req.params as unknown as IdParams;
   const { comment } = req.body as WriteCommentBody;
   res.status(200).json(await service.writePrincipalComment(id, comment));
+}
+
+export async function writeEarlyYearsDetails(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as unknown as IdParams;
+  res.status(200).json(await service.writeEarlyYearsDetails(id, req.body as WriteEarlyYearsBody));
+}
+
+export async function submitResultForReview(req: Request, res: Response): Promise<void> {
+  if (!req.principal) {
+    throw AppError.unauthorized();
+  }
+  const { id } = req.params as unknown as IdParams;
+  res.status(200).json(await service.submitResultForReview(id, req.principal.userId));
+}
+
+export async function returnResultToDraft(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as unknown as IdParams;
+  res.status(200).json(await service.returnResultToDraft(id));
+}
+
+export async function getTermResultsSummary(req: Request, res: Response): Promise<void> {
+  res.status(200).json(await service.getTermResultsSummary(req.validatedQuery as TermSummaryQuery));
+}
+
+export async function finalizeAllForTerm(req: Request, res: Response): Promise<void> {
+  if (!req.principal) {
+    throw AppError.unauthorized();
+  }
+  res.status(200).json(await service.finalizeAllForTerm(req.body as FinalizeAllBody, req.principal));
 }

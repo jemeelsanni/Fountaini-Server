@@ -401,7 +401,7 @@ export async function updateUserEmail(userId: string, rawNewEmail: string) {
   }
 
   if (user.email) {
-    const school = await prisma.school.findFirst();
+    const school = await prisma.school.findFirst({ omit: { headSignature: true } });
     await createNotification({
       type: "EMAIL_CHANGED",
       recipientUserId: userId,

@@ -49,7 +49,11 @@ const AssessmentTypeSchema = z.enum(["CA", "EXAM"]).openapi("AssessmentType");
 const ScoreStatusSchema = z.enum(["DRAFT", "SUBMITTED"]).openapi("ScoreStatus");
 const ResultStatusSchema = z.enum(["DRAFT", "SUBMITTED", "FINALIZED"]).openapi("ResultStatus");
 const SessionAverageMethodSchema = z.enum(["SESSION_AVERAGE", "FINAL_TERM_CARRIES"]).openapi("SessionAverageMethod");
-const TraitCategorySchema = z.enum(["AFFECTIVE", "PSYCHOMOTOR"]).openapi("TraitCategory");
+const TraitCategorySchema = z
+  .enum(["AFFECTIVE", "PSYCHOMOTOR", "EARLY_YEARS"])
+  .openapi("TraitCategory", {
+    description: "EARLY_YEARS = the Creche/Early Years report checklist, rated 1-4 (the others are 1-5).",
+  });
 const MadrassahProgressTypeSchema = z
   .enum(["MEMORIZATION", "REVISION", "TAJWEED_ASSESSMENT"])
   .openapi("MadrassahProgressType");
@@ -63,6 +67,13 @@ const FeeCategorySchema = z.enum(["TUITION", "REGISTRATION", "EXAM", "UNIFORM", 
 const FeeObligationStatusSchema = z
   .enum(["PENDING", "PARTIALLY_PAID", "PAID", "WAIVED"])
   .openapi("FeeObligationStatus");
+const FeeAudienceSchema = z
+  .enum(["ALL", "NEW_STUDENTS", "RETURNING_STUDENTS"])
+  .openapi("FeeAudience", {
+    description:
+      "NEW_STUDENTS = no enrollment in the structure's programme in any earlier session (any status); " +
+      "RETURNING_STUDENTS = has one.",
+  });
 const PaymentMethodSchema = z.enum(["BANK_TRANSFER"]).openapi("PaymentMethod");
 const PaymentStatusSchema = z.enum(["PENDING", "CONFIRMED", "REJECTED"]).openapi("PaymentStatus");
 const AttendanceSessionStatusSchema = z.enum(["OPEN", "CLOSED"]).openapi("AttendanceSessionStatus");
@@ -99,10 +110,25 @@ export const SchoolSchema = z
     address: z.string().nullable(),
     contactEmail: z.string().nullable(),
     contactPhone: z.string().nullable(),
+    hasHeadSignature: z.boolean().openapi({
+      description:
+        "Whether a head-of-school signature is uploaded. The image itself is GET /api/school/signature — " +
+        "kept out of this response because it can be megabytes.",
+    }),
     createdAt: isoDateTime(),
     updatedAt: isoDateTime(),
   })
   .openapi("School");
+
+export const HeadSignatureSchema = z
+  .object({
+    headSignature: z.string().nullable().openapi({
+      description:
+        "The head of school's signature for report cards, as a data URL " +
+        "(data:image/png|jpeg|webp;base64,…), at most 2 MB decoded. Null until uploaded.",
+    }),
+  })
+  .openapi("HeadSignature");
 
 /// The school header printed on every ID card — null until the school
 /// record is configured (see id-cards.service.ts).
@@ -655,6 +681,9 @@ export const ResultSchema = z
     }),
     classTeacherComment: z.string().nullable(),
     principalComment: z.string().nullable(),
+    weightKg: decimalString().nullable().openapi({ description: "Early Years report only" }),
+    heightCm: decimalString().nullable().openapi({ description: "Early Years report only" }),
+    areasOfReinforcement: z.string().nullable().openapi({ description: "Early Years report only" }),
     submittedByUserId: id().nullable(),
     submittedAt: isoDateTime().nullable(),
     finalizedByUserId: id().nullable(),
@@ -667,6 +696,38 @@ export const ResultSchema = z
   })
   .openapi("Result");
 
+const ResultStatusCountsSchema = z.object({
+  draft: z.number().int(),
+  submitted: z.number().int().openapi({ description: "Awaiting release — what finalize-all would publish" }),
+  finalized: z.number().int(),
+});
+
+export const TermResultsSummarySchema = z
+  .object({
+    termId: id(),
+    classes: z
+      .array(
+        ResultStatusCountsSchema.extend({
+          classId: id(),
+          gradeName: z.string(),
+          arm: z.string().nullable(),
+          programme: ProgrammeSchema,
+        }),
+      )
+      .openapi({ description: "Only classes with results this term, in class order" }),
+    totals: ResultStatusCountsSchema,
+  })
+  .openapi("TermResultsSummary");
+
+export const FinalizeAllResultSchema = z
+  .object({
+    finalized: z.number().int(),
+    skippedDraft: z.number().int().openapi({ description: "DRAFT results left alone — not yet submitted" }),
+    failed: z.array(z.object({ resultId: id(), studentName: z.string(), message: z.string() })),
+    classes: z.array(z.object({ classId: id(), finalized: z.number().int() })),
+  })
+  .openapi("FinalizeAllResult");
+
 export const ResultWithStudentSchema = ResultSchema.extend({
   student: StudentSchema,
 }).openapi("ResultWithStudent");
@@ -677,6 +738,9 @@ export const TraitSchema = z
     academicSessionId: id(),
     category: TraitCategorySchema,
     name: z.string(),
+    section: z.string().nullable().openapi({
+      description: "The heading an EARLY_YEARS item prints under (e.g. \"Literacy\"); null otherwise.",
+    }),
     order: z.number().int(),
     isActive: z.boolean().openapi({
       description: "False once deactivated (POST .../traits/:id/deactivate) — can no longer be rated " +
@@ -698,6 +762,9 @@ export const RatingSchema = z
     traitId: id(),
     programme: ProgrammeSchema,
     value: z.number().int(),
+    note: z.string().nullable().openapi({
+      description: "An EARLY_YEARS item's fill-in blanks, \"|\"-separated when there are several.",
+    }),
     enteredByUserId: id(),
     enteredAt: isoDateTime(),
     updatedByUserId: id().nullable(),
@@ -707,7 +774,13 @@ export const RatingSchema = z
 
 export const RatingWithTraitSchema = RatingSchema.omit({ traitId: true })
   .extend({
-    trait: z.object({ id: id(), category: TraitCategorySchema, name: z.string(), order: z.number().int() }),
+    trait: z.object({
+      id: id(),
+      category: TraitCategorySchema,
+      name: z.string(),
+      section: z.string().nullable(),
+      order: z.number().int(),
+    }),
   })
   .openapi("RatingWithTrait");
 
@@ -913,6 +986,13 @@ export const FeeStructureSchema = z
     academicSessionId: id(),
     termId: id().nullable().openapi({ description: "null = session-wide, not tied to one term" }),
     amountKobo: kobo(),
+    programme: ProgrammeSchema.openapi({
+      description: "Only enrollments in this programme are billed (a Madrasa-only student never gets an ACADEMIC fee).",
+    }),
+    audience: FeeAudienceSchema,
+    gender: GenderSchema.nullable().openapi({
+      description: "null = everyone. A gendered fee skips students whose gender isn't recorded.",
+    }),
     isActive: z.boolean(),
     createdAt: isoDateTime(),
   })

@@ -250,3 +250,116 @@ describe("POST /api/traits/:id/deactivate", () => {
     expect(rating.value).toBe(4);
   });
 });
+
+describe("Early Years checklist", () => {
+  async function addChecklistItem(world: Awaited<ReturnType<typeof setupRatingsWorld>>) {
+    return request(server)
+      .post(`/api/academic-sessions/${world.session.id}/traits`)
+      .set("Authorization", `Bearer ${world.adminToken}`)
+      .send({ category: "EARLY_YEARS", name: "Rote counts to ___", section: "Numeracy", order: 13 });
+  }
+
+  it("round-trips a trait's section through create, list and update", async () => {
+    const world = await setupRatingsWorld();
+
+    const created = await addChecklistItem(world);
+    const listed = await request(server)
+      .get(`/api/academic-sessions/${world.session.id}/traits`)
+      .set("Authorization", `Bearer ${world.adminToken}`);
+    const cleared = await request(server)
+      .patch(`/api/traits/${created.body.id}`)
+      .set("Authorization", `Bearer ${world.adminToken}`)
+      .send({ section: null });
+
+    expect(created.status).toBe(201);
+    expect(created.body).toMatchObject({ category: "EARLY_YEARS", section: "Numeracy" });
+    expect(listed.body).toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: "Rote counts to ___", section: "Numeracy" })]),
+    );
+    expect(cleared.body.section).toBeNull();
+  });
+
+  it("rejects a 5 on an EARLY_YEARS item with a readable 400, but still allows 5 on an affective trait", async () => {
+    const world = await setupRatingsWorld();
+    const item = await addChecklistItem(world);
+    const rate = (traitId: string, value: number) =>
+      request(server)
+        .put(`/api/classes/${world.klass.id}/results/${world.term.id}/ratings`)
+        .set("Authorization", `Bearer ${world.formTeacherToken}`)
+        .send({ entries: [{ studentId: world.student.id, traitId, value }] });
+
+    const tooHigh = await rate(item.body.id as string, 5);
+    const affective = await rate(world.traitId, 5);
+
+    expect(tooHigh.status).toBe(400);
+    expect(tooHigh.body.error.message).toMatch(/rated 1 to 4 stars/);
+    expect(affective.status).toBe(200);
+  });
+
+  it("saves a rating's note, returns it on the result read, and leaves it alone when omitted", async () => {
+    const world = await setupRatingsWorld();
+    const item = await addChecklistItem(world);
+    const rate = (entry: Record<string, unknown>) =>
+      request(server)
+        .put(`/api/classes/${world.klass.id}/results/${world.term.id}/ratings`)
+        .set("Authorization", `Bearer ${world.formTeacherToken}`)
+        .send({ entries: [{ studentId: world.student.id, traitId: item.body.id, ...entry }] });
+
+    const first = await rate({ value: 3, note: "20" });
+    await rate({ value: 4 });
+    const read = await request(server)
+      .get(`/api/results/${world.student.id}/${world.term.id}`)
+      .set("Authorization", `Bearer ${world.adminToken}`);
+
+    expect(first.body[0].note).toBe("20");
+    expect(read.body.ratings).toEqual([
+      expect.objectContaining({ value: 4, note: "20", trait: expect.objectContaining({ section: "Numeracy" }) }),
+    ]);
+    const tooLong = await rate({ value: 3, note: "x".repeat(101) });
+    expect(tooLong.status).toBe(400);
+  });
+});
+
+describe("PATCH /api/results/:id/early-years", () => {
+  it("lets the form teacher and an admin write it, but not a subject teacher", async () => {
+    const world = await setupRatingsWorld();
+    const patch = (token: string, body: object) =>
+      request(server).patch(`/api/results/${world.result.id}/early-years`).set("Authorization", `Bearer ${token}`).send(body);
+
+    const asFormTeacher = await patch(world.formTeacherToken, {
+      weightKg: 14.5,
+      heightCm: 96.3,
+      areasOfReinforcement: "Pencil grip and letter formation",
+    });
+    const asSubjectTeacher = await patch(world.subjectTeacherToken, { weightKg: 15 });
+    const asAdmin = await patch(world.adminToken, { heightCm: null });
+
+    expect(asFormTeacher.status).toBe(200);
+    expect(asFormTeacher.body).toMatchObject({
+      weightKg: "14.5",
+      heightCm: "96.3",
+      areasOfReinforcement: "Pencil grip and letter formation",
+    });
+    expect(asSubjectTeacher.status).toBe(403);
+    expect(asAdmin.status).toBe(200);
+    expect(asAdmin.body).toMatchObject({ weightKg: "14.5", heightCm: null });
+  });
+
+  it("is DRAFT-only, and rejects an empty body", async () => {
+    const world = await setupRatingsWorld();
+    const empty = await request(server)
+      .patch(`/api/results/${world.result.id}/early-years`)
+      .set("Authorization", `Bearer ${world.adminToken}`)
+      .send({});
+    await prisma.result.update({ where: { id: world.result.id }, data: { status: "FINALIZED" } });
+
+    const finalized = await request(server)
+      .patch(`/api/results/${world.result.id}/early-years`)
+      .set("Authorization", `Bearer ${world.formTeacherToken}`)
+      .send({ weightKg: 14.5 });
+
+    expect(empty.status).toBe(400);
+    expect(finalized.status).toBe(400);
+    expect(finalized.body.error.message).toMatch(/^Early Years details can only be written directly before the result is published/);
+  });
+});
