@@ -7,6 +7,8 @@ import { validate } from "../../http/middleware/validate.js";
 import * as controller from "./ratings.controller.js";
 import {
   bulkUpsertRatingsSchema,
+  type CardQuery,
+  cardQuerySchema,
   type ClassTermParams,
   classTermParamsSchema,
   createTraitSchema,
@@ -53,10 +55,10 @@ ratingsRouter.get("/rating-scale", requireRole(...ALL_ROLES), controller.listRat
 ratingsRouter.put(
   "/classes/:id/results/:termId/ratings",
   requireRole("ADMIN", "TEACHER"),
-  validate({ params: classTermParamsSchema, body: bulkUpsertRatingsSchema }),
+  validate({ params: classTermParamsSchema, query: cardQuerySchema, body: bulkUpsertRatingsSchema }),
   requireScope((principal, req) => {
     const { id, termId } = req.params as unknown as ClassTermParams;
-    return canWriteClassRatings(principal, id, termId);
+    return canWriteClassRatings(principal, id, termId, (req.validatedQuery as CardQuery).programme);
   }),
   auditMutation("Rating", "RATINGS_WRITTEN"),
   controller.bulkUpsertRatings,

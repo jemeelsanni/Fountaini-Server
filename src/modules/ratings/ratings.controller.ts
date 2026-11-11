@@ -3,6 +3,7 @@ import { AppError } from "../../errors/AppError.js";
 import * as service from "./ratings.service.js";
 import type {
   BulkUpsertRatingsBody,
+  CardQuery,
   ClassTermParams,
   CreateTraitBody,
   IdParams,
@@ -44,6 +45,7 @@ export async function bulkUpsertRatings(req: Request, res: Response): Promise<vo
     termId,
     req.principal.userId,
     req.body as BulkUpsertRatingsBody,
+    (req.validatedQuery as CardQuery).programme,
   );
   res.status(200).json(ratings);
 }

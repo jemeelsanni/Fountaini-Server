@@ -13972,7 +13972,7 @@
     },
     "/api/results/compute": {
       "post": {
-        "summary": "Compute/refresh DRAFT report-card results for a class/term from submitted subject results. Uses only subject work from classes of the same programme as this class, so a student's academic and Islamiyyah results (and positions) are computed independently.",
+        "summary": "Compute/refresh DRAFT report-card results for a class/term from submitted subject results — one result per report card. The subject decides the card: Islamiyyah subjects (type MADRASSAH) count only towards the Islamiyyah result (programme MADRASSAH), every other subject only towards the Western result (ACADEMIC); everything taught in a Madrasa group is Islamiyyah. A regular class with an Islamiyyah subject returns both cards' results, each with its own total, average and position.",
         "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
@@ -14345,8 +14345,8 @@
     },
     "/api/classes/{id}/results/{termId}": {
       "get": {
-        "summary": "List a class's report-card results for a term",
-        "description": "Roles: ADMIN, TEACHER. ADMIN, or that class's form teacher — not a subject teacher assigned to the class.",
+        "summary": "List a class's report-card results for a term, one card at a time: `programme` picks it (default: the class's own programme — a regular class's Western card). MADRASSAH on a regular class lists its Islamiyyah card, readable by the form teacher and by the class's Islamiyyah subject teachers.",
+        "description": "Roles: ADMIN, TEACHER. ADMIN, or that class's form teacher (every card) — not a subject teacher assigned to the class, except that a regular class's Islamiyyah card (programme=MADRASSAH) is also readable by its Islamiyyah subject teachers.",
         "x-roles": [
           "ADMIN",
           "TEACHER"
@@ -14374,6 +14374,18 @@
             "required": true,
             "name": "termId",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "ACADEMIC",
+                "MADRASSAH"
+              ]
+            },
+            "required": false,
+            "name": "programme",
+            "in": "query"
           }
         ],
         "responses": {
@@ -14442,7 +14454,7 @@
     },
     "/api/results/term-summary": {
       "get": {
-        "summary": "Per-class counts of a term's results by status (draft / submitted / finalized), for the whole-school release. `programme` narrows to ACADEMIC or MADRASSAH; omitted means both. 404 for an unknown term.",
+        "summary": "Per-class, per-card counts of a term's results by status (draft / submitted / finalized), for the whole-school release — a regular class with Islamiyyah subjects has one row per card, `programme` being the card's. The `programme` query narrows to ACADEMIC or MADRASSAH; omitted means both. 404 for an unknown term.",
         "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
@@ -14711,7 +14723,7 @@
     "/api/results/{id}/submit": {
       "post": {
         "summary": "Form teacher submits a DRAFT result for an admin to publish (DRAFT -> SUBMITTED). Publishing stays ADMIN-only (POST /results/:id/finalize, which accepts DRAFT or SUBMITTED). While SUBMITTED, comments and ratings are locked as for a published result. 400 if it isn't DRAFT.",
-        "description": "Roles: ADMIN, TEACHER. ADMIN, or that class's form teacher — not a subject teacher assigned to the class.",
+        "description": "Roles: ADMIN, TEACHER. ADMIN, or whoever runs the result's card: the form teacher of the result's class for its own card (a regular class's Western card, a Madrasa group's Islamiyyah card); the class's Islamiyyah subject teachers for a regular class's Islamiyyah card.",
         "x-roles": [
           "ADMIN",
           "TEACHER"
@@ -14796,7 +14808,7 @@
     "/api/results/{id}/return-to-draft": {
       "post": {
         "summary": "Take a SUBMITTED result back to DRAFT so its remarks/ratings can be changed — the form teacher fixing a mistake, or an admin sending it back. 400 if it isn't SUBMITTED (a published result needs the override endpoint).",
-        "description": "Roles: ADMIN, TEACHER. ADMIN, or that class's form teacher — not a subject teacher assigned to the class.",
+        "description": "Roles: ADMIN, TEACHER. ADMIN, or whoever runs the result's card: the form teacher of the result's class for its own card (a regular class's Western card, a Madrasa group's Islamiyyah card); the class's Islamiyyah subject teachers for a regular class's Islamiyyah card.",
         "x-roles": [
           "ADMIN",
           "TEACHER"
@@ -15400,7 +15412,7 @@
     "/api/results/{id}/class-teacher-comment": {
       "patch": {
         "summary": "Write the class/form teacher's comment on a DRAFT result — not an override, no ResultOverride row",
-        "description": "Roles: ADMIN, TEACHER. ADMIN, or that class's form teacher — not a subject teacher assigned to the class.",
+        "description": "Roles: ADMIN, TEACHER. ADMIN, or whoever runs the result's card: the form teacher of the result's class for its own card (a regular class's Western card, a Madrasa group's Islamiyyah card); the class's Islamiyyah subject teachers for a regular class's Islamiyyah card.",
         "x-roles": [
           "ADMIN",
           "TEACHER"
@@ -15503,7 +15515,7 @@
     "/api/results/{id}/early-years": {
       "patch": {
         "summary": "Write the Early Years (Creche) report's weightKg, heightCm and areasOfReinforcement on a DRAFT result. Omitted fields are left alone, null clears one; at least one is required. Same who/when rules as the class-teacher comment: the form teacher of the result's class or ADMIN, DRAFT only.",
-        "description": "Roles: ADMIN, TEACHER. ADMIN, or that class's form teacher — not a subject teacher assigned to the class.",
+        "description": "Roles: ADMIN, TEACHER. ADMIN, or whoever runs the result's card: the form teacher of the result's class for its own card (a regular class's Western card, a Madrasa group's Islamiyyah card); the class's Islamiyyah subject teachers for a regular class's Islamiyyah card.",
         "x-roles": [
           "ADMIN",
           "TEACHER"
@@ -16224,8 +16236,8 @@
     },
     "/api/classes/{id}/results/{termId}/ratings": {
       "put": {
-        "summary": "Bulk upsert affective/psychomotor ratings for a class+term. Only while the targeted student's Result for this term is DRAFT — same rule as the class-teacher comment; rejects (409) the whole batch if any targeted student's result is no longer DRAFT. Appear on the result read once written. Ratings belong to the class's programme — a Madrasa group's ratings go on the Islamiyyah card only.",
-        "description": "Roles: ADMIN, TEACHER. ADMIN, or that class's form teacher — not a subject teacher assigned to the class.",
+        "summary": "Bulk upsert affective/psychomotor ratings for a class+term. Only while the targeted student's Result for this term is DRAFT — same rule as the class-teacher comment; rejects (409) the whole batch if any targeted student's result is no longer DRAFT. Appear on the result read once written. Ratings belong to one report card: `programme` picks it (default: the class's own programme). MADRASSAH on a regular class rates its Islamiyyah card — written by the class's Islamiyyah subject teachers, not the form teacher; a Madrasa group only has MADRASSAH (400 otherwise).",
+        "description": "Roles: ADMIN, TEACHER. ADMIN, or whoever runs that card: the form teacher for a class's own card (a regular class's Western card, a Madrasa group's Islamiyyah card); the class's Islamiyyah subject teachers for a regular class's Islamiyyah card (programme=MADRASSAH).",
         "x-roles": [
           "ADMIN",
           "TEACHER"
@@ -16253,6 +16265,18 @@
             "required": true,
             "name": "termId",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "ACADEMIC",
+                "MADRASSAH"
+              ]
+            },
+            "required": false,
+            "name": "programme",
+            "in": "query"
           }
         ],
         "requestBody": {

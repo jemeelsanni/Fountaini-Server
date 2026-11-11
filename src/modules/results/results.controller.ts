@@ -2,6 +2,7 @@ import type { Request, Response } from "express";
 import { AppError } from "../../errors/AppError.js";
 import * as service from "./results.service.js";
 import type {
+  ClassResultsQuery,
   ClassTermParams,
   ComputeResultsBody,
   ComputeSessionResultsBody,
@@ -51,7 +52,8 @@ export async function listMyResults(req: Request, res: Response): Promise<void> 
 
 export async function listResultsForClass(req: Request, res: Response): Promise<void> {
   const { id, termId } = req.params as unknown as ClassTermParams;
-  res.status(200).json(await service.listResultsForClass(id, termId));
+  const { programme } = req.validatedQuery as ClassResultsQuery;
+  res.status(200).json(await service.listResultsForClass(id, termId, programme));
 }
 
 export async function finalizeResult(req: Request, res: Response): Promise<void> {

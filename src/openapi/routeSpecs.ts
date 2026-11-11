@@ -27,11 +27,13 @@ import { createParentSchema, idParamsSchema as parentsIdParamsSchema, linkChildS
 import {
   bulkUpsertRatingsSchema,
   classTermParamsSchema as ratingsClassTermParamsSchema,
+  cardQuerySchema as ratingsCardQuerySchema,
   createTraitSchema,
   idParamsSchema as ratingsIdParamsSchema,
   updateTraitSchema,
 } from "../modules/ratings/ratings.schemas.js";
 import {
+  classResultsQuerySchema,
   classTermParamsSchema,
   computeResultsSchema,
   computeSessionResultsSchema,
@@ -204,14 +206,23 @@ const SCOPE_NOTES = {
   canReadParent: "ADMIN, or that parent themself.",
   canReadStudentParents:
     "ADMIN, the student's assigned teacher, or the student themself — not a linked parent.",
-  canReadClassResults: "ADMIN, or that class's form teacher — not a subject teacher assigned to the class.",
+  canReadClassResults:
+    "ADMIN, or that class's form teacher (every card) — not a subject teacher assigned to the class, except " +
+    "that a regular class's Islamiyyah card (programme=MADRASSAH) is also readable by its Islamiyyah subject teachers.",
   canActOnAssignment: "ADMIN, or the teacher assigned to this specific class-subject assignment.",
   canReadStaff: "ADMIN, or that staff member themself.",
   canReadClassTimetable:
     "Any TEACHER (assigned or not — timetable data isn't treated as sensitive) or ADMIN; a STUDENT or " +
     "linked PARENT scoped to a class they, or their child, are actually and currently enrolled in.",
   canManageOwnNotification: "ADMIN, or the notification's own recipient.",
-  canWriteClassRatings: "ADMIN, or that class's form teacher — not a subject teacher assigned to the class.",
+  canWriteClassTeacherComment:
+    "ADMIN, or whoever runs the result's card: the form teacher of the result's class for its own card (a " +
+    "regular class's Western card, a Madrasa group's Islamiyyah card); the class's Islamiyyah subject " +
+    "teachers for a regular class's Islamiyyah card.",
+  canWriteClassRatings:
+    "ADMIN, or whoever runs that card: the form teacher for a class's own card (a regular class's Western " +
+    "card, a Madrasa group's Islamiyyah card); the class's Islamiyyah subject teachers for a regular class's " +
+    "Islamiyyah card (programme=MADRASSAH).",
   canReadClassRoster:
     "ADMIN, BURSAR, or a TEACHER assigned to teach some subject in this class for the resolved session — " +
     "not any teacher unconditionally (unlike GET /api/classes/:id/timetable's own rule), and not the " +
@@ -934,8 +945,11 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
       "Bulk upsert affective/psychomotor ratings for a class+term. Only while the targeted student's " +
       "Result for this term is DRAFT — same rule as the class-teacher comment; rejects (409) the whole " +
       "batch if any targeted student's result is no longer DRAFT. Appear on the result read once written. " +
-      "Ratings belong to the class's programme — a Madrasa group's ratings go on the Islamiyyah card only.",
+      "Ratings belong to one report card: `programme` picks it (default: the class's own programme). " +
+      "MADRASSAH on a regular class rates its Islamiyyah card — written by the class's Islamiyyah subject " +
+      "teachers, not the form teacher; a Madrasa group only has MADRASSAH (400 otherwise).",
     requestParams: ratingsClassTermParamsSchema,
+    requestQuery: ratingsCardQuerySchema,
     requestBody: bulkUpsertRatingsSchema,
     responses: { 200: { description: "OK", schema: z.array(RatingWithTraitSchema) } },
     scopeNote: SCOPE_NOTES.canWriteClassRatings,
@@ -944,9 +958,11 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
   // --- results ----------------------------------------------------------------
   "POST /api/results/compute": {
     summary:
-      "Compute/refresh DRAFT report-card results for a class/term from submitted subject results. Uses " +
-      "only subject work from classes of the same programme as this class, so a student's academic and " +
-      "Islamiyyah results (and positions) are computed independently.",
+      "Compute/refresh DRAFT report-card results for a class/term from submitted subject results — one " +
+      "result per report card. The subject decides the card: Islamiyyah subjects (type MADRASSAH) count " +
+      "only towards the Islamiyyah result (programme MADRASSAH), every other subject only towards the " +
+      "Western result (ACADEMIC); everything taught in a Madrasa group is Islamiyyah. A regular class with " +
+      "an Islamiyyah subject returns both cards' results, each with its own total, average and position.",
     requestBody: computeResultsSchema,
     responses: { 200: { description: "OK", schema: z.array(ResultSchema) } },
   },
@@ -988,8 +1004,12 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
       "place of the normal result fields, distinguishable by that status value.",
   },
   "GET /api/classes/:id/results/:termId": {
-    summary: "List a class's report-card results for a term",
+    summary:
+      "List a class's report-card results for a term, one card at a time: `programme` picks it (default: " +
+      "the class's own programme — a regular class's Western card). MADRASSAH on a regular class lists its " +
+      "Islamiyyah card, readable by the form teacher and by the class's Islamiyyah subject teachers.",
     requestParams: classTermParamsSchema,
+    requestQuery: classResultsQuerySchema,
     responses: { 200: { description: "OK", schema: z.array(ResultWithStudentSchema) } },
     scopeNote: SCOPE_NOTES.canReadClassResults,
   },
@@ -1056,7 +1076,7 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     requestParams: resultsIdParamsSchema,
     requestBody: writeCommentSchema,
     responses: { 200: { description: "OK", schema: ResultSchema } },
-    scopeNote: SCOPE_NOTES.canReadClassResults,
+    scopeNote: SCOPE_NOTES.canWriteClassTeacherComment,
   },
   "PATCH /api/results/:id/early-years": {
     summary:
@@ -1066,12 +1086,14 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     requestParams: resultsIdParamsSchema,
     requestBody: writeEarlyYearsSchema,
     responses: { 200: { description: "OK", schema: ResultSchema } },
-    scopeNote: SCOPE_NOTES.canReadClassResults,
+    scopeNote: SCOPE_NOTES.canWriteClassTeacherComment,
   },
   "GET /api/results/term-summary": {
     summary:
-      "Per-class counts of a term's results by status (draft / submitted / finalized), for the whole-school " +
-      "release. `programme` narrows to ACADEMIC or MADRASSAH; omitted means both. 404 for an unknown term.",
+      "Per-class, per-card counts of a term's results by status (draft / submitted / finalized), for the " +
+      "whole-school release — a regular class with Islamiyyah subjects has one row per card, `programme` " +
+      "being the card's. The `programme` query narrows to ACADEMIC or MADRASSAH; omitted means both. 404 for " +
+      "an unknown term.",
     requestQuery: termSummaryQuerySchema,
     responses: { 200: { description: "OK", schema: TermResultsSummarySchema } },
   },
@@ -1092,7 +1114,7 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
       "and ratings are locked as for a published result. 400 if it isn't DRAFT.",
     requestParams: resultsIdParamsSchema,
     responses: { 200: { description: "OK", schema: ResultSchema } },
-    scopeNote: SCOPE_NOTES.canReadClassResults,
+    scopeNote: SCOPE_NOTES.canWriteClassTeacherComment,
   },
   "POST /api/results/:id/return-to-draft": {
     summary:
@@ -1101,7 +1123,7 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
       "the override endpoint).",
     requestParams: resultsIdParamsSchema,
     responses: { 200: { description: "OK", schema: ResultSchema } },
-    scopeNote: SCOPE_NOTES.canReadClassResults,
+    scopeNote: SCOPE_NOTES.canWriteClassTeacherComment,
   },
   "PATCH /api/results/:id/principal-comment": {
     summary: "Write the principal's comment on a DRAFT result — not an override, no ResultOverride row",

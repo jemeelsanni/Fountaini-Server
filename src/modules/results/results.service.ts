@@ -1,4 +1,5 @@
 import {
+  type Enrollment,
   Prisma,
   type Programme,
   type Result,
@@ -13,6 +14,7 @@ import { AppError } from "../../errors/AppError.js";
 import { fireAndForget } from "../../lib/fireAndForget.js";
 import { writeAuditLog } from "../audit/audit.service.js";
 import { withBalance } from "../fees/fees.service.js";
+import { cardsForClass, enrollmentsForCard, subjectCardWhere } from "./reportCards.js";
 import type {
   ComputeResultsBody,
   ComputeSessionResultsBody,
@@ -124,11 +126,12 @@ function throwWithheld(info: Withholding): never {
 /// Already-FINALIZED results are never touched by a recompute — they're
 /// immutable except via overrideResult().
 ///
-/// Scoped to the class's programme throughout: a Weekday Madrasa group's
-/// compute only ever reads/writes its students' MADRASSAH results, built
-/// from subject work done in MADRASSAH classes, and an academic class's
-/// compute never sees that work — the same student's two report cards
-/// never blend.
+/// One pass per report card the class owns (see cardsForClass): a regular
+/// class with Islamiyyah subjects computes each student's Western result
+/// from their Western subjects and, separately, their Islamiyyah result
+/// from their Islamiyyah subjects — each with its own total, average and
+/// position, so the two cards never blend. Which card a subject counts
+/// towards is decided by the subject (subjectCardWhere), not the class.
 export async function computeResultsForClass(input: ComputeResultsBody) {
   const term = await prisma.term.findUnique({ where: { id: input.termId } });
   if (!term) {
@@ -147,8 +150,22 @@ export async function computeResultsForClass(input: ComputeResultsBody) {
     throw AppError.badRequest("No students are actively enrolled in this class for this session");
   }
 
+  const results: Result[] = [];
+  for (const programme of await cardsForClass(prisma, klass, term.academicSessionId)) {
+    const cardEnrollments = await enrollmentsForCard(prisma, klass, programme, enrollments, term.academicSessionId);
+    if (cardEnrollments.length > 0) {
+      results.push(...(await computeCardForClass(cardEnrollments, term, programme)));
+    }
+  }
+  return results;
+}
+
+async function computeCardForClass(
+  enrollments: Enrollment[],
+  term: { id: string; academicSessionId: string },
+  programme: Programme,
+) {
   const studentIds = enrollments.map((e) => e.studentId);
-  const { programme } = klass;
 
   // Scoped by studentId + termId, not by "this class's own assignment ids"
   // — the latter was a latent bug on its own, not just a transfer-support
@@ -165,9 +182,9 @@ export async function computeResultsForClass(input: ComputeResultsBody) {
   const subjectResults = await prisma.subjectResult.findMany({
     where: {
       studentId: { in: studentIds },
-      termId: input.termId,
+      termId: term.id,
       status: "SUBMITTED",
-      classSubjectAssignment: { academicSessionId: term.academicSessionId, class: { programme } },
+      classSubjectAssignment: { academicSessionId: term.academicSessionId, ...subjectCardWhere(programme) },
     },
   });
 
@@ -202,7 +219,7 @@ export async function computeResultsForClass(input: ComputeResultsBody) {
   // merely trying to remember to check.
   await prisma.$transaction(async (tx) => {
     const existingResults = await tx.result.findMany({
-      where: { studentId: { in: studentIds }, termId: input.termId, programme },
+      where: { studentId: { in: studentIds }, termId: term.id, programme },
       select: { studentId: true },
     });
     const existingStudentIds = new Set(existingResults.map((r) => r.studentId));
@@ -215,7 +232,7 @@ export async function computeResultsForClass(input: ComputeResultsBody) {
         data: toCreate.map((c) => ({
           studentId: c.enrollment.studentId,
           enrollmentId: c.enrollment.id,
-          termId: input.termId,
+          termId: term.id,
           programme,
           status: "DRAFT" as const,
           totalScore: c.totalScore,
@@ -235,7 +252,7 @@ export async function computeResultsForClass(input: ComputeResultsBody) {
       await tx.result.updateMany({
         where: {
           studentId: c.enrollment.studentId,
-          termId: input.termId,
+          termId: term.id,
           programme,
           status: { not: "FINALIZED" },
         },
@@ -249,7 +266,7 @@ export async function computeResultsForClass(input: ComputeResultsBody) {
     }
   });
 
-  return prisma.result.findMany({ where: { studentId: { in: studentIds }, termId: input.termId, programme } });
+  return prisma.result.findMany({ where: { studentId: { in: studentIds }, termId: term.id, programme } });
 }
 
 /// The finalized-only filter below is deliberately not an authorization
@@ -410,9 +427,16 @@ export async function listMyResults(principal: Principal, academicSessionId: str
   );
 }
 
-export function listResultsForClass(classId: string, termId: string) {
+/// One card's results for the class — the class's own programme by
+/// default (a regular class's Western card, a Madrasa group's Islamiyyah
+/// one), or `programme` to pick a regular class's Islamiyyah card.
+export async function listResultsForClass(classId: string, termId: string, programme?: Programme) {
+  const klass = await prisma.class.findUnique({ where: { id: classId }, select: { programme: true } });
+  if (!klass) {
+    throw AppError.notFound("Class not found");
+  }
   return prisma.result.findMany({
-    where: { termId, enrollment: { classId } },
+    where: { termId, enrollment: { classId }, programme: programme ?? klass.programme },
     include: { student: true },
     orderBy: [{ position: "asc" }],
   });
@@ -441,9 +465,12 @@ export function listResultsForClass(classId: string, termId: string) {
 /// day are two different records for two different students, not two
 /// records for the same one).
 ///
-/// Also scoped to the result's programme: Madrasa days are taken in the
-/// Madrasa group's own sessions and belong on the Islamiyyah card only,
-/// not added to the academic card's school days (or vice versa).
+/// Also scoped to a programme — the programme of the class the result
+/// belongs to, not the card's: Madrasa days are taken in the Madrasa
+/// group's own sessions and belong on that group's Islamiyyah card only,
+/// not added to the regular class's school days (or vice versa), while a
+/// regular class's Islamiyyah card shows the same school days as its
+/// Western card — the student sat both in the same school days.
 async function computeAttendanceSnapshot(
   studentId: string,
   termId: string,
@@ -459,23 +486,29 @@ async function computeAttendanceSnapshot(
 }
 
 /// "Every actively-enrolled student in this class+term already has a
-/// FINALIZED result" — the gate for the automatic position-fill pass.
-/// Deliberately absolute: a class with one student whose data is
-/// permanently incomplete never satisfies this, which is why the admin
-/// escape hatch (rankClassResults) exists as an unconditional alternative.
+/// FINALIZED result" on this card — the gate for the automatic
+/// position-fill pass. Deliberately absolute: a class with one student
+/// whose data is permanently incomplete never satisfies this, which is why
+/// the admin escape hatch (rankClassResults) exists as an unconditional
+/// alternative. For a regular class's Islamiyyah card, "every student" is
+/// every student the compute gave that card to (see enrollmentsForCard) —
+/// a student whose Islamiyyah card belongs to their Madrasa group has none
+/// here and isn't waited for.
 async function isClassFullyFinalized(
   tx: Prisma.TransactionClient,
-  classId: string,
+  klass: { id: string; programme: Programme },
   termId: string,
   academicSessionId: string,
+  programme: Programme,
 ): Promise<boolean> {
-  const [enrollmentCount, finalizedCount] = await Promise.all([
-    tx.enrollment.count({ where: { classId, academicSessionId, status: "ACTIVE" } }),
-    tx.result.count({
-      where: { termId, status: "FINALIZED", enrollment: { classId, academicSessionId, status: "ACTIVE" } },
-    }),
+  const inClass = { classId: klass.id, academicSessionId, status: "ACTIVE" as const };
+  const [expected, finalizedCount] = await Promise.all([
+    programme === klass.programme
+      ? tx.enrollment.count({ where: inClass })
+      : tx.result.count({ where: { termId, programme, enrollment: inClass } }),
+    tx.result.count({ where: { termId, programme, status: "FINALIZED", enrollment: inClass } }),
   ]);
-  return enrollmentCount > 0 && enrollmentCount === finalizedCount;
+  return expected > 0 && expected === finalizedCount;
 }
 
 /// Ranks whatever's currently FINALIZED for this class+term, strictly among
@@ -491,13 +524,16 @@ async function isClassFullyFinalized(
 /// rather than re-queried, the "after" half). Callers that need to know
 /// exactly what changed, not just "ranking ran," use this instead of
 /// guessing it from a separate read.
+///
+/// Per card: a class's Western and Islamiyyah results are ranked separately.
 async function rankFinalizedResults(
   tx: Prisma.TransactionClient,
   classId: string,
   termId: string,
+  programme: Programme,
 ): Promise<Array<{ before: { id: string; position: number | null; outOf: number | null }; after: Result }>> {
   const finalized = await tx.result.findMany({
-    where: { termId, status: "FINALIZED", enrollment: { classId }, averageScore: { not: null } },
+    where: { termId, programme, status: "FINALIZED", enrollment: { classId }, averageScore: { not: null } },
     select: { id: true, averageScore: true, position: true, outOf: true },
     orderBy: { averageScore: "desc" },
   });
@@ -522,9 +558,14 @@ async function rankFinalizedResults(
 /// pg_advisory_xact_lock pattern already used for AcademicSession/Term
 /// "current" switching (academic-structure.service.ts), keyed the same
 /// two-argument way (a fixed name hash + a hash of the varying key).
-async function withPositionFillLock<T>(classId: string, termId: string, fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+async function withPositionFillLock<T>(
+  classId: string,
+  termId: string,
+  programme: Programme,
+  fn: (tx: Prisma.TransactionClient) => Promise<T>,
+): Promise<T> {
   return prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('result_position_fill'), hashtext(${`${classId}:${termId}`}))`;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('result_position_fill'), hashtext(${`${classId}:${termId}:${programme}`}))`;
     return fn(tx);
   });
 }
@@ -552,7 +593,9 @@ async function finalizeResultIfStatus(
 ): Promise<{ finalized: Result } | { statusChangedTo: ResultStatus }> {
   const result = await prisma.result.findUnique({
     where: { id },
-    include: { enrollment: { select: { classId: true, academicSessionId: true } } },
+    include: {
+      enrollment: { select: { classId: true, academicSessionId: true, class: { select: { programme: true } } } },
+    },
   });
   if (!result) {
     throw AppError.notFound("Result not found");
@@ -561,7 +604,7 @@ async function finalizeResultIfStatus(
   const { daysPresent, daysSchoolOpened } = await computeAttendanceSnapshot(
     result.studentId,
     result.termId,
-    result.programme,
+    result.enrollment.class.programme,
   );
 
   const { count } = await prisma.result.updateMany({
@@ -581,9 +624,10 @@ async function finalizeResultIfStatus(
   const finalized = await prisma.result.findUniqueOrThrow({ where: { id } });
 
   const { classId, academicSessionId } = result.enrollment;
-  await withPositionFillLock(classId, result.termId, async (tx) => {
-    if (await isClassFullyFinalized(tx, classId, result.termId, academicSessionId)) {
-      await rankFinalizedResults(tx, classId, result.termId);
+  const klass = { id: classId, programme: result.enrollment.class.programme };
+  await withPositionFillLock(classId, result.termId, result.programme, async (tx) => {
+    if (await isClassFullyFinalized(tx, klass, result.termId, academicSessionId, result.programme)) {
+      await rankFinalizedResults(tx, classId, result.termId, result.programme);
     }
   });
 
@@ -619,7 +663,20 @@ export async function rankClassResults(classId: string, termId: string, principa
     throw AppError.notFound("Term not found");
   }
 
-  const ranked = await withPositionFillLock(classId, termId, (tx) => rankFinalizedResults(tx, classId, termId));
+  // Each card the class has results on this term, ranked on its own.
+  const cards = await prisma.result.findMany({
+    where: { termId, enrollment: { classId } },
+    distinct: ["programme"],
+    select: { programme: true },
+  });
+  const ranked: Awaited<ReturnType<typeof rankFinalizedResults>> = [];
+  for (const { programme } of cards) {
+    ranked.push(
+      ...(await withPositionFillLock(classId, termId, programme, (tx) =>
+        rankFinalizedResults(tx, classId, termId, programme),
+      )),
+    );
+  }
 
   if (ranked.length > 0) {
     fireAndForget(
@@ -710,8 +767,8 @@ async function getSessionAverageMethod(academicSessionId: string): Promise<Sessi
 /// A student with zero FINALIZED terms gets no row at all yet. Purely
 /// derived from already-finalized inputs, so every row this writes goes
 /// straight to FINALIZED — there's no separate human review/finalize step
-/// for the rollup itself. Scoped to the class's programme the same way
-/// computeResultsForClass is.
+/// for the rollup itself. One rollup per report card, the same way
+/// computeResultsForClass splits them.
 export async function computeSessionResultsForClass(input: ComputeSessionResultsBody, actorUserId: string) {
   const session = await prisma.academicSession.findUnique({ where: { id: input.academicSessionId } });
   if (!session) {
@@ -728,8 +785,25 @@ export async function computeSessionResultsForClass(input: ComputeSessionResults
   if (enrollments.length === 0) {
     throw AppError.badRequest("No students are actively enrolled in this class for this session");
   }
+
+  const rows = [];
+  for (const programme of await cardsForClass(prisma, klass, input.academicSessionId)) {
+    const cardEnrollments = await enrollmentsForCard(prisma, klass, programme, enrollments, input.academicSessionId);
+    if (cardEnrollments.length > 0) {
+      rows.push(...(await computeSessionCardForClass(cardEnrollments, input.academicSessionId, programme, actorUserId)));
+    }
+  }
+  return rows;
+}
+
+async function computeSessionCardForClass(
+  enrollments: Enrollment[],
+  academicSessionId: string,
+  programme: Programme,
+  actorUserId: string,
+) {
+  const input = { academicSessionId };
   const studentIds = enrollments.map((e) => e.studentId);
-  const { programme } = klass;
 
   const terms = await prisma.term.findMany({ where: { academicSessionId: input.academicSessionId } });
   const termOrderById = new Map(terms.map((t) => [t.id, t.order]));
@@ -758,7 +832,7 @@ export async function computeSessionResultsForClass(input: ComputeSessionResults
           where: {
             studentId: { in: studentIds },
             termId: { in: allFinalizedTermIds },
-            classSubjectAssignment: { class: { programme } },
+            classSubjectAssignment: subjectCardWhere(programme),
           },
           include: { classSubjectAssignment: { select: { subjectId: true } } },
         })
@@ -1081,38 +1155,48 @@ type ClassSummary = {
 
 const STATUS_KEY = { DRAFT: "draft", SUBMITTED: "submitted", FINALIZED: "finalized" } as const;
 
-/// Per-class DRAFT/SUBMITTED/FINALIZED counts of the term's results — what
-/// "Publish all" is about to do, and what it can't (DRAFT: the form teacher
-/// hasn't submitted it). Classes with no results this term are left out.
+/// Per-class, per-card DRAFT/SUBMITTED/FINALIZED counts of the term's
+/// results — what "Publish all" is about to do, and what it can't (DRAFT:
+/// the form teacher hasn't submitted it). A regular class with Islamiyyah
+/// subjects has two rows, one per card; `programme` is the card's. Classes
+/// with no results this term are left out.
 export async function getTermResultsSummary(query: TermSummaryQuery) {
   await getTermOrThrow(query.termId);
   const results = await prisma.result.findMany({
     where: { termId: query.termId, ...(query.programme ? { programme: query.programme } : {}) },
     select: {
       status: true,
-      enrollment: { select: { class: { select: { id: true, gradeName: true, arm: true, programme: true, order: true } } } },
+      programme: true,
+      enrollment: { select: { class: { select: { id: true, gradeName: true, arm: true, order: true } } } },
     },
   });
 
   const byClass = new Map<string, ClassSummary>();
-  for (const { status, enrollment } of results) {
+  for (const { status, programme, enrollment } of results) {
     const klass = enrollment.class;
-    const row = byClass.get(klass.id) ?? {
+    const key = `${klass.id}:${programme}`;
+    const row = byClass.get(key) ?? {
       classId: klass.id,
       gradeName: klass.gradeName,
       arm: klass.arm,
-      programme: klass.programme,
+      programme,
       order: klass.order,
       draft: 0,
       submitted: 0,
       finalized: 0,
     };
     row[STATUS_KEY[status]] += 1;
-    byClass.set(klass.id, row);
+    byClass.set(key, row);
   }
 
   const classes = [...byClass.values()]
-    .sort((a, b) => a.order - b.order || a.gradeName.localeCompare(b.gradeName) || (a.arm ?? "").localeCompare(b.arm ?? ""))
+    .sort(
+      (a, b) =>
+        a.order - b.order ||
+        a.gradeName.localeCompare(b.gradeName) ||
+        (a.arm ?? "").localeCompare(b.arm ?? "") ||
+        a.programme.localeCompare(b.programme),
+    )
     .map(({ order: _order, ...row }) => row);
   const totals = classes.reduce(
     (acc, c) => ({ draft: acc.draft + c.draft, submitted: acc.submitted + c.submitted, finalized: acc.finalized + c.finalized }),

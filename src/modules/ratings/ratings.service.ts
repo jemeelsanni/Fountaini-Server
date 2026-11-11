@@ -101,15 +101,17 @@ async function lockResultsForUpdate(
 /// write time inside the same transaction that locks those Result rows —
 /// not just at this pre-check read.
 ///
-/// Ratings belong to the class's programme: a Madrasa group's form teacher
-/// rates the Islamiyyah card, independently of the academic class's form
-/// teacher rating the same student on the academic card, and only that
-/// programme's Result gates the write.
+/// Ratings belong to one report card (`programme`, defaulting to the
+/// class's own): a regular class's form teacher rates the Western card and
+/// its Islamiyyah subject teachers rate the Islamiyyah card (a Madrasa
+/// group's form teacher rates that group's), independently of each other,
+/// and only that card's Result gates the write.
 export async function bulkUpsertRatings(
   classId: string,
   termId: string,
   actorUserId: string,
   input: BulkUpsertRatingsBody,
+  card?: Programme,
 ) {
   const klass = await prisma.class.findUnique({ where: { id: classId } });
   if (!klass) {
@@ -119,7 +121,10 @@ export async function bulkUpsertRatings(
   if (!term) {
     throw AppError.notFound("Term not found");
   }
-  const { programme } = klass;
+  const programme = card ?? klass.programme;
+  if (klass.programme === "MADRASSAH" && programme !== "MADRASSAH") {
+    throw AppError.badRequest("A Weekday Islamiyyah group only has an Islamiyyah result to rate");
+  }
 
   const traitIds = [...new Set(input.entries.map((e) => e.traitId))];
   const traits = await prisma.trait.findMany({

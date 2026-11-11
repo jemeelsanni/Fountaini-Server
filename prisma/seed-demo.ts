@@ -364,11 +364,11 @@ async function seedStaff() {
   const bursar = await staff("BURSAR", "Maryam", "Abubakar", "Finance");
   const formTeacherJss1a = await staff("TEACHER", "Ibrahim", "Suleiman", "Academics");
   const subjectTeacherJss1a = await staff("TEACHER", "Hadiza", "Lawal", "Academics");
-  const madrassahTeacher = await staff("TEACHER", "Salihu", "Mohammed", "Madrassah");
+  const madrassahTeacher = await staff("TEACHER", "Salihu", "Mohammed", "Islamiyyah");
   const teacherParent = await staff("TEACHER", "Zainab", "Ahmad", "Academics");
   const mustChangeTeacher = await staff("TEACHER", "Nasiru", "Danladi", "Academics");
 
-  console.log("Staff: 1 admin, 1 bursar, 5 teachers (form teacher, subject teacher, Madrassah, teacher-parent, forced-change).");
+  console.log("Staff: 1 admin, 1 bursar, 5 teachers (form teacher, subject teacher, Islamiyyah, teacher-parent, forced-change).");
 
   return { admin, bursar, formTeacherJss1a, subjectTeacherJss1a, madrassahTeacher, teacherParent, mustChangeTeacher };
 }
@@ -741,7 +741,7 @@ async function seedIslamiyyah(
   const termId = structure.term1.id;
 
   const madrasa = await academicStructure.createClass({
-    gradeName: "Weekday Madrasa",
+    gradeName: "Weekday Islamiyyah",
     arm: "Level 1",
     order: 100,
     programme: "MADRASSAH",
@@ -876,7 +876,7 @@ async function seedIslamiyyah(
   }
 
   console.log(
-    "Islamiyyah: Weekday Madrasa Level 1 with 8 subjects; Zainab Lawal, Aisha Abdullahi and Musa Aliyu " +
+    "Islamiyyah: Weekday Islamiyyah Level 1 with 8 subjects; Zainab Lawal, Aisha Abdullahi and Musa Aliyu " +
       "scored, rated, commented and finalized on a separate MADRASSAH card (Zainab 1st).",
   );
 
@@ -1079,7 +1079,7 @@ async function seedPastSession(
   }
 
   console.log(
-    "Past session 2024/2025: Zainab Lawal, Aisha Abdullahi and Musa Aliyu in Basic 6 and Weekday Madrasa — " +
+    "Past session 2024/2025: Zainab Lawal, Aisha Abdullahi and Musa Aliyu in Basic 6 and Weekday Islamiyyah — " +
       "all three terms finalized on both cards, plus session results.",
   );
 }
@@ -1247,7 +1247,7 @@ async function seedMadrassah(
     tajweedNotes: "Revisit noon sakinah rules before the next assessment.",
   });
 
-  console.log("Madrassah progress: 3 entries recorded for JSS1A students.");
+  console.log("Islamiyyah progress: 3 entries recorded for JSS1A students.");
 }
 
 // ---------------------------------------------------------------------------
@@ -1438,7 +1438,7 @@ async function buildCredentialRows(
   pushStaff(staff.bursar.id, "BURSAR", "Finance portal — fee structures, obligations, payment confirmation.");
   pushStaff(staff.formTeacherJss1a.id, "TEACHER", "Form teacher, JSS1A — full ratings/comments access for the class; also teaches Mathematics in JSS1A and JSS1B.");
   pushStaff(staff.subjectTeacherJss1a.id, "TEACHER", "Subject teacher, JSS1A (English Language) — NOT the form teacher; must be denied ratings/comments.");
-  pushStaff(staff.madrassahTeacher.id, "TEACHER", "Madrassah/Qur'an teacher — records memorisation and tajweed progress.");
+  pushStaff(staff.madrassahTeacher.id, "TEACHER", "Islamiyyah/Qur'an teacher — records memorisation and tajweed progress.");
   pushStaff(staff.teacherParent.id, "TEACHER + PARENT", "Teaches Basic Science, JSS1A. Also the parent of Abdullahi Sani, JSS1B (draft results — finalized-only view).");
   pushStaff(staff.mustChangeTeacher.id, "TEACHER", "mustChangePassword: true — logs in, then every route except /me and change-password returns MUST_CHANGE_PASSWORD.");
 
@@ -1462,8 +1462,8 @@ async function buildCredentialRows(
   pushParent(students.twoKidsParent.id, "Two children: Fatima Bello (JSS1A, fully paid) and Hauwa Bello (JSS1B, draft) — the child switcher.");
   pushParent(
     students.primaryParent.id,
-    "Primary contact for Zainab Lawal (JSS1A) — one of two linked parents. Zainab also has a Weekday Madrasa " +
-      "(Islamiyyah) result, 1st in her group.",
+    "Primary contact for Zainab Lawal (JSS1A) — one of two linked parents. Zainab also has a Weekday Islamiyyah " +
+      "result, 1st in her group.",
   );
   pushParent(students.secondaryParent.id, "Non-primary contact for Zainab Lawal (JSS1A) — same student as the row above, isPrimaryContact: false.");
 

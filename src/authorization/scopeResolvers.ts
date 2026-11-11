@@ -1,3 +1,4 @@
+import type { Programme } from "../../generated/prisma/index.js";
 import { prisma } from "../db/client.js";
 import type { Principal } from "./types.js";
 
@@ -40,6 +41,43 @@ async function isFormTeacherOfClass(
     select: { teacherId: true },
   });
   return formTeacher?.teacherId === staffId;
+}
+
+/// "Does this staff member teach an Islamiyyah subject (SubjectType
+/// MADRASSAH) in this class this session" — who is in charge of a regular
+/// class's Islamiyyah card: they view and print it, write its comment and
+/// ratings, and submit it for review, the way the form teacher does for
+/// the Western card.
+async function isIslamiyyahTeacherOfClass(
+  staffId: string,
+  classId: string,
+  academicSessionId: string,
+): Promise<boolean> {
+  const assignment = await prisma.classSubjectAssignment.findFirst({
+    where: { teacherId: staffId, classId, academicSessionId, subject: { type: "MADRASSAH" } },
+    select: { id: true },
+  });
+  return assignment !== null;
+}
+
+/// Who runs one report card of a class: a Madrasa group's only card, and a
+/// regular class's Western card, are the form teacher's; a regular class's
+/// Islamiyyah card belongs to its Islamiyyah subject teachers.
+async function isInChargeOfCard(
+  staffId: string,
+  classId: string,
+  academicSessionId: string,
+  programme: Programme | undefined,
+): Promise<boolean> {
+  const klass = await prisma.class.findUnique({ where: { id: classId }, select: { programme: true } });
+  if (!klass) {
+    return false;
+  }
+  if ((programme ?? klass.programme) === klass.programme) {
+    return isFormTeacherOfClass(staffId, classId, academicSessionId);
+  }
+  // A Madrasa group has no Western card to be in charge of.
+  return programme === "MADRASSAH" && isIslamiyyahTeacherOfClass(staffId, classId, academicSessionId);
 }
 
 /// Distinguishes not just WHETHER a principal may read a student's record
@@ -341,6 +379,7 @@ export async function canWriteClassTeacherComment(
   const result = await prisma.result.findUnique({
     where: { id: resultId },
     select: {
+      programme: true,
       enrollment: { select: { classId: true } },
       term: { select: { academicSessionId: true } },
     },
@@ -349,7 +388,14 @@ export async function canWriteClassTeacherComment(
     return false;
   }
 
-  return isFormTeacherOfClass(principal.staffId, result.enrollment.classId, result.term.academicSessionId);
+  // The card's own teacher: the form teacher for the Western card, the
+  // Islamiyyah subject teachers for a regular class's Islamiyyah card.
+  return isInChargeOfCard(
+    principal.staffId,
+    result.enrollment.classId,
+    result.term.academicSessionId,
+    result.programme,
+  );
 }
 
 /// "The form teacher may read their own class's results for a term" — the
@@ -360,10 +406,15 @@ export async function canWriteClassTeacherComment(
 /// teacher assigned to this class is deliberately still denied — that
 /// distinction (form teacher vs. subject teacher) is the whole point of
 /// the ClassFormTeacher table, same as canWriteClassTeacherComment.
+///
+/// `programme` picks the card. The form teacher may read every card of
+/// their class (view and print both); a regular class's Islamiyyah card is
+/// also readable by its Islamiyyah subject teachers.
 export async function canReadClassResults(
   principal: Principal,
   classId: string,
   termId: string,
+  programme?: Programme,
 ): Promise<boolean> {
   if (principal.roles.has("ADMIN")) {
     return true;
@@ -377,7 +428,10 @@ export async function canReadClassResults(
     return false;
   }
 
-  return isFormTeacherOfClass(principal.staffId, classId, term.academicSessionId);
+  return (
+    (await isFormTeacherOfClass(principal.staffId, classId, term.academicSessionId)) ||
+    (programme !== undefined && (await isInChargeOfCard(principal.staffId, classId, term.academicSessionId, programme)))
+  );
 }
 
 /// "The form teacher may write affective/psychomotor ratings for their own
@@ -388,12 +442,26 @@ export async function canReadClassResults(
 /// route definition sees a write-shaped name, matching how
 /// canWriteClassTeacherComment is its own function even though it also
 /// ultimately calls isFormTeacherOfClass.
+///
+/// Per card, like canWriteClassTeacherComment: a regular class's Islamiyyah
+/// card is rated by its Islamiyyah subject teachers, not the form teacher.
 export async function canWriteClassRatings(
   principal: Principal,
   classId: string,
   termId: string,
+  programme?: Programme,
 ): Promise<boolean> {
-  return canReadClassResults(principal, classId, termId);
+  if (principal.roles.has("ADMIN")) {
+    return true;
+  }
+  if (!principal.roles.has("TEACHER") || !principal.staffId) {
+    return false;
+  }
+  const term = await prisma.term.findUnique({ where: { id: termId }, select: { academicSessionId: true } });
+  if (!term) {
+    return false;
+  }
+  return isInChargeOfCard(principal.staffId, classId, term.academicSessionId, programme);
 }
 
 /// Self-access only (plus ADMIN) — the Student-record analog of
