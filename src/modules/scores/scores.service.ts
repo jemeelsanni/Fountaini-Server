@@ -353,11 +353,11 @@ export async function getScoresForAssignment(assignmentId: string, termId: strin
   return { status, students };
 }
 
-/// The assignment's class (and so its programme) is included so a client
-/// can split a student's academic and Islamiyyah subjects the same way
-/// computeResultsForClass does — by the class the work was done in, not
-/// the student's current enrollment, which a mid-term transfer edits in
-/// place.
+/// The assignment's subject (and so its type) and class (and so its
+/// programme) are included so a client can split a student's Western and
+/// Islamiyyah subjects the same way computeResultsForClass does (see
+/// results/reportCards.ts) — from the work itself, not the student's
+/// current enrollment, which a mid-term transfer edits in place.
 ///
 /// Each row also carries its per-component marks (CA1/CA2/Exam) for the
 /// report sheet: every component configured for the assignment's session,

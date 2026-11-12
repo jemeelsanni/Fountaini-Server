@@ -9,6 +9,14 @@ export const classTermParamsSchema = z.object({
 });
 export type ClassTermParams = z.infer<typeof classTermParamsSchema>;
 
+/// Which report card the ratings are for. Omitted, it's the class's own
+/// programme (a regular class's Western card, a Madrasa group's Islamiyyah
+/// one); MADRASSAH on a regular class rates its Islamiyyah card.
+export const cardQuerySchema = z.object({
+  programme: z.enum(["ACADEMIC", "MADRASSAH"]).optional(),
+});
+export type CardQuery = z.infer<typeof cardQuerySchema>;
+
 export const TRAIT_CATEGORIES = ["AFFECTIVE", "PSYCHOMOTOR", "EARLY_YEARS"] as const;
 
 /// EARLY_YEARS checklist items are rated in stars, 1-4 — enforced per trait

@@ -487,7 +487,7 @@ export async function createEnrollment(studentId: string, input: CreateEnrollmen
     if (isUniqueConstraintError(err)) {
       throw AppError.conflict(
         klass.programme === "MADRASSAH"
-          ? "This student is already in a Madrasa class for this academic session"
+          ? "This student is already in a Weekday Islamiyyah class for this academic session"
           : "This student is already enrolled in a class for this academic session",
       );
     }
@@ -552,7 +552,7 @@ export async function transferStudent(studentId: string, newClassId: string, act
   if (!enrollment) {
     throw AppError.badRequest(
       newClass.programme === "MADRASSAH"
-        ? "This student has no active Madrasa enrollment in the current academic session to transfer"
+        ? "This student has no active Weekday Islamiyyah enrollment in the current academic session to transfer"
         : "This student has no active enrollment in the current academic session to transfer",
     );
   }

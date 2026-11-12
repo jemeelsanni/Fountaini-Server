@@ -10,6 +10,8 @@ import { auditMutation } from "../../http/middleware/auditMutation.js";
 import { validate } from "../../http/middleware/validate.js";
 import * as controller from "./results.controller.js";
 import {
+  type ClassResultsQuery,
+  classResultsQuerySchema,
   type ClassTermParams,
   classTermParamsSchema,
   computeResultsSchema,
@@ -67,10 +69,10 @@ resultsRouter.get(
 resultsRouter.get(
   "/classes/:id/results/:termId",
   requireRole("ADMIN", "TEACHER"),
-  validate({ params: classTermParamsSchema }),
+  validate({ params: classTermParamsSchema, query: classResultsQuerySchema }),
   requireScope((principal, req) => {
     const { id, termId } = req.params as unknown as ClassTermParams;
-    return canReadClassResults(principal, id, termId);
+    return canReadClassResults(principal, id, termId, (req.validatedQuery as ClassResultsQuery).programme);
   }),
   controller.listResultsForClass,
 );

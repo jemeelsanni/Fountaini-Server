@@ -41,6 +41,14 @@ export const programmeQuerySchema = z.object({
 });
 export type ProgrammeQuery = z.infer<typeof programmeQuerySchema>;
 
+/// A class's results, one report card at a time — omitted, the class's own
+/// programme (a regular class's Western card, a Madrasa group's Islamiyyah
+/// one); MADRASSAH on a regular class lists its Islamiyyah card.
+export const classResultsQuerySchema = z.object({
+  programme: z.enum(["ACADEMIC", "MADRASSAH"]).optional(),
+});
+export type ClassResultsQuery = z.infer<typeof classResultsQuerySchema>;
+
 /// Admin → Results' whole-school release: one term, optionally one programme.
 export const termSummaryQuerySchema = z.object({
   termId: z.string().min(1),

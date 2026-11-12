@@ -142,7 +142,7 @@ Secondary (JSS 1 – SS 3) starts in 2027/2028.
 
 Neither programme is included in regular school fees.
 
-|                        | Weekday Madrasa (full year) | Weekend Islamiyyah |
+|                        | Weekday Islamiyyah (full year) | Weekend Islamiyyah |
 |------------------------|-----------------------------|--------------------|
 | Who attends            | Children aged 10–18         | Any age            |
 | Days                   | Monday – Friday             | Saturday and Sunday |
@@ -159,7 +159,7 @@ Tawheed, Muhaadathah, Seerah, Tajweed.
 Weekend scholars from other schools get a receipt and a report like the
 school's own scholars.
 
-### Weekday Madrasa fees (₦)
+### Weekday Islamiyyah fees (₦)
 
 | Item                        | Amount  |
 |-----------------------------|--------:|
@@ -264,7 +264,7 @@ Not yet answered by the school. Don't fill these in without asking.
    Primary are running this session, but the fee list also has Creche and
    Play group (and the ledger has Play group scholars). Are Creche and Play
    group open?
-6. **Weekday Madrasa:** times, levels/groups, coordinator, and the first-term
+6. **Weekday Islamiyyah:** times, levels/groups, coordinator, and the first-term
    total (see the ⚠ note above).
 7. **Weekend Islamiyyah:** times and coordinator.
 8. **Secondary subjects** (for 2027/2028).

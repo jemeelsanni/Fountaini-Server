@@ -415,14 +415,16 @@ model Term {
   @@index([isCurrent])
 }
 
-/// Which report card a class's work lands on. A child can be in one
-/// ACADEMIC class (e.g. Basic 4) and one MADRASSAH class (a Weekday Madrasa
-/// group) in the same session, and gets a separate term result, session
-/// result, position, ratings and comments for each — see Enrollment.
-/// Values mirror SubjectType's, but it's the CLASS's programme, not a
-/// subject's type, that decides which card a subject result counts toward:
-/// Basic classes teach Qur'an/Hadith too, and those stay on the academic
-/// card.
+/// A class's programme, and which report card a Result/Rating is: ACADEMIC
+/// is the Western card, MADRASSAH the Islamiyyah card. Every scholar in a
+/// regular class with Islamiyyah subjects gets both each term, each with
+/// its own result, session result, position, ratings and comments. The
+/// SUBJECT decides which card its scores count toward — an Islamiyyah
+/// subject (SubjectType MADRASSAH) taught in JSS1 A goes on the Islamiyyah
+/// card, never the Western one; see results/reportCards.ts. A child can
+/// also be in one MADRASSAH class (a Weekday Madrasa group) alongside their
+/// regular class — see Enrollment — whose compute then owns their
+/// Islamiyyah card.
 enum Programme {
   ACADEMIC
   MADRASSAH
