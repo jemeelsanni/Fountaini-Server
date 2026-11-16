@@ -1,13 +1,84 @@
+import type { Programme } from "../../../generated/prisma/index.js";
+import { resolveStudentAccessLevel } from "../../authorization/scopeResolvers.js";
+import type { Principal } from "../../authorization/types.js";
 import { prisma } from "../../db/client.js";
 import { AppError } from "../../errors/AppError.js";
-import type { BulkUpsertScoresBody } from "./scores.schemas.js";
+import { subjectCardWhere } from "../results/reportCards.js";
+import { computeResultsForClass, publishedCardKeysForStudent } from "../results/results.service.js";
+import type { BulkUpsertScoresBody, ClassScoreSheetsQuery } from "./scores.schemas.js";
 
 async function getAssignmentOrThrow(id: string) {
-  const assignment = await prisma.classSubjectAssignment.findUnique({ where: { id } });
+  const assignment = await prisma.classSubjectAssignment.findUnique({
+    where: { id },
+    include: { subject: { select: { type: true } }, class: { select: { programme: true } } },
+  });
   if (!assignment) {
     throw AppError.notFound("Class-subject assignment not found");
   }
   return assignment;
+}
+
+/// Which report card an assignment's marks count towards — the same rule
+/// as subjectCardWhere (results/reportCards.ts): Islamiyyah subjects, and
+/// everything taught in a Madrasa group, go on the Islamiyyah card.
+export function cardOfAssignment(assignment: {
+  subject: { type: string };
+  class: { programme: string };
+}): Programme {
+  return assignment.subject.type === "MADRASSAH" || assignment.class.programme === "MADRASSAH"
+    ? "MADRASSAH"
+    : "ACADEMIC";
+}
+
+/// A subject sheet goes to the form teacher, so it can only change while
+/// the report cards it feeds are still with them (DRAFT). Once the form
+/// teacher has sent them to the admin, they must withdraw them first; once
+/// published, only an admin override can change a mark. Returns why the
+/// cards are locked, or null; callers throw the 409 themselves (so the
+/// OpenAPI conflict scanner can see it from the route).
+async function cardsLockedReason(studentIds: string[], termId: string, programme: Programme) {
+  const locked = await prisma.result.findFirst({
+    where: { studentId: { in: studentIds }, termId, programme, status: { in: ["SUBMITTED", "FINALIZED"] } },
+    select: { status: true },
+    orderBy: { status: "desc" },
+  });
+  if (!locked) {
+    return null;
+  }
+  return locked.status === "FINALIZED"
+    ? "These report cards have already been published — a mark can now only change through an admin override"
+    : "The form teacher has already sent these report cards to the admin — they need to withdraw them first";
+}
+
+/// Rebuilds the DRAFT report cards a sheet feeds, so the form teacher sees
+/// the latest submitted marks without anyone having to press "Compute".
+/// A regular class's Islamiyyah subject also feeds the Islamiyyah card of
+/// any student whose card lives with their Weekday Madrasa group instead
+/// (see enrollmentsForCard), so those groups are rebuilt too.
+async function refreshReportCards(
+  assignment: { classId: string; academicSessionId: string },
+  programme: Programme,
+  studentIds: string[],
+  termId: string,
+) {
+  await computeResultsForClass({ classId: assignment.classId, termId });
+  if (programme !== "MADRASSAH") {
+    return;
+  }
+  const groups = await prisma.enrollment.findMany({
+    where: {
+      studentId: { in: studentIds },
+      academicSessionId: assignment.academicSessionId,
+      status: "ACTIVE",
+      programme: "MADRASSAH",
+      classId: { not: assignment.classId },
+    },
+    distinct: ["classId"],
+    select: { classId: true },
+  });
+  for (const { classId } of groups) {
+    await computeResultsForClass({ classId, termId });
+  }
 }
 
 export async function getRoster(assignmentId: string) {
@@ -183,6 +254,15 @@ export async function submitScores(assignmentId: string, actorUserId: string, te
   if (enrollments.length === 0) {
     throw AppError.badRequest("No students are actively enrolled in this class for this session");
   }
+  const programme = cardOfAssignment(assignment);
+  const lockedReason = await cardsLockedReason(
+    enrollments.map((e) => e.studentId),
+    termId,
+    programme,
+  );
+  if (lockedReason) {
+    throw AppError.conflict(lockedReason);
+  }
 
   const scores = await prisma.score.findMany({
     where: {
@@ -281,12 +361,129 @@ export async function submitScores(assignmentId: string, actorUserId: string, te
     ),
   ]);
 
+  // Hand-off to the form teacher: their class's DRAFT report cards now
+  // include this subject.
+  await refreshReportCards(assignment, programme, enrollments.map((e) => e.studentId), termId);
+
   return prisma.subjectResult.findMany({
     where: {
       classSubjectAssignmentId: assignmentId,
       termId,
       studentId: { in: enrollments.map((e) => e.studentId) },
     },
+  });
+}
+
+/// The form teacher (or admin) sends a submitted subject sheet back to its
+/// subject teacher: scores and subject results return to DRAFT, so the
+/// sheet is editable again and its marks drop off the report cards until
+/// it's resubmitted. Only while those cards are still with the form
+/// teacher (see cardsLockedReason).
+export async function returnScoresToTeacher(assignmentId: string, termId: string) {
+  const assignment = await getAssignmentOrThrow(assignmentId);
+
+  const term = await prisma.term.findUnique({ where: { id: termId } });
+  if (!term || term.academicSessionId !== assignment.academicSessionId) {
+    throw AppError.badRequest("Term does not belong to this assignment's academic session");
+  }
+
+  const submitted = await prisma.score.findMany({
+    where: { classSubjectAssignmentId: assignmentId, termId, status: "SUBMITTED" },
+    select: { studentId: true },
+    distinct: ["studentId"],
+  });
+  if (submitted.length === 0) {
+    throw AppError.badRequest("This sheet hasn't been submitted, so there's nothing to return");
+  }
+  const studentIds = submitted.map((s) => s.studentId);
+  const programme = cardOfAssignment(assignment);
+  const lockedReason = await cardsLockedReason(studentIds, termId, programme);
+  if (lockedReason) {
+    throw AppError.conflict(lockedReason);
+  }
+
+  await prisma.$transaction([
+    prisma.score.updateMany({
+      where: { classSubjectAssignmentId: assignmentId, termId },
+      data: { status: "DRAFT" },
+    }),
+    prisma.subjectResult.updateMany({
+      where: { classSubjectAssignmentId: assignmentId, termId },
+      data: { status: "DRAFT", submittedByUserId: null, submittedAt: null },
+    }),
+  ]);
+
+  await refreshReportCards(assignment, programme, studentIds, termId);
+
+  return getScoresForAssignment(assignmentId, termId);
+}
+
+type SheetStatus = "NOT_STARTED" | "DRAFT" | "SUBMITTED";
+
+/// The form teacher's view of every subject sheet feeding a class's report
+/// card for a term: who teaches it, how far along it is, and whether it's
+/// been submitted to them. `programme` picks the card (omitted: every
+/// subject in the class).
+export async function getClassScoreSheets(classId: string, termId: string, query: ClassScoreSheetsQuery) {
+  const term = await prisma.term.findUnique({ where: { id: termId } });
+  if (!term) {
+    throw AppError.notFound("Term not found");
+  }
+  const klass = await prisma.class.findUnique({ where: { id: classId } });
+  if (!klass) {
+    throw AppError.notFound("Class not found");
+  }
+
+  const [assignments, components, enrolledCount] = await Promise.all([
+    prisma.classSubjectAssignment.findMany({
+      where: {
+        classId,
+        academicSessionId: term.academicSessionId,
+        ...(query.programme ? subjectCardWhere(query.programme) : {}),
+      },
+      include: {
+        subject: { select: { id: true, name: true, code: true, type: true } },
+        class: { select: { programme: true } },
+        teacher: { select: { id: true, firstName: true, lastName: true } },
+      },
+      orderBy: { subject: { name: "asc" } },
+    }),
+    prisma.assessmentComponent.count({ where: { academicSessionId: term.academicSessionId } }),
+    prisma.enrollment.count({
+      where: { classId, academicSessionId: term.academicSessionId, status: "ACTIVE" },
+    }),
+  ]);
+
+  const grouped = await prisma.score.groupBy({
+    by: ["classSubjectAssignmentId", "status"],
+    where: { classSubjectAssignmentId: { in: assignments.map((a) => a.id) }, termId },
+    _count: { _all: true },
+  });
+  const submittedAt = await prisma.subjectResult.groupBy({
+    by: ["classSubjectAssignmentId"],
+    where: { classSubjectAssignmentId: { in: assignments.map((a) => a.id) }, termId, status: "SUBMITTED" },
+    _max: { submittedAt: true },
+  });
+  const submittedAtById = new Map(submittedAt.map((r) => [r.classSubjectAssignmentId, r._max.submittedAt]));
+
+  return assignments.map((a) => {
+    const counts = grouped.filter((g) => g.classSubjectAssignmentId === a.id);
+    const entered = counts.reduce((sum, g) => sum + g._count._all, 0);
+    const status: SheetStatus = counts.some((g) => g.status === "SUBMITTED")
+      ? "SUBMITTED"
+      : entered > 0
+        ? "DRAFT"
+        : "NOT_STARTED";
+    return {
+      classSubjectAssignmentId: a.id,
+      subject: a.subject,
+      programme: cardOfAssignment(a),
+      teacher: a.teacher,
+      status,
+      enteredCount: entered,
+      expectedCount: components * enrolledCount,
+      submittedAt: status === "SUBMITTED" ? (submittedAtById.get(a.id) ?? null) : null,
+    };
   });
 }
 
@@ -365,12 +562,24 @@ export async function getScoresForAssignment(assignmentId: string, termId: strin
 /// rows behind this exact SubjectResult (same student, assignment, term) —
 /// a SubjectResult only exists once those were submitted, so this exposes
 /// nothing the total didn't already.
-export async function getScoresForStudent(studentId: string) {
-  const subjectResults = await prisma.subjectResult.findMany({
-    where: { studentId },
-    include: { classSubjectAssignment: { include: { subject: true, class: true } }, term: true },
-    orderBy: { computedAt: "desc" },
-  });
+///
+/// Only SUBMITTED subject results (a sheet returned to its teacher is a
+/// draft again). A parent or student (RESTRICTED) only sees marks on cards
+/// that are published and not withheld for fees — submitted marks are
+/// still under review by the form teacher and admin until then.
+export async function getScoresForStudent(studentId: string, principal: Principal) {
+  const accessLevel = await resolveStudentAccessLevel(principal, studentId);
+  const visible = accessLevel === "FULL" ? null : await publishedCardKeysForStudent(studentId);
+
+  const subjectResults = (
+    await prisma.subjectResult.findMany({
+      where: { studentId, status: "SUBMITTED" },
+      include: { classSubjectAssignment: { include: { subject: true, class: true } }, term: true },
+      orderBy: { computedAt: "desc" },
+    })
+  ).filter(
+    (sr) => visible === null || visible.has(`${sr.termId}:${cardOfAssignment(sr.classSubjectAssignment)}`),
+  );
   if (subjectResults.length === 0) {
     return [];
   }

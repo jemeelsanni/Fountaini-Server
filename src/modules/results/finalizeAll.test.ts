@@ -175,6 +175,26 @@ describe("POST /api/results/finalize-all", () => {
     expect((await resultFor(0, "ACADEMIC")).status).toBe("SUBMITTED");
   });
 
+  it("publishes just one class with classId, leaving other classes' submitted results alone", async () => {
+    const { term, basic5, madrasa, resultFor, finalizeAll } = await setup();
+
+    const res = await finalizeAll({ termId: term.id, classId: madrasa.id });
+
+    expect(res.status).toBe(200);
+    expect(res.body.finalized).toBe(1);
+    expect(res.body.classes).toEqual([{ classId: madrasa.id, finalized: 1 }]);
+    expect((await resultFor(0, "MADRASSAH")).status).toBe("FINALIZED");
+    // Basic 5's submitted cards are untouched.
+    expect((await resultFor(0, "ACADEMIC")).status).toBe("SUBMITTED");
+    expect((await resultFor(1, "ACADEMIC")).status).toBe("SUBMITTED");
+
+    const basic5Res = await finalizeAll({ termId: term.id, classId: basic5.id, programme: "ACADEMIC" });
+    expect(basic5Res.body.finalized).toBe(2);
+    expect(basic5Res.body.skippedDraft).toBe(1);
+
+    expect((await finalizeAll({ termId: term.id, classId: "no-such-class" })).status).toBe(404);
+  });
+
   it("returns finalized: 0 for a term with nothing submitted, and 404s for an unknown term", async () => {
     const { session, finalizeAll } = await setup();
     const emptyTerm = await prisma.term.create({

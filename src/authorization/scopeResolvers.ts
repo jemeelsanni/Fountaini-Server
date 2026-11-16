@@ -193,6 +193,37 @@ export async function canActOnAssignment(principal: Principal, assignmentId: str
   return false;
 }
 
+/// "Who reviews this subject sheet": ADMIN, or whoever runs the report card
+/// its marks count towards — the form teacher for the class's own card, the
+/// class's Islamiyyah subject teachers for a regular class's Islamiyyah
+/// card (same split as canWriteClassTeacherComment). They may send a
+/// submitted sheet back to its subject teacher. The card rule is
+/// subjectCardWhere's (results/reportCards.ts), inlined to avoid importing
+/// the scores module here.
+export async function canReviewAssignmentScores(principal: Principal, assignmentId: string): Promise<boolean> {
+  if (principal.roles.has("ADMIN")) {
+    return true;
+  }
+  if (!principal.roles.has("TEACHER") || !principal.staffId) {
+    return false;
+  }
+  const assignment = await prisma.classSubjectAssignment.findUnique({
+    where: { id: assignmentId },
+    select: {
+      classId: true,
+      academicSessionId: true,
+      subject: { select: { type: true } },
+      class: { select: { programme: true } },
+    },
+  });
+  if (!assignment) {
+    return false;
+  }
+  const programme: Programme =
+    assignment.subject.type === "MADRASSAH" || assignment.class.programme === "MADRASSAH" ? "MADRASSAH" : "ACADEMIC";
+  return isInChargeOfCard(principal.staffId, assignment.classId, assignment.academicSessionId, programme);
+}
+
 /// "ADMIN, BURSAR, or a teacher assigned to teach ANY subject in this class,
 /// for this session" — the class roster route (GET /api/classes/:id/students).
 /// Neither existing class-scoped resolver fits: canReadClassResults is

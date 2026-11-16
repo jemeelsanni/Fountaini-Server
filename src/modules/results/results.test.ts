@@ -22,6 +22,7 @@ import {
   enrollStudent,
 } from "../../test/factories.js";
 import { awaitLockWaiter } from "../../test/awaitLockWaiter.js";
+import { submitForReview } from "../../test/submitForReview.js";
 import { resetDb } from "../../test/resetDb.js";
 import { waitForAuditLog } from "../../test/waitForAuditLog.js";
 import { waitForNotification } from "../../test/waitForNotification.js";
@@ -192,7 +193,7 @@ describe("computeResultsForClass scopes subject results by student, not by the c
     const finalized = await finalizeResult(
       (
         await prisma.result.create({
-          data: { studentId: student.id, enrollmentId: enrollment.id, termId: term.id, status: "DRAFT", totalScore: 80, averageScore: 80 },
+          data: { studentId: student.id, enrollmentId: enrollment.id, termId: term.id, status: "SUBMITTED", totalScore: 80, averageScore: 80 },
         })
       ).id,
       adminUser.id,
@@ -300,6 +301,7 @@ describe("full report card lifecycle", () => {
     expect(result1?.status).toBe("DRAFT");
 
     // --- Finalize student1's result ---
+    await submitForReview((result1 as unknown as { id: string }).id);
     const finalizeRes = await request(server)
       .post(`/api/results/${(result1 as unknown as { id: string }).id}/finalize`)
       .set("Authorization", `Bearer ${adminToken}`);
@@ -419,6 +421,7 @@ describe("class teacher / principal comments — normal (non-override) write pat
     const { result, formTeacherToken } = await buildDraftResultWithFormTeacher();
     const { token: adminToken, user: adminUser } = await createAdmin("admin3@test.local");
 
+    await submitForReview(result.id);
     const finalizeRes = await request(server)
       .post(`/api/results/${result.id}/finalize`)
       .set("Authorization", `Bearer ${adminToken}`);
@@ -506,6 +509,7 @@ describe("compute/finalize concurrency", () => {
       // first, then compute's queued write runs — which (on the fix)
       // re-checks status fresh at that moment and finds it's since become
       // FINALIZED.
+      await submitForReview(resultId);
       const [, computeResults2] = await awaitLockWaiter(
         "Result",
         resultId,
@@ -958,6 +962,7 @@ describe("Session results (Feature A)", () => {
     const result = (computeRes.body as Array<{ id: string; studentId: string }>).find(
       (r) => r.studentId === world.student.id,
     );
+    await submitForReview(result!.id);
     await request(server)
       .post(`/api/results/${result?.id}/finalize`)
       .set("Authorization", `Bearer ${world.adminToken}`);
@@ -1097,6 +1102,7 @@ describe("Report card snapshots and class-relative position (Feature B)", () => 
       data: { studentId: student.id, enrollmentId: enrollment.id, termId: term.id, status: "DRAFT", averageScore: 80 },
     });
 
+    await submitForReview(result.id);
     const finalizeRes = await request(server)
       .post(`/api/results/${result.id}/finalize`)
       .set("Authorization", `Bearer ${adminToken}`);
@@ -1146,6 +1152,7 @@ describe("Report card snapshots and class-relative position (Feature B)", () => 
       data: { studentId: student.id, enrollmentId: enrollment.id, termId: term.id, status: "DRAFT", averageScore: 80 },
     });
 
+    await submitForReview(result.id);
     const finalizeRes = await request(server)
       .post(`/api/results/${result.id}/finalize`)
       .set("Authorization", `Bearer ${adminToken}`);
@@ -1180,6 +1187,7 @@ describe("Report card snapshots and class-relative position (Feature B)", () => 
     // Finalize three of the four first — the class isn't complete yet, so
     // no position-fill should fire.
     for (const { result } of [top, tiedA, tiedB]) {
+      await submitForReview(result.id);
       await request(server).post(`/api/results/${result.id}/finalize`).set("Authorization", `Bearer ${adminToken}`);
     }
     const stillIncomplete = await prisma.result.findUniqueOrThrow({ where: { id: top.result.id } });
@@ -1187,6 +1195,7 @@ describe("Report card snapshots and class-relative position (Feature B)", () => 
 
     // The last student finalizes — this is the one that completes the class
     // and triggers the automatic class-wide ranking pass.
+    await submitForReview(last.result.id);
     const lastFinalizeRes = await request(server)
       .post(`/api/results/${last.result.id}/finalize`)
       .set("Authorization", `Bearer ${adminToken}`);
@@ -1237,6 +1246,7 @@ describe("Report card snapshots and class-relative position (Feature B)", () => 
       },
     });
 
+    await submitForReview(finalizedResult.id);
     await request(server)
       .post(`/api/results/${finalizedResult.id}/finalize`)
       .set("Authorization", `Bearer ${adminToken}`);

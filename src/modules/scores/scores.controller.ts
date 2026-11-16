@@ -3,7 +3,10 @@ import { AppError } from "../../errors/AppError.js";
 import * as service from "./scores.service.js";
 import type {
   BulkUpsertScoresBody,
+  ClassScoreSheetsQuery,
+  ClassTermParams,
   IdParams,
+  ReturnScoresBody,
   ScoresForAssignmentQuery,
   SubmitScoresBody,
 } from "./scores.schemas.js";
@@ -38,7 +41,21 @@ export async function getScoresForAssignment(req: Request, res: Response): Promi
   res.status(200).json(await service.getScoresForAssignment(id, termId));
 }
 
-export async function getScoresForStudent(req: Request, res: Response): Promise<void> {
+export async function returnScoresToTeacher(req: Request, res: Response): Promise<void> {
   const { id } = req.params as unknown as IdParams;
-  res.status(200).json(await service.getScoresForStudent(id));
+  const { termId } = req.body as ReturnScoresBody;
+  res.status(200).json(await service.returnScoresToTeacher(id, termId));
+}
+
+export async function getClassScoreSheets(req: Request, res: Response): Promise<void> {
+  const { id, termId } = req.params as unknown as ClassTermParams;
+  res.status(200).json(await service.getClassScoreSheets(id, termId, req.validatedQuery as ClassScoreSheetsQuery));
+}
+
+export async function getScoresForStudent(req: Request, res: Response): Promise<void> {
+  if (!req.principal) {
+    throw AppError.unauthorized();
+  }
+  const { id } = req.params as unknown as IdParams;
+  res.status(200).json(await service.getScoresForStudent(id, req.principal));
 }

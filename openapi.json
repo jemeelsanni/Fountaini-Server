@@ -2464,6 +2464,102 @@
           "computedAt"
         ]
       },
+      "ClassScoreSheet": {
+        "type": "object",
+        "properties": {
+          "classSubjectAssignmentId": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "subject": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "cuid"
+              },
+              "name": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "type": {
+                "$ref": "#/components/schemas/SubjectType"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "code",
+              "type"
+            ]
+          },
+          "programme": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Programme"
+              },
+              {
+                "description": "The report card this subject's marks count towards"
+              }
+            ]
+          },
+          "teacher": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "cuid"
+              },
+              "firstName": {
+                "type": "string"
+              },
+              "lastName": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "firstName",
+              "lastName"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "NOT_STARTED",
+              "DRAFT",
+              "SUBMITTED"
+            ],
+            "description": "NOT_STARTED: no marks entered. DRAFT: the subject teacher is still working on it. SUBMITTED: handed to the form teacher for review."
+          },
+          "enteredCount": {
+            "type": "integer"
+          },
+          "expectedCount": {
+            "type": "integer",
+            "description": "Enrolled students × assessment components"
+          },
+          "submittedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "classSubjectAssignmentId",
+          "subject",
+          "programme",
+          "teacher",
+          "status",
+          "enteredCount",
+          "expectedCount",
+          "submittedAt"
+        ]
+      },
       "SubjectResultWithRelations": {
         "allOf": [
           {
@@ -3382,6 +3478,46 @@
           "finalizedByUserId",
           "finalizedAt",
           "createdAt"
+        ]
+      },
+      "PrincipalCommentTemplate": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "cuid"
+          },
+          "minAverage": {
+            "type": "string",
+            "description": "Decimal value, serialized as a string"
+          },
+          "maxAverage": {
+            "type": "string",
+            "description": "Decimal value, serialized as a string"
+          },
+          "comment": {
+            "type": "string"
+          },
+          "order": {
+            "type": "integer"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "minAverage",
+          "maxAverage",
+          "comment",
+          "order",
+          "createdAt",
+          "updatedAt"
         ]
       },
       "Trait": {
@@ -13782,7 +13918,7 @@
     },
     "/api/class-subject-assignments/{id}/scores/submit": {
       "post": {
-        "summary": "Submit a class-subject assignment's scores for a term, computing SubjectResults",
+        "summary": "Submit a class-subject assignment's scores for a term to the form teacher: computes SubjectResults and rebuilds the class's DRAFT report cards so the form teacher sees them. 409 once those report cards have been sent to the admin (the form teacher must withdraw them first) or published.",
         "description": "Roles: ADMIN, TEACHER. ADMIN, or the teacher assigned to this specific class-subject assignment.",
         "x-roles": [
           "ADMIN",
@@ -13882,13 +14018,245 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflicts with the resource's current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/class-subject-assignments/{id}/scores/return": {
+      "post": {
+        "summary": "Return a submitted subject sheet to its subject teacher: its scores and subject results go back to DRAFT (editable again, and off the report cards until resubmitted), and the class's DRAFT report cards are rebuilt. 400 if the sheet isn't submitted; 409 once the report cards it feeds have been sent to the admin or published. Returns the sheet as GET .../scores does.",
+        "description": "Roles: ADMIN, TEACHER. ADMIN, or whoever runs the report card this subject's marks count towards: the class's form teacher for its own card; the class's Islamiyyah subject teachers for a regular class's Islamiyyah card.",
+        "x-roles": [
+          "ADMIN",
+          "TEACHER"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "termId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "termId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScoreSheet"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with the resource's current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/classes/{id}/score-sheets/{termId}": {
+      "get": {
+        "summary": "Every subject sheet feeding a class's report card for a term, with its teacher and status (NOT_STARTED / DRAFT / SUBMITTED). `programme` narrows to one card's subjects; omitted, all of them.",
+        "description": "Roles: ADMIN, TEACHER. ADMIN, or that class's form teacher (every card) — not a subject teacher assigned to the class, except that a regular class's Islamiyyah card (programme=MADRASSAH) is also readable by its Islamiyyah subject teachers.",
+        "x-roles": [
+          "ADMIN",
+          "TEACHER"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "termId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "ACADEMIC",
+                "MADRASSAH"
+              ]
+            },
+            "required": false,
+            "name": "programme",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ClassScoreSheet"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
           }
         }
       }
     },
     "/api/students/{id}/scores": {
       "get": {
-        "summary": "Get a student's subject results",
+        "summary": "Get a student's submitted subject results. A PARENT or STUDENT caller only gets the ones on a published (FINALIZED) report card that isn't withheld for fees.",
         "description": "ADMIN, the student's linked parent, the student themself, or a teacher currently assigned to their class.",
         "security": [
           {
@@ -14540,7 +14908,7 @@
     },
     "/api/results/finalize-all": {
       "post": {
-        "summary": "Publish every SUBMITTED result for a term across all classes (optionally one programme), each exactly as POST /results/:id/finalize would — attendance snapshot, class ranking, a RESULT_FINALIZED audit row each. DRAFT results are never touched, only counted (skippedDraft). One failure doesn't stop the rest; failures are listed. Nothing submitted is a 200 with finalized: 0. 404 for an unknown term.",
+        "summary": "Publish every SUBMITTED result for a term across all classes — or one class with `classId` (optionally one programme, i.e. one card), each exactly as POST /results/:id/finalize would — attendance snapshot, class ranking, a RESULT_FINALIZED audit row each. DRAFT results are never touched, only counted (skippedDraft). One failure doesn't stop the rest; failures are listed. Nothing submitted is a 200 with finalized: 0. 404 for an unknown term or class.",
         "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
@@ -14566,6 +14934,10 @@
                       "ACADEMIC",
                       "MADRASSAH"
                     ]
+                  },
+                  "classId": {
+                    "type": "string",
+                    "minLength": 1
                   }
                 },
                 "required": [
@@ -14628,7 +15000,7 @@
     },
     "/api/results/{id}/finalize": {
       "post": {
-        "summary": "Finalize a report-card result, locking it except via override. Snapshots daysPresent/daysSchoolOpened at this moment (never recomputed later). Once every actively-enrolled student in this class+term is FINALIZED, this call also triggers the class-wide position/outOf pass (ranked strictly among FINALIZED peers, ties sharing a position) — see POST /classes/:id/results/:termId/rank for the admin escape hatch if a class never completes.",
+        "summary": "Publish a SUBMITTED report-card result (one the form teacher sent for review — a DRAFT is a 400), locking it except via override. An empty principalComment is filled from the comment bank for the card's average (GET /principal-comment-templates). Snapshots daysPresent/daysSchoolOpened at this moment (never recomputed later). Once every actively-enrolled student in this class+term is FINALIZED, this call also triggers the class-wide position/outOf pass (ranked strictly among FINALIZED peers, ties sharing a position) — see POST /classes/:id/results/:termId/rank for the admin escape hatch if a class never completes.",
         "description": "Roles: ADMIN.",
         "x-roles": [
           "ADMIN"
@@ -15683,6 +16055,365 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/principal-comment-templates": {
+      "get": {
+        "summary": "List the head of school's predefined comments, each for a range of report-card averages (inclusive). Every template covering a card's average is a suggestion; the first by `order` fills an empty principalComment when the card is published.",
+        "description": "Roles: ADMIN.",
+        "x-roles": [
+          "ADMIN"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PrincipalCommentTemplate"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Add a predefined head-of-school comment for a range of averages",
+        "description": "Roles: ADMIN.",
+        "x-roles": [
+          "ADMIN"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "minAverage": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "minimum": 0,
+                    "maximum": 100
+                  },
+                  "maxAverage": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "minimum": 0,
+                    "maximum": 100
+                  },
+                  "comment": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1000
+                  },
+                  "order": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "minAverage",
+                  "maxAverage",
+                  "comment"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrincipalCommentTemplate"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/principal-comment-templates/{id}": {
+      "patch": {
+        "summary": "Edit a predefined head-of-school comment. 400 if the merged range has maxAverage below minAverage",
+        "description": "Roles: ADMIN.",
+        "x-roles": [
+          "ADMIN"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "minAverage": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "minimum": 0,
+                    "maximum": 100
+                  },
+                  "maxAverage": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "minimum": 0,
+                    "maximum": 100
+                  },
+                  "comment": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1000
+                  },
+                  "order": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrincipalCommentTemplate"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, or expired credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not permitted to perform this action, OR the caller's account must change its password first (see MustChangePasswordError) — requireAuth enforces the second case before this route's own guard ever runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ForbiddenError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MustChangePasswordError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource exists at this id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete a predefined head-of-school comment. Comments already on report cards are untouched",
+        "description": "Roles: ADMIN.",
+        "x-roles": [
+          "ADMIN"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
           },
           "400": {
             "description": "Validation failed",

@@ -41,6 +41,10 @@ export const CONFLICT_ROUTE_KEYS: ReadonlySet<string> = new Set([
   "POST /api/payments/:id/confirm",
   "POST /api/payments/:id/reject",
   "PUT /api/class-subject-assignments/:id/scores",
+  // The report cards a sheet feeds have left the form teacher (sent to the
+  // admin, or published) — see cardsLockedReason.
+  "POST /api/class-subject-assignments/:id/scores/submit",
+  "POST /api/class-subject-assignments/:id/scores/return",
   "POST /api/students",
   "PATCH /api/students/:id",
   "DELETE /api/students/:id",

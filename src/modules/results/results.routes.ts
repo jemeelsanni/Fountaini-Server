@@ -16,6 +16,7 @@ import {
   classTermParamsSchema,
   computeResultsSchema,
   computeSessionResultsSchema,
+  createPrincipalCommentTemplateSchema,
   finalizeAllSchema,
   type IdParams,
   idParamsSchema,
@@ -28,6 +29,7 @@ import {
   type StudentTermParams,
   studentTermParamsSchema,
   termSummaryQuerySchema,
+  updatePrincipalCommentTemplateSchema,
   writeCommentSchema,
   writeEarlyYearsSchema,
 } from "./results.schemas.js";
@@ -206,4 +208,34 @@ resultsRouter.patch(
   validate({ params: idParamsSchema, body: writeCommentSchema }),
   auditMutation("Result", "PRINCIPAL_COMMENT_WRITTEN"),
   controller.writePrincipalComment,
+);
+
+// The head of school's comment bank — predefined comments by average score,
+// offered when writing a principal comment and used to fill an empty one at
+// publish time (see principalComments.ts).
+resultsRouter.get(
+  "/principal-comment-templates",
+  requireRole("ADMIN"),
+  controller.listPrincipalCommentTemplates,
+);
+resultsRouter.post(
+  "/principal-comment-templates",
+  requireRole("ADMIN"),
+  validate({ body: createPrincipalCommentTemplateSchema }),
+  auditMutation("PrincipalCommentTemplate", "PRINCIPAL_COMMENT_TEMPLATE_CREATED"),
+  controller.createPrincipalCommentTemplate,
+);
+resultsRouter.patch(
+  "/principal-comment-templates/:id",
+  requireRole("ADMIN"),
+  validate({ params: idParamsSchema, body: updatePrincipalCommentTemplateSchema }),
+  auditMutation("PrincipalCommentTemplate", "PRINCIPAL_COMMENT_TEMPLATE_UPDATED"),
+  controller.updatePrincipalCommentTemplate,
+);
+resultsRouter.delete(
+  "/principal-comment-templates/:id",
+  requireRole("ADMIN"),
+  validate({ params: idParamsSchema }),
+  auditMutation("PrincipalCommentTemplate", "PRINCIPAL_COMMENT_TEMPLATE_DELETED"),
+  controller.deletePrincipalCommentTemplate,
 );
