@@ -56,7 +56,12 @@ export const termSummaryQuerySchema = z.object({
 });
 export type TermSummaryQuery = z.infer<typeof termSummaryQuerySchema>;
 
-export const finalizeAllSchema = termSummaryQuerySchema;
+/// `classId` narrows the release to one class's results (by the class the
+/// result's enrollment belongs to — the same rows GET /classes/:id/results
+/// lists); with `programme`, one card of one class.
+export const finalizeAllSchema = termSummaryQuerySchema.extend({
+  classId: z.string().min(1).optional(),
+});
 export type FinalizeAllBody = z.infer<typeof finalizeAllSchema>;
 
 export const studentSessionParamsSchema = z.object({
@@ -112,3 +117,28 @@ export const writeEarlyYearsSchema = z
     message: "Provide at least one of weightKg, heightCm or areasOfReinforcement",
   });
 export type WriteEarlyYearsBody = z.infer<typeof writeEarlyYearsSchema>;
+
+/// The head of school's comment bank (see principalComments.ts). Ranges are
+/// on a report card's average score, 0–100, inclusive at both ends.
+export const createPrincipalCommentTemplateSchema = z
+  .object({
+    minAverage: z.coerce.number().min(0).max(100),
+    maxAverage: z.coerce.number().min(0).max(100),
+    comment: z.string().trim().min(1).max(1000),
+    order: z.coerce.number().int().nonnegative().optional(),
+  })
+  .refine((data) => data.maxAverage >= data.minAverage, {
+    message: "maxAverage must be at least minAverage",
+    path: ["maxAverage"],
+  });
+export type CreatePrincipalCommentTemplateBody = z.infer<typeof createPrincipalCommentTemplateSchema>;
+
+// No cross-field refine: a patch may carry one bound alone, so the merged
+// range is checked in the service.
+export const updatePrincipalCommentTemplateSchema = z.object({
+  minAverage: z.coerce.number().min(0).max(100).optional(),
+  maxAverage: z.coerce.number().min(0).max(100).optional(),
+  comment: z.string().trim().min(1).max(1000).optional(),
+  order: z.coerce.number().int().nonnegative().optional(),
+});
+export type UpdatePrincipalCommentTemplateBody = z.infer<typeof updatePrincipalCommentTemplateSchema>;

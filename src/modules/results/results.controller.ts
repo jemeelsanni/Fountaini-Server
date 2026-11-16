@@ -1,7 +1,10 @@
 import type { Request, Response } from "express";
 import { AppError } from "../../errors/AppError.js";
+import * as principalComments from "./principalComments.js";
 import * as service from "./results.service.js";
 import type {
+  CreatePrincipalCommentTemplateBody,
+  UpdatePrincipalCommentTemplateBody,
   ClassResultsQuery,
   ClassTermParams,
   ComputeResultsBody,
@@ -151,4 +154,27 @@ export async function finalizeAllForTerm(req: Request, res: Response): Promise<v
     throw AppError.unauthorized();
   }
   res.status(200).json(await service.finalizeAllForTerm(req.body as FinalizeAllBody, req.principal));
+}
+
+export async function listPrincipalCommentTemplates(_req: Request, res: Response): Promise<void> {
+  res.status(200).json(await principalComments.listPrincipalCommentTemplates());
+}
+
+export async function createPrincipalCommentTemplate(req: Request, res: Response): Promise<void> {
+  res
+    .status(201)
+    .json(await principalComments.createPrincipalCommentTemplate(req.body as CreatePrincipalCommentTemplateBody));
+}
+
+export async function updatePrincipalCommentTemplate(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as unknown as IdParams;
+  res
+    .status(200)
+    .json(await principalComments.updatePrincipalCommentTemplate(id, req.body as UpdatePrincipalCommentTemplateBody));
+}
+
+export async function deletePrincipalCommentTemplate(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as unknown as IdParams;
+  await principalComments.deletePrincipalCommentTemplate(id);
+  res.status(204).send();
 }

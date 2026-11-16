@@ -194,6 +194,8 @@ export const BESPOKE_ROUTE_KEYS: readonly string[] = [
   "GET /api/class-subject-assignments/:id/scores",
   "PUT /api/class-subject-assignments/:id/scores",
   "POST /api/class-subject-assignments/:id/scores/submit",
+  "POST /api/class-subject-assignments/:id/scores/return",
+  "GET /api/classes/:id/score-sheets/:termId",
   "GET /api/staff/:id",
   "GET /api/staff/:id/timetable",
   "GET /api/classes/:id/timetable",
@@ -865,6 +867,32 @@ export async function buildBespokeRows(generics: GenericActors): Promise<MatrixR
           url: `/api/class-subject-assignments/${world.assignment.id}/scores/submit`,
           body: { termId: world.term.id },
           tokens: assignmentScopeTokens,
+        }),
+    },
+    // canReviewAssignmentScores: whoever runs the card this subject feeds —
+    // here an ACADEMIC subject in a regular class, so its form teacher; the
+    // subject teacher who submitted the sheet can't send it back to
+    // themself. Same actor split as the class-teacher comment rows.
+    {
+      name: "POST /api/class-subject-assignments/:id/scores/return",
+      method: "post",
+      cases: CLASS_TEACHER_COMMENT_CASES,
+      setup: () =>
+        Promise.resolve({
+          url: `/api/class-subject-assignments/${world.assignment.id}/scores/return`,
+          body: { termId: world.term.id },
+          tokens: classTeacherCommentTokens,
+        }),
+    },
+    // canReadClassResults, as for GET /api/classes/:id/results/:termId.
+    {
+      name: "GET /api/classes/:id/score-sheets/:termId",
+      method: "get",
+      cases: CLASS_TEACHER_COMMENT_CASES,
+      setup: () =>
+        Promise.resolve({
+          url: `/api/classes/${world.class.id}/score-sheets/${world.term.id}`,
+          tokens: classTeacherCommentTokens,
         }),
     },
     {

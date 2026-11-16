@@ -582,6 +582,38 @@ export const ScoreSheetSchema = z
   })
   .openapi("ScoreSheet");
 
+/// GET /api/classes/:id/score-sheets/:termId — one row per subject sheet
+/// feeding the class's report card: the form teacher's checklist of what
+/// subject teachers have submitted to them.
+export const ClassScoreSheetSchema = z
+  .object({
+    classSubjectAssignmentId: id(),
+    subject: z.object({ id: id(), name: z.string(), code: z.string(), type: SubjectTypeSchema }),
+    programme: ProgrammeSchema.openapi({ description: "The report card this subject's marks count towards" }),
+    teacher: z.object({ id: id(), firstName: z.string(), lastName: z.string() }),
+    status: z.enum(["NOT_STARTED", "DRAFT", "SUBMITTED"]).openapi({
+      description:
+        "NOT_STARTED: no marks entered. DRAFT: the subject teacher is still working on it. SUBMITTED: " +
+        "handed to the form teacher for review.",
+    }),
+    enteredCount: z.number().int(),
+    expectedCount: z.number().int().openapi({ description: "Enrolled students × assessment components" }),
+    submittedAt: isoDateTime().nullable(),
+  })
+  .openapi("ClassScoreSheet");
+
+export const PrincipalCommentTemplateSchema = z
+  .object({
+    id: id(),
+    minAverage: decimalString(),
+    maxAverage: decimalString(),
+    comment: z.string(),
+    order: z.number().int(),
+    createdAt: isoDateTime(),
+    updatedAt: isoDateTime(),
+  })
+  .openapi("PrincipalCommentTemplate");
+
 export const GradeBandSchema = z
   .object({
     id: id(),

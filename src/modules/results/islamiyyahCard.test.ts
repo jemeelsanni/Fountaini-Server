@@ -3,7 +3,14 @@ import request from "supertest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../app.js";
 import { prisma } from "../../db/client.js";
-import { computeResultsForClass, finalizeResult } from "./results.service.js";
+import { submitForReview } from "../../test/submitForReview.js";
+import { computeResultsForClass, finalizeResult as publishResult } from "./results.service.js";
+
+/// The form teacher submits, then the admin publishes.
+async function finalizeResult(id: string, actorUserId: string) {
+  await submitForReview(id);
+  return publishResult(id, actorUserId);
+}
 import {
   createAdmin,
   createAssignment,

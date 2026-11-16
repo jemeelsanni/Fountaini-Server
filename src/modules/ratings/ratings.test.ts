@@ -17,6 +17,7 @@ import {
   enrollStudent,
 } from "../../test/factories.js";
 import { resetDb } from "../../test/resetDb.js";
+import { submitForReview } from "../../test/submitForReview.js";
 
 const app = createApp();
 let server: Server;
@@ -106,6 +107,7 @@ describe("PUT /api/classes/:id/results/:termId/ratings", () => {
   it("rejects writing ratings once the student's result for this term is FINALIZED", async () => {
     const world = await setupRatingsWorld();
 
+    await submitForReview(world.result.id);
     await request(server)
       .post(`/api/results/${world.result.id}/finalize`)
       .set("Authorization", `Bearer ${world.adminToken}`);

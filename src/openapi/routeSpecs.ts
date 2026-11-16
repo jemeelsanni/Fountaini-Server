@@ -37,6 +37,7 @@ import {
   classTermParamsSchema,
   computeResultsSchema,
   computeSessionResultsSchema,
+  createPrincipalCommentTemplateSchema,
   finalizeAllSchema,
   idParamsSchema as resultsIdParamsSchema,
   listResultsForStudentQuerySchema,
@@ -46,11 +47,12 @@ import {
   studentSessionParamsSchema,
   studentTermParamsSchema,
   termSummaryQuerySchema,
+  updatePrincipalCommentTemplateSchema,
   writeCommentSchema,
   writeEarlyYearsSchema,
 } from "../modules/results/results.schemas.js";
 import { createSchoolSchema, setHeadSignatureSchema, updateSchoolSchema } from "../modules/school/school.schemas.js";
-import { bulkUpsertScoresSchema, idParamsSchema as scoresIdParamsSchema, scoresForAssignmentQuerySchema, submitScoresSchema } from "../modules/scores/scores.schemas.js";
+import { bulkUpsertScoresSchema, classScoreSheetsQuerySchema, classTermParamsSchema as scoresClassTermParamsSchema, idParamsSchema as scoresIdParamsSchema, returnScoresSchema, scoresForAssignmentQuerySchema, submitScoresSchema } from "../modules/scores/scores.schemas.js";
 import { createStaffSchema, idParamsSchema as staffIdParamsSchema, updateStaffSchema } from "../modules/staff/staff.schemas.js";
 import { idParamsSchema as subjectTemplatesIdParamsSchema, subjectTemplateInputSchema } from "../modules/subject-templates/subject-templates.schemas.js";
 import { bulkUpdateStudentStatusSchema, createEnrollmentSchema, createStudentSchema, idParamsSchema as studentsIdParamsSchema, searchStudentsQuerySchema, transferStudentSchema, updateStudentSchema } from "../modules/students/students.schemas.js";
@@ -116,6 +118,8 @@ import {
   ResultWithStudentSchema,
   ScanResultSchema,
   SchoolSchema,
+  ClassScoreSheetSchema,
+  PrincipalCommentTemplateSchema,
   ScoreSchema,
   ScoreSheetSchema,
   SessionResultWithSubjectAveragesSchema,
@@ -210,6 +214,9 @@ const SCOPE_NOTES = {
     "ADMIN, or that class's form teacher (every card) — not a subject teacher assigned to the class, except " +
     "that a regular class's Islamiyyah card (programme=MADRASSAH) is also readable by its Islamiyyah subject teachers.",
   canActOnAssignment: "ADMIN, or the teacher assigned to this specific class-subject assignment.",
+  canReviewAssignmentScores:
+    "ADMIN, or whoever runs the report card this subject's marks count towards: the class's form teacher " +
+    "for its own card; the class's Islamiyyah subject teachers for a regular class's Islamiyyah card.",
   canReadStaff: "ADMIN, or that staff member themself.",
   canReadClassTimetable:
     "Any TEACHER (assigned or not — timetable data isn't treated as sensitive) or ADMIN; a STUDENT or " +
@@ -955,6 +962,31 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     scopeNote: SCOPE_NOTES.canWriteClassRatings,
   },
 
+  // --- principal comment bank ------------------------------------------------
+  "GET /api/principal-comment-templates": {
+    summary:
+      "List the head of school's predefined comments, each for a range of report-card averages " +
+      "(inclusive). Every template covering a card's average is a suggestion; the first by `order` fills " +
+      "an empty principalComment when the card is published.",
+    responses: { 200: { description: "OK", schema: z.array(PrincipalCommentTemplateSchema) } },
+  },
+  "POST /api/principal-comment-templates": {
+    summary: "Add a predefined head-of-school comment for a range of averages",
+    requestBody: createPrincipalCommentTemplateSchema,
+    responses: { 201: { description: "Created", schema: PrincipalCommentTemplateSchema } },
+  },
+  "PATCH /api/principal-comment-templates/:id": {
+    summary: "Edit a predefined head-of-school comment. 400 if the merged range has maxAverage below minAverage",
+    requestParams: resultsIdParamsSchema,
+    requestBody: updatePrincipalCommentTemplateSchema,
+    responses: { 200: { description: "OK", schema: PrincipalCommentTemplateSchema } },
+  },
+  "DELETE /api/principal-comment-templates/:id": {
+    summary: "Delete a predefined head-of-school comment. Comments already on report cards are untouched",
+    requestParams: resultsIdParamsSchema,
+    responses: { 204: noContent },
+  },
+
   // --- results ----------------------------------------------------------------
   "POST /api/results/compute": {
     summary:
@@ -1015,7 +1047,9 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
   },
   "POST /api/results/:id/finalize": {
     summary:
-      "Finalize a report-card result, locking it except via override. Snapshots daysPresent/" +
+      "Publish a SUBMITTED report-card result (one the form teacher sent for review — a DRAFT is a 400), " +
+      "locking it except via override. An empty principalComment is filled from the comment bank for the " +
+      "card's average (GET /principal-comment-templates). Snapshots daysPresent/" +
       "daysSchoolOpened at this moment (never recomputed later). Once every actively-enrolled student " +
       "in this class+term is FINALIZED, this call also triggers the class-wide position/outOf pass " +
       "(ranked strictly among FINALIZED peers, ties sharing a position) — see " +
@@ -1099,11 +1133,12 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
   },
   "POST /api/results/finalize-all": {
     summary:
-      "Publish every SUBMITTED result for a term across all classes (optionally one programme), each " +
+      "Publish every SUBMITTED result for a term across all classes — or one class with `classId` (optionally " +
+      "one programme, i.e. one card), each " +
       "exactly as POST /results/:id/finalize would — attendance snapshot, class ranking, a RESULT_FINALIZED " +
       "audit row each. DRAFT results are never touched, only counted (skippedDraft). One failure doesn't " +
       "stop the rest; failures are listed. Nothing submitted is a 200 with finalized: 0. 404 for an " +
-      "unknown term.",
+      "unknown term or class.",
     requestBody: finalizeAllSchema,
     responses: { 200: { description: "OK", schema: FinalizeAllResultSchema } },
   },
@@ -1221,14 +1256,39 @@ export const ROUTE_SPECS: Record<string, RouteSpec> = {
     scopeNote: SCOPE_NOTES.canActOnAssignment,
   },
   "POST /api/class-subject-assignments/:id/scores/submit": {
-    summary: "Submit a class-subject assignment's scores for a term, computing SubjectResults",
+    summary:
+      "Submit a class-subject assignment's scores for a term to the form teacher: computes SubjectResults " +
+      "and rebuilds the class's DRAFT report cards so the form teacher sees them. 409 once those report " +
+      "cards have been sent to the admin (the form teacher must withdraw them first) or published.",
     requestParams: scoresIdParamsSchema,
     requestBody: submitScoresSchema,
     responses: { 200: { description: "OK", schema: z.array(SubjectResultSchema) } },
     scopeNote: SCOPE_NOTES.canActOnAssignment,
   },
+  "POST /api/class-subject-assignments/:id/scores/return": {
+    summary:
+      "Return a submitted subject sheet to its subject teacher: its scores and subject results go back to " +
+      "DRAFT (editable again, and off the report cards until resubmitted), and the class's DRAFT report " +
+      "cards are rebuilt. 400 if the sheet isn't submitted; 409 once the report cards it feeds have been " +
+      "sent to the admin or published. Returns the sheet as GET .../scores does.",
+    requestParams: scoresIdParamsSchema,
+    requestBody: returnScoresSchema,
+    responses: { 200: { description: "OK", schema: ScoreSheetSchema } },
+    scopeNote: SCOPE_NOTES.canReviewAssignmentScores,
+  },
+  "GET /api/classes/:id/score-sheets/:termId": {
+    summary:
+      "Every subject sheet feeding a class's report card for a term, with its teacher and status " +
+      "(NOT_STARTED / DRAFT / SUBMITTED). `programme` narrows to one card's subjects; omitted, all of them.",
+    requestParams: scoresClassTermParamsSchema,
+    requestQuery: classScoreSheetsQuerySchema,
+    responses: { 200: { description: "OK", schema: z.array(ClassScoreSheetSchema) } },
+    scopeNote: SCOPE_NOTES.canReadClassResults,
+  },
   "GET /api/students/:id/scores": {
-    summary: "Get a student's subject results",
+    summary:
+      "Get a student's submitted subject results. A PARENT or STUDENT caller only gets the ones on a " +
+      "published (FINALIZED) report card that isn't withheld for fees.",
     requestParams: scoresIdParamsSchema,
     responses: { 200: { description: "OK", schema: z.array(SubjectResultWithRelationsSchema) } },
     scopeNote: SCOPE_NOTES.canReadStudent,

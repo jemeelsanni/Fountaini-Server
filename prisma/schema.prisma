@@ -930,6 +930,23 @@ model SessionSubjectAverage {
   @@unique([sessionResultId, subjectId])
 }
 
+/// The head of school's predefined comments, picked by a report card's
+/// average score: every template whose [minAverage, maxAverage] range holds
+/// the average is offered to the admin, and the first (by `order`) fills an
+/// empty principalComment when the card is published. School-wide, not per
+/// session — the wording rarely changes year to year.
+model PrincipalCommentTemplate {
+  id         String   @id @default(cuid())
+  minAverage Decimal  @db.Decimal(5, 2)
+  maxAverage Decimal  @db.Decimal(5, 2)
+  comment    String
+  order      Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([minAverage, maxAverage])
+}
+
 enum OverrideTargetType {
   RESULT
   SUBJECT_RESULT

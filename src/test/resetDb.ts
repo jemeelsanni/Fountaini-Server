@@ -24,6 +24,8 @@ export async function resetDb(): Promise<void> {
     prisma.identifierCounter.deleteMany(),
     prisma.notificationEvent.deleteMany(),
     prisma.resultOverride.deleteMany(),
+    // Seeded by its migration; cleared so each test sets up the bank it needs.
+    prisma.principalCommentTemplate.deleteMany(),
     prisma.sessionSubjectAverage.deleteMany(),
     prisma.sessionResult.deleteMany(),
     prisma.result.deleteMany(),

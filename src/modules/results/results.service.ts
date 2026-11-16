@@ -14,6 +14,7 @@ import { AppError } from "../../errors/AppError.js";
 import { fireAndForget } from "../../lib/fireAndForget.js";
 import { writeAuditLog } from "../audit/audit.service.js";
 import { withBalance } from "../fees/fees.service.js";
+import { pickPrincipalComment } from "./principalComments.js";
 import { cardsForClass, enrollmentsForCard, subjectCardWhere } from "./reportCards.js";
 import type {
   ComputeResultsBody,
@@ -328,6 +329,35 @@ export async function listResultsForStudent(
   return listResultsForStudentAtLevel(studentId, academicSessionId, await resolveStudentAccessLevel(principal, studentId));
 }
 
+/// The report cards a RESTRICTED caller (parent or student) may see subject
+/// marks for: published, and not withheld for unpaid fees — the same two
+/// rules getResultForStudentTerm applies to the card itself. Keys are
+/// `${termId}:${programme}`. Used by GET /students/:id/scores so a subject
+/// teacher's submitted marks don't reach a family before the admin
+/// publishes the card they sit on.
+export async function publishedCardKeysForStudent(studentId: string): Promise<Set<string>> {
+  const finalized = await prisma.result.findMany({
+    where: { studentId, status: "FINALIZED" },
+    select: {
+      termId: true,
+      programme: true,
+      feeWithholdingReleased: true,
+      term: { select: { academicSessionId: true } },
+    },
+  });
+  const withholdingMap = await buildWithholdingMap(
+    studentId,
+    finalized
+      .filter((r) => !r.feeWithholdingReleased)
+      .map((r) => ({ id: r.termId, academicSessionId: r.term.academicSessionId })),
+  );
+  return new Set(
+    finalized
+      .filter((r) => r.feeWithholdingReleased || !withholdingMap.has(r.termId))
+      .map((r) => `${r.termId}:${r.programme}`),
+  );
+}
+
 /// The body of listResultsForStudent with the access level passed in
 /// rather than resolved from a principal — so listMyResults can pin it to
 /// RESTRICTED (published-only, withholding applied) even for a caller who'd
@@ -570,10 +600,18 @@ async function withPositionFillLock<T>(
   });
 }
 
+/// Publishing is the last of three hand-offs: subject teacher → form
+/// teacher (scores submitted), form teacher → admin (result SUBMITTED),
+/// admin → families (FINALIZED). Only a SUBMITTED result can be published;
+/// a DRAFT is still with its form teacher.
 export async function finalizeResult(id: string, actorUserId: string) {
-  const outcome = await finalizeResultIfStatus(id, actorUserId, ["DRAFT", "SUBMITTED"]);
+  const outcome = await finalizeResultIfStatus(id, actorUserId, ["SUBMITTED"]);
   if ("statusChangedTo" in outcome) {
-    // Only FINALIZED falls outside DRAFT/SUBMITTED — a concurrent publish.
+    if (outcome.statusChangedTo === "DRAFT") {
+      throw AppError.badRequest(
+        "This result is still with the form teacher — it can be published once they submit it for review",
+      );
+    }
     throw AppError.conflict("This result is already finalized");
   }
   return outcome.finalized;
@@ -620,6 +658,28 @@ async function finalizeResultIfStatus(
   if (count === 0) {
     const current = await prisma.result.findUniqueOrThrow({ where: { id }, select: { status: true } });
     return { statusChangedTo: current.status };
+  }
+
+  // Published with no head-of-school comment: take the comment bank's pick
+  // for this card's average, as part of publishing (not an override). After
+  // the status write, so publishing stays one atomic step that a racing
+  // recompute can't slip into; conditional on the comment still being
+  // empty, so nothing the admin wrote is ever replaced.
+  // Best-effort: the result is already published, so a failure here is
+  // logged rather than failing the request (and skipping the ranking pass
+  // below) — the admin can still add the comment via override.
+  if (result.principalComment === null) {
+    try {
+      const picked = await pickPrincipalComment(prisma, result.averageScore);
+      if (picked) {
+        await prisma.result.updateMany({
+          where: { id, status: "FINALIZED", principalComment: null },
+          data: { principalComment: picked },
+        });
+      }
+    } catch (err) {
+      logger.error({ err, resultId: id }, "Couldn't fill the principal comment from the comment bank");
+    }
   }
   const finalized = await prisma.result.findUniqueOrThrow({ where: { id } });
 
@@ -1216,7 +1276,14 @@ export async function getTermResultsSummary(query: TermSummaryQuery) {
 /// plus one RESULTS_FINALIZED_IN_BULK row on the term.
 export async function finalizeAllForTerm(input: FinalizeAllBody, principal: Principal) {
   await getTermOrThrow(input.termId);
-  const where = { termId: input.termId, ...(input.programme ? { programme: input.programme } : {}) };
+  if (input.classId && !(await prisma.class.findUnique({ where: { id: input.classId }, select: { id: true } }))) {
+    throw AppError.notFound("Class not found");
+  }
+  const where = {
+    termId: input.termId,
+    ...(input.programme ? { programme: input.programme } : {}),
+    ...(input.classId ? { enrollment: { classId: input.classId } } : {}),
+  };
   const [submitted, draftCount] = await Promise.all([
     prisma.result.findMany({
       where: { ...where, status: "SUBMITTED" },
@@ -1282,7 +1349,14 @@ export async function finalizeAllForTerm(input: FinalizeAllBody, principal: Prin
       action: "RESULTS_FINALIZED_IN_BULK",
       entityType: "Term",
       entityId: input.termId,
-      afterData: { termId: input.termId, programme: input.programme ?? null, count: finalized, skippedDraft, failed: failed.length },
+      afterData: {
+        termId: input.termId,
+        programme: input.programme ?? null,
+        classId: input.classId ?? null,
+        count: finalized,
+        skippedDraft,
+        failed: failed.length,
+      },
     }),
     (err) => logger.error({ err, termId: input.termId }, "Failed to write RESULTS_FINALIZED_IN_BULK audit log"),
   );
