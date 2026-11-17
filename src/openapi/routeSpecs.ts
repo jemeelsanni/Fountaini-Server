@@ -211,8 +211,10 @@ const SCOPE_NOTES = {
   canReadStudentParents:
     "ADMIN, the student's assigned teacher, or the student themself — not a linked parent.",
   canReadClassResults:
-    "ADMIN, or that class's form teacher (every card) — not a subject teacher assigned to the class, except " +
-    "that a regular class's Islamiyyah card (programme=MADRASSAH) is also readable by its Islamiyyah subject teachers.",
+    "ADMIN, or whoever runs the requested card: that class's form teacher for its own card (a regular " +
+    "class's Western card, a Madrasa group's Islamiyyah card) — not a subject teacher assigned to the class; " +
+    "a regular class's Islamiyyah subject teachers for its Islamiyyah card (programme=MADRASSAH), which the " +
+    "form teacher can't read.",
   canActOnAssignment: "ADMIN, or the teacher assigned to this specific class-subject assignment.",
   canReviewAssignmentScores:
     "ADMIN, or whoever runs the report card this subject's marks count towards: the class's form teacher " +

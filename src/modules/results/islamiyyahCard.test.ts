@@ -218,7 +218,7 @@ describe("Western and Islamiyyah results in a regular class", () => {
     ]);
   });
 
-  it("lets the Islamiyyah teacher, not the form teacher, run the Islamiyyah card", async () => {
+  it("lets the Islamiyyah teacher, not the form teacher, see and run the Islamiyyah card", async () => {
     const { term, jss1, formTeacher, ustadh, aisha } = await setupWorld();
     await computeResultsForClass({ classId: jss1.id, termId: term.id });
     const western = await card(aisha.id, term.id, "ACADEMIC");
@@ -230,8 +230,10 @@ describe("Western and Islamiyyah results in a regular class", () => {
         .set("Authorization", `Bearer ${token}`)
         .send({ comment: "Masha Allah" });
 
-    // Reading: the form teacher sees both cards; the Islamiyyah teacher only theirs.
-    expect((await request(server).get(`${listUrl}?programme=MADRASSAH`).set("Authorization", `Bearer ${formTeacher.token}`)).status).toBe(200);
+    // Reading: each card only by whoever runs it — the Islamiyyah card
+    // bypasses the form teacher entirely.
+    expect((await request(server).get(`${listUrl}?programme=MADRASSAH`).set("Authorization", `Bearer ${formTeacher.token}`)).status).toBe(403);
+    expect((await request(server).get(listUrl).set("Authorization", `Bearer ${formTeacher.token}`)).status).toBe(200);
     expect((await request(server).get(`${listUrl}?programme=MADRASSAH`).set("Authorization", `Bearer ${ustadh.token}`)).status).toBe(200);
     expect((await request(server).get(listUrl).set("Authorization", `Bearer ${ustadh.token}`)).status).toBe(403);
 
