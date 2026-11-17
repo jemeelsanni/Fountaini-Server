@@ -14148,7 +14148,7 @@
     "/api/classes/{id}/score-sheets/{termId}": {
       "get": {
         "summary": "Every subject sheet feeding a class's report card for a term, with its teacher and status (NOT_STARTED / DRAFT / SUBMITTED). `programme` narrows to one card's subjects; omitted, all of them.",
-        "description": "Roles: ADMIN, TEACHER. ADMIN, or that class's form teacher (every card) — not a subject teacher assigned to the class, except that a regular class's Islamiyyah card (programme=MADRASSAH) is also readable by its Islamiyyah subject teachers.",
+        "description": "Roles: ADMIN, TEACHER. ADMIN, or whoever runs the requested card: that class's form teacher for its own card (a regular class's Western card, a Madrasa group's Islamiyyah card) — not a subject teacher assigned to the class; a regular class's Islamiyyah subject teachers for its Islamiyyah card (programme=MADRASSAH), which the form teacher can't read.",
         "x-roles": [
           "ADMIN",
           "TEACHER"
@@ -14714,7 +14714,7 @@
     "/api/classes/{id}/results/{termId}": {
       "get": {
         "summary": "List a class's report-card results for a term, one card at a time: `programme` picks it (default: the class's own programme — a regular class's Western card). MADRASSAH on a regular class lists its Islamiyyah card, readable by the form teacher and by the class's Islamiyyah subject teachers.",
-        "description": "Roles: ADMIN, TEACHER. ADMIN, or that class's form teacher (every card) — not a subject teacher assigned to the class, except that a regular class's Islamiyyah card (programme=MADRASSAH) is also readable by its Islamiyyah subject teachers.",
+        "description": "Roles: ADMIN, TEACHER. ADMIN, or whoever runs the requested card: that class's form teacher for its own card (a regular class's Western card, a Madrasa group's Islamiyyah card) — not a subject teacher assigned to the class; a regular class's Islamiyyah subject teachers for its Islamiyyah card (programme=MADRASSAH), which the form teacher can't read.",
         "x-roles": [
           "ADMIN",
           "TEACHER"

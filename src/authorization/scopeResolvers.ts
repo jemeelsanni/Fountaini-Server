@@ -438,9 +438,11 @@ export async function canWriteClassTeacherComment(
 /// distinction (form teacher vs. subject teacher) is the whole point of
 /// the ClassFormTeacher table, same as canWriteClassTeacherComment.
 ///
-/// `programme` picks the card. The form teacher may read every card of
-/// their class (view and print both); a regular class's Islamiyyah card is
-/// also readable by its Islamiyyah subject teachers.
+/// `programme` picks the card, and only whoever runs that card reads it:
+/// the form teacher for the class's own card, the Islamiyyah subject
+/// teachers for a regular class's Islamiyyah card. Islamiyyah runs across
+/// classes, so its results bypass the form teacher entirely — the
+/// Islamiyyah teacher is its form teacher.
 export async function canReadClassResults(
   principal: Principal,
   classId: string,
@@ -459,10 +461,7 @@ export async function canReadClassResults(
     return false;
   }
 
-  return (
-    (await isFormTeacherOfClass(principal.staffId, classId, term.academicSessionId)) ||
-    (programme !== undefined && (await isInChargeOfCard(principal.staffId, classId, term.academicSessionId, programme)))
-  );
+  return isInChargeOfCard(principal.staffId, classId, term.academicSessionId, programme);
 }
 
 /// "The form teacher may write affective/psychomotor ratings for their own
